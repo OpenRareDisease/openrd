@@ -5719,5 +5719,260 @@ class TheComparativeFormsAChineseRadiologistWritesTest(unittest.TestCase):
         self.assertEqual(self._asymmetry("左侧相对保留"), "none")
 
 
+class OneSpellingOfASeparatorAndOfAComparatorTest(unittest.TestCase):
+    """THE INVARIANT WAS ASSERTED IN A COMMENT AND NOT KEPT.
+
+    `_RANGE_SEPARATOR`'s own note calls itself 「THE ONE PLACE A
+    SEPARATOR IS SPELLED」, and five readers went on interpolating the
+    older `[_RANGE_DASHES]` class beside it — so 「50至310」 and
+    「50到310」, the written-out spellings the constant knows and the
+    class does not, matched nothing at the row level. A lost interval is
+    no longer a lost decoration: `reference_high` is what the read path
+    compares a reading against, so a creatine kinase of 693 printed
+    「50至310」 reached a clinician looking exactly like a normal one.
+
+    This test is the invariant itself. It goes red the moment a second
+    spelling of either class appears in the module's code.
+    """
+
+    def _code_lines(self):
+        with open(fshd_report_service.__file__, encoding="utf-8") as handle:
+            return [
+                line
+                for line in handle.read().splitlines()
+                if not line.lstrip().startswith("#")
+            ]
+
+    def test_the_dash_class_is_interpolated_in_exactly_one_place(self):
+        users = [line for line in self._code_lines() if "[{_RANGE_DASHES}]" in line]
+        self.assertEqual(len(users), 1, users)
+        self.assertIn("_RANGE_SEPARATOR", users[0])
+
+    def test_the_comparator_class_is_interpolated_in_exactly_one_place(self):
+        users = [line for line in self._code_lines() if "[{_COMPARATORS}]" in line]
+        self.assertEqual(len(users), 1, users)
+        self.assertIn("_COMPARATOR", users[0])
+
+    def test_no_reader_spells_a_separator_or_comparator_by_hand(self):
+        """A literal dash or comparator inside a regex source is the
+        shape the one-place rule exists to stop."""
+        spelled_out = [
+            line
+            for line in self._code_lines()
+            if re.search(r'rf?"[^"]*\[[^"\]]*[~\u2013\u2014\uff0d\u2264\u2265][^"\]]*\]', line)
+        ]
+        self.assertEqual(spelled_out, [])
+
+
+class TheWholeSeparatorAndComparatorTableTest(unittest.TestCase):
+    """THE SET THE READERS ON EVERY SURFACE AGREED ON, AS A TABLE.
+
+    Drift between this file and the two TypeScript readers is what put
+    「≦」 and 「≧」 (U+2266, U+2267) — the CJK-typeset spellings of 「≤」
+    and 「≥」 — in both of those and in neither of this file's classes,
+    and left 「≦」 out of the ceiling set on top of that. A reference
+    limit printed 「≦25」 was no limit at all here, and 「<=25」 was read
+    as a FLOOR of 25 rather than a ceiling.
+    """
+
+    RANGE_SEPARATORS = tuple("-~\u2013\u2014\u2015\u2010\u2011\u2012\u2212\uff0d\ufe63\uff5e\u301c") + ("到", "至")
+    BELOW = ("<", "\u2264", "\uff1c", "\u2266", "\u2a7d", "\ufe64", "<=", "=<")
+    ABOVE = (">", "\u2265", "\uff1e", "\u2267", "\u2a7e", "\ufe65", ">=", "=>")
+
+    def test_the_module_carries_exactly_this_separator_set(self):
+        known = set(fshd_report_service._RANGE_DASHES) | set(
+            fshd_report_service._RANGE_WORDS
+        )
+        self.assertEqual(known, set(self.RANGE_SEPARATORS))
+
+    def test_the_module_carries_exactly_this_comparator_set(self):
+        known = set(fshd_report_service._COMPARATORS) | set(
+            fshd_report_service._COMPARATOR_DIGRAPHS
+        )
+        self.assertEqual(known, set(self.BELOW) | set(self.ABOVE))
+
+    def test_the_ceiling_set_is_exactly_the_below_column(self):
+        self.assertEqual(
+            set(fshd_report_service._UPPER_LIMIT_COMPARATORS), set(self.BELOW)
+        )
+
+    def test_every_separator_reads_a_two_sided_interval_off_a_row(self):
+        for separator in self.RANGE_SEPARATORS:
+            raw, low, high = fshd_report_service._read_row_reference(
+                f"肌酸激酶(CK) 693 ↑ 50{separator}310 U/L", "693"
+            )
+            self.assertEqual((low, high), (50.0, 310.0), separator)
+            self.assertEqual(raw, f"50{separator}310", separator)
+
+    def test_every_below_spelling_is_a_ceiling_and_never_a_floor(self):
+        for comparator in self.BELOW:
+            raw, low, high = fshd_report_service._read_row_reference(
+                f"肌钙蛋白I 0.02 {comparator}0.05 ng/mL", "0.02"
+            )
+            self.assertEqual(raw, f"{comparator}0.05", comparator)
+            self.assertIsNone(low, comparator)
+            self.assertEqual(high, 0.05, comparator)
+
+    def test_every_above_spelling_is_a_floor_and_never_a_ceiling(self):
+        for comparator in self.ABOVE:
+            raw, low, high = fshd_report_service._read_row_reference(
+                "高密度脂蛋白胆固醇 1.20 " + comparator + "1.04 mmol/L", "1.20"
+            )
+            self.assertEqual(raw, f"{comparator}1.04", comparator)
+            self.assertEqual(low, 1.04, comparator)
+            self.assertIsNone(high, comparator)
+
+    def test_a_limit_keeps_its_comparator_when_it_is_the_whole_reading(self):
+        """A below-detection reading is a limit the laboratory refused
+        to state, not a determinate measurement."""
+        for cell in ("<0.01", "\u22660.01", "<=0.01", "=<0.01"):
+            self.assertEqual(fshd_report_service._canonical_number(cell), cell)
+
+    def test_a_written_out_interval_is_refused_as_a_repeat_count(self):
+        """The count cell this whole product turns on. 「1至10」 is a
+        stated uncertainty, never a confident count of 1."""
+        for separator in self.RANGE_SEPARATORS:
+            result = analyze_fshd_report(
+                "\n".join((
+                    "示例市医学检验所 基因检测报告",
+                    "检测项目: FSHD相关基因检测",
+                    f"检测结果: D4Z4重复单元数 1{separator}10",
+                )),
+                "genetic",
+                "gene.jpeg",
+            )
+            fields = {
+                item["field_name"]: item
+                for item in result["fshd"]["structured_fields"]
+            }
+            field = fields.get("d4z4_repeat_pathogenic")
+            self.assertIsNotNone(field, separator)
+            self.assertEqual(field["field_value"], f"1{separator}10", separator)
+            self.assertIsNone(field.get("normalized_value"), separator)
+
+
+class ARowWhoseResultIsNotANumberPublishesNoNumberTest(unittest.TestCase):
+    """THE UNIT'S EXPONENT SHIPPED AS THE PATIENT'S COUNT.
+
+    The row reader reserves the digits a unit spells itself with —
+    「10E9/L」, 「10^9/L」, 「×10⁹/L」 — and answers with nothing when the
+    结果 column is not a number. The panel FALLBACK reserved nothing, so
+    the moment the row reader declined, the 10 of the unit became the
+    reading. A laboratory leaves that column non-numeric often: a blank,
+    「---」, 「未见」, 「少量」, or a rejection note such as 「标本凝集」 or
+    「溶血」. A white cell count of 10 is a leucocytosis a clinician acts
+    on, off a specimen that was never counted.
+    """
+
+    NON_NUMERIC_RESULTS = ("", "---", "未见", "少量", "标本凝集", "溶血")
+    EXPONENT_UNITS = ("10E9/L", "10e9/L", "10^9/L", "10*9/L", "×10⁹/L")
+
+    def _panel(self, *lines):
+        result = analyze_fshd_report("\n".join(lines), "lab", "lab.jpeg")
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _row(self, unit, result):
+        return self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            f"白细胞计数(WBC) {unit} {result}".strip(),
+            "血红蛋白(HGB) g/L 132 130-175",
+        )
+
+    def test_no_count_is_published_off_a_non_numeric_result_cell(self):
+        for unit in self.EXPONENT_UNITS:
+            for result in self.NON_NUMERIC_RESULTS:
+                panel = self._row(unit, result)
+                self.assertNotIn("wbc", panel, f"{unit} / {result!r}")
+                self.assertEqual(panel.get("hgb"), 132, f"{unit} / {result!r}")
+
+    def test_the_row_that_does_print_a_number_is_unchanged(self):
+        for unit in self.EXPONENT_UNITS:
+            self.assertEqual(self._row(unit, "6.69").get("wbc"), 6.69, unit)
+
+
+class AWindowSeamIsNotARowBoundaryTest(unittest.TestCase):
+    """THE VALUE AND ITS OWN PROVENANCE DISAGREED.
+
+    The gap between an analyte's name and its reading excludes `\n` so
+    that it cannot leave its own line, and `_panel_haystacks` joins two
+    adjacent lines without a separator — which deletes the newline the
+    gap was refusing. So a sediment row whose result is a Chinese word
+    reached over the seam and published the NEXT row's figure under its
+    own key, with its own line shipped as the evidence for it.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 尿常规") + rows),
+            "lab",
+            "lab.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_word_result_does_not_take_the_next_rows_number(self):
+        panel = self._panel(
+            "白细胞 少量 /HP",
+            "红细胞 8 个/uL",
+            "细菌 未见 /HP",
+            "上皮细胞 3 个/uL",
+        )
+        self.assertNotIn("urine_wbc", panel)
+        self.assertNotIn("urine_bacteria", panel)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+        self.assertEqual(panel.get("urine_epithelial_cells"), 3)
+
+    def test_the_rows_that_do_print_numbers_are_all_read(self):
+        panel = self._panel(
+            "白细胞 12 个/uL",
+            "红细胞 8 个/uL",
+            "上皮细胞 3 个/uL",
+        )
+        self.assertEqual(panel.get("urine_wbc"), 12)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+        self.assertEqual(panel.get("urine_epithelial_cells"), 3)
+
+    def test_the_cell_per_line_layout_the_window_exists_for_still_reads(self):
+        """The seam is only closed against ANOTHER ROW'S NAME. A cell
+        reunited with the cell below it is what these windows are for."""
+        panel = self._panel("白细胞", "12", "个/uL", "红细胞", "8", "个/uL")
+        self.assertEqual(panel.get("urine_wbc"), 12)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+
+
+class TheEmphasisWordsARadiologistEndsAClauseOnTest(unittest.TestCase):
+    """「以右侧为主」 AND 「以左侧为甚」 CAME BACK `asymmetry: none`.
+
+    甚 was listed as a LINKING character — one of the class that may sit
+    between the side and the emphasis word — where it can never be
+    reached, because 「右侧为甚」 ends on it.
+    """
+
+    def _asymmetry(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 磁共振检查报告单",
+                "检查项目: 双大腿MRI平扫",
+                f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+            )),
+            "mri",
+            "mri.jpeg",
+        )
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_two_new_emphasis_words_name_a_side(self):
+        self.assertEqual(self._asymmetry("以右侧为主"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧为主"), "left_gt_right")
+        self.assertEqual(self._asymmetry("以左侧为甚"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧为甚"), "right_gt_left")
+
+    def test_the_linking_run_is_still_a_closed_class(self):
+        self.assertEqual(self._asymmetry("以脂肪浸润为主"), "none")
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,13 @@ import type {
 // marker and its reference interval under. Imported rather than spelled
 // again: this page reads what that bridge writes, and a suffix written
 // twice is one that can disagree with itself.
+import {
+  COMPARATOR_SOURCE,
+  PRINTED_NUMBER,
+  RANGE_SEPARATOR_SOURCE,
+  RANGE_SEPARATOR_SOURCE_WITHOUT_PLAIN_HYPHEN,
+  classifyComparator,
+} from '../../utils/clinical-notation.js';
 import { OCR_FLAG_SUFFIX, OCR_REFERENCE_SUFFIX } from '../ai-agents/security/allowlist.js';
 
 /** Only what this file reads. `aiExtraction` / `ai_extraction` used to
@@ -1277,92 +1284,65 @@ type PrintedIntervalVerdict = 'above' | 'below';
  * `LEADING_NUMBER` handed 0.5 to the comparison. That published 「本平台
  * 比对：低于该区间」 about a number nobody measured.
  *
- * THE SET IS COPIED FROM THE PRODUCER, NOT INVENTED HERE. Everything
- * that reaches `reading.reference` came off `_read_row_reference` in
+ * AND THE WORDS WERE WHAT THE LAST WIDENING LEFT BEHIND. Thirteen
+ * dashes went in and 至/到 did not, so 「0.5至1.2」 in a result cell —
+ * the very same mis-parse, spelled the way a Chinese laboratory writes
+ * an interval OUT — still walked past `VALUE_IS_A_RANGE`, still handed
+ * 0.5 to the comparison, and still published 「本平台比对：低于该区间」
+ * about a number nobody measured. A class widened by whoever was
+ * looking at it is how that happens twice, which is why this file no
+ * longer declares one.
+ *
+ * THE VOCABULARY LIVES IN ../../utils/clinical-notation.ts AND IS NOT
+ * RESTATED HERE. Everything that reaches `reading.reference` came off
+ * `_read_row_reference` in
  * apps/report-manager/app/services/fshd_report_service.py, which
  * returns the interval RAW — 「interval.group(0)」 for a range, the
  * comparator concatenated with its number for a bound — so whatever the
- * laboratory typed arrives here unaltered. Its two classes are
- * therefore the exact set this side has to accept:
+ * laboratory typed arrives here unaltered, and the producer's classes
+ * are the floor the vocabulary has to reach. That module carries the
+ * codepoint-by-codepoint listing, the reason the ASCII digraphs
+ * 「<=」/「=<」/「>=」/「=>」 are INCLUSIVE, and the list of what is still
+ * refused — an interval in words, a negative bound, a space-grouped
+ * number. `clinical-notation.test.ts` pins the whole set as a table, and
+ * this file's three interval readers, its MMT cell reader and its D4Z4
+ * bound reader are all built off it. A second copy of the listing in
+ * this comment would be the drift that module exists to end.
  *
- *   RANGE SEPARATORS, from `_RANGE_DASHES`, thirteen of them:
- *     -  U+002D hyphen-minus        ~  U+007E tilde
- *     ‐  U+2010 hyphen              ‑  U+2011 non-breaking hyphen
- *     ‒  U+2012 figure dash         –  U+2013 en dash
- *     —  U+2014 em dash             ―  U+2015 horizontal bar
- *     −  U+2212 minus sign          〜 U+301C wave dash
- *     ﹣ U+FE63 small hyphen-minus  －  U+FF0D fullwidth hyphen-minus
- *     ～ U+FF5E fullwidth tilde
- *
- *   COMPARATORS, from `_COMPARATORS` plus 「≦」/「≧」 — see below:
- *     ceiling, EXCLUSIVE:  <  U+003C   ＜ U+FF1C   ﹤ U+FE64
- *     ceiling, INCLUSIVE:  ≤  U+2264   ⩽  U+2A7D   ≦  U+2266
- *     floor,   EXCLUSIVE:  >  U+003E   ＞ U+FF1E   ﹥ U+FE65
- *     floor,   INCLUSIVE:  ≥  U+2265   ⩾  U+2A7E   ≧  U+2267
- *
- *   AND THE THOUSANDS SEPARATOR IN BOTH WIDTHS, from `_DIGIT_GROUPS`
- *   (「[,，]」): 「1，000－2，000」 is one interval between two numbers.
+ * THE THOUSANDS SEPARATOR IN BOTH WIDTHS comes with it, from the
+ * parser's `_DIGIT_GROUPS`: 「1，000－2，000」 is one interval between two
+ * numbers.
  *
  * THE EXCLUSIVE / INCLUSIVE SPLIT IS THE PART THAT MUST NOT BE FLATTENED
  * WHEN WIDENING. The parser only has to know that 「＜」 names a CEILING
  * (`_UPPER_LIMIT_COMPARATORS`); this file has to know that it EXCLUDES
  * its own limit while 「⩽」 does not, or a reading sitting exactly on the
- * limit lands on the wrong side of it. Hence four classes, not two.
- *
- * 「≦」 AND 「≧」 ARE IN THIS SET AND NOT IN `_COMPARATORS`, deliberately:
- * `parseD4Z4Reading` in this same file already counts them as bounds,
- * they are unambiguously the inclusive spellings, and a class that is a
- * strict superset of the producer's can only widen what is understood.
- *
- * WHAT IS STILL NOT ACCEPTED, said out loud so the next reader does not
- * trust this further than it goes: an interval written in WORDS (「大于
- * 10」, 「10 以上」, 「正常」) — `parseD4Z4Reading` reads those, this does
- * not, and a row it cannot read prints as it stands, which is the safe
- * direction; a NEGATIVE bound (「−5－5」), because `PRINTED_NUMBER`
- * carries no sign and the dash class would eat it; and a space-grouped
- * number (「3 250」), which the parser folds away before publishing and
- * so never reaches a reference cell.
+ * limit lands on the wrong side of it. `classifyComparator` is asked.
  */
-const RANGE_DASHES = '-~‐‑‒–—―−〜﹣－～';
-
-/** 「<」 EXCLUDES its own limit and 「≤」 does not, in every width. Kept
- *  as four separate classes rather than one comparator class plus a
- *  direction, because the strictness is the half a widening loses. */
-const CEILING_EXCLUSIVE = '<＜﹤';
-const CEILING_INCLUSIVE = '≤⩽≦';
-const FLOOR_EXCLUSIVE = '>＞﹥';
-const FLOOR_INCLUSIVE = '≥⩾≧';
-const COMPARATORS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
-
-/** 「3,250」 IS ONE NUMBER, and the grouped spelling has to come first
- *  in the alternation or the scan stops at the first group and reads
- *  3. Same rule, same reason, and now the same comma class, as
- *  `_NUMBER_SOURCE` / `_DIGIT_GROUPS` in the parser. */
-const PRINTED_NUMBER = String.raw`\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
-
-/** 「50-310」, 「1.2~1.6」, 「50－310」 — the exact shape
+/** 「50-310」, 「1.2~1.6」, 「50－310」, 「50至310」 — the exact shape
  *  `_read_row_reference` returns for a two-sided interval, anchored so
  *  nothing else is read as one. */
 const PRINTED_RANGE = new RegExp(
-  `^(${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(${PRINTED_NUMBER})$`,
+  `^(${PRINTED_NUMBER})\\s*${RANGE_SEPARATOR_SOURCE}\\s*(${PRINTED_NUMBER})$`,
 );
 
-/** 「<25」, 「>1.04」, 「≤25」, 「＜25」, 「⩾9」 — a one-sided limit, which
- *  is the whole of what a CKMB or a cholesterol row prints. */
-const PRINTED_BOUND = new RegExp(`^([${COMPARATORS}])\\s*(${PRINTED_NUMBER})$`);
+/** 「<25」, 「>1.04」, 「≤25」, 「＜25」, 「⩾9」, 「<=25」 — a one-sided
+ *  limit, which is the whole of what a CKMB or a cholesterol row
+ *  prints. */
+const PRINTED_BOUND = new RegExp(`^(${COMPARATOR_SOURCE})\\s*(${PRINTED_NUMBER})$`);
 
 /** The number at the head of a display value: 「693U/L」 → 693. The
  *  unit is glued on the right and is the SAME unit the interval was
  *  printed under, because they are two cells of one row. */
 const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
 
-/** A READING that is itself a bound — 「<0.01」, 「＜0.01」 — says the
- *  assay stopped looking, not that the analyte is 0.01. */
-const READING_IS_A_BOUND = new RegExp(`^[${COMPARATORS}]`);
+/** A READING that is itself a bound — 「<0.01」, 「＜0.01」, 「<=0.01」 —
+ *  says the assay stopped looking, not that the analyte is 0.01. */
+const READING_IS_A_BOUND = new RegExp(`^${COMPARATOR_SOURCE}`);
 
 /** A value cell holding an interval rather than a result. */
 const VALUE_IS_A_RANGE = new RegExp(
-  `^(?:${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(?:${PRINTED_NUMBER})`,
+  `^(?:${PRINTED_NUMBER})\\s*${RANGE_SEPARATOR_SOURCE}\\s*(?:${PRINTED_NUMBER})`,
 );
 
 const toNumber = (text: string): number | null => {
@@ -1417,26 +1397,31 @@ export const compareWithPrintedInterval = (
   if (bound) {
     const limit = toNumber(bound[2]);
     if (limit === null) return null;
-    // 「<25」 EXCLUDES 25 and 「≤25」 does not — the two characters are
-    // the laboratory saying which, and collapsing them would put a
-    // reading exactly on the limit on the wrong side of it. Asked of
-    // the four classes rather than of twelve literal cases, so a
-    // spelling added to a class is answered without a branch being
-    // added here and without one being forgotten.
+    // 「<25」 EXCLUDES 25 and 「≤25」 does not — the mark is the
+    // laboratory saying which, and collapsing them would put a reading
+    // exactly on the limit on the wrong side of it. Asked of
+    // `classifyComparator`, which is the ONE place that knows, so a
+    // spelling added to the vocabulary is answered here without a
+    // branch being added — and without one being forgotten.
     //
-    // Tested for emptiness first and not defaulted to 「''」: every
-    // 「includes('')」 is true, so an absent capture would answer the
-    // FIRST class asked and publish a verdict off a comparator that was
-    // never read.
-    const comparator = bound[1];
-    if (!comparator) return null;
-    if (CEILING_EXCLUSIVE.includes(comparator)) return measured >= limit ? 'above' : null;
-    if (CEILING_INCLUSIVE.includes(comparator)) return measured > limit ? 'above' : null;
-    if (FLOOR_EXCLUSIVE.includes(comparator)) return measured <= limit ? 'below' : null;
-    // The inclusive floor, and nothing else: `PRINTED_BOUND` admits
-    // exactly the four classes, so this is that one case rather than a
-    // catch-all.
-    return measured < limit ? 'below' : null;
+    // The default is a REFUSAL and not a fifth reading: a mark
+    // `PRINTED_BOUND` matched but the vocabulary cannot place is a hole
+    // between the two, and the honest answer to a hole is the row as it
+    // stands. It also subsumes the empty capture, which used to need
+    // its own guard because every 「includes('')」 is true and an absent
+    // comparator would otherwise be answered by the first class asked.
+    switch (classifyComparator(bound[1])) {
+      case 'ceiling_exclusive':
+        return measured >= limit ? 'above' : null;
+      case 'ceiling_inclusive':
+        return measured > limit ? 'above' : null;
+      case 'floor_exclusive':
+        return measured <= limit ? 'below' : null;
+      case 'floor_inclusive':
+        return measured < limit ? 'below' : null;
+      default:
+        return null;
+    }
   }
 
   return null;
@@ -1601,8 +1586,26 @@ const latestDocByTypesWithFields = (
  *
  * 「4-」 is grade 4 minus. 「4-5级」 is an examiner who wrote down an
  * interval. The same hyphen, and the difference is the digit after it.
+ *
+ * THE SEPARATOR IS THE SHARED ONE, and this class is the reason the
+ * shared one exists. It carried its own eight — 「-–—−~～﹣－」 plus
+ * 至/到 — while the interval comparison twenty lines up carried
+ * thirteen, and the five it was missing (‐ U+2010, ‑ U+2011, ‒ U+2012,
+ * ― U+2015, 〜 U+301C) are exactly what an OCR pass hands back for a
+ * printed dash it cannot tell apart. So 「4‐5级」 was not seen as a range
+ * at all: `parseScore` read its LEADING number, found no ± after it,
+ * and voted the determinate grade 4 into 平均肌力 — on the passport, on
+ * the share page, in the referral pack and in the markdown export —
+ * for a cell whose whole content is an examiner refusing to choose
+ * between 4 and 5.
+ *
+ * EVERY DASH THE ± MODIFIER BELOW ACCEPTS IS IN THIS CLASS, which is
+ * what keeps 「4-5级」 from being read as grade 4 MINUS and averaged as
+ * 3.7 — a number below both bounds of the interval it came off. The
+ * table in clinical-notation.test.ts asserts the containment rather
+ * than leaving it to be re-noticed.
  */
-const STRENGTH_RANGE_CELL = /\d\s*(?:[-–—−~～﹣－]|至|到)\s*\d/;
+const STRENGTH_RANGE_CELL = new RegExp(`\\d\\s*${RANGE_SEPARATOR_SOURCE}\\s*\\d`);
 
 /** The ± of an MRC grade in both widths — a Chinese physical-exam sheet
  *  is typed in a full-width IME, so 「4＋」 has to mean what 「4+」 means. */
@@ -2783,6 +2786,58 @@ const buildTimeline = (
 export type D4Z4Unit = 'repeats' | 'kb';
 
 /**
+ * ══════════════════════════════════════════════════════════════════════
+ * A D4Z4 CELL THAT STATES A BOUND OR AN INTERVAL RATHER THAN A COUNT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * BOTH SPELLINGS OF EVERY OPERATOR, AND THE WORDS. A Chinese report is
+ * typed in a full-width IME and this repo's own copy of the guideline
+ * writes the bound out —「若重复单元数大于 10」— so a half-width class
+ * alone refused「<10」and accepted its twin「＜10」/「大于10」as a count of
+ * 10. That is the worst direction available: a cell whose whole content
+ * is 「this array is NOT contracted」 came out 基因确诊 / 可用于入组 with
+ * the 8–10 灰区 note attached, and 「＜4」 earned the AAN dilated-fundus
+ * recommendation off a bound nobody measured.
+ *
+ * THE PUNCTUATION IS THE SHARED VOCABULARY NOW. This class had grown
+ * its own third list —「<>≤≥~＜＞≦≧⩽⩾﹤﹥～〜」plus a literal「--」,「–」,
+ *「—」— which agreed with neither the interval comparison's thirteen
+ * dashes nor the MMT cell's eight. It is built off
+ * `RANGE_SEPARATOR_SOURCE_WITHOUT_PLAIN_HYPHEN` and `COMPARATOR_SOURCE`
+ * so the next mark added to the vocabulary lands here too, and so the
+ * ASCII digraphs 「<=10」/「>=10」 are bounds here as well.
+ *
+ * THE PLAIN HYPHEN IS THE ONE MEMBER LEFT OUT, and it is left out on
+ * purpose rather than forgotten. Unlike the interval readers this scans
+ * a WHOLE genetics cell, and that cell is full of hyphenated NAMES —
+ * 「4q35-D4Z4」, 「EcoRI-BlnI」 — so a plain hyphen here would refuse to
+ * read a determinate repeat count off any cell that spelled out what
+ * was measured. 「1-10」 is still caught, by the two-number test below
+ * rather than by this class. The exclusion is derived from the shared
+ * set rather than retyped, and asserted in clinical-notation.test.ts,
+ * so it stays exactly one character wide.
+ *
+ * THE WHOLE 以/之 FAMILY, NOT THE TWO MEMBERS OF IT SOMEBODY THOUGHT
+ * OF. 以上 and 以下 were here and 以内 was not, so 「10 以内」 — one cell
+ * whose entire content is a bound — came out the determinate count 10,
+ * in the grey zone, 可用于入组. The two spellings are the same word with
+ * a different suffix; listing one and not the other is how this class
+ * fails on the report it was widened for.
+ *
+ * WHAT THIS DOES NOT CATCH, said out loud so the next reader does not
+ * trust it further than it goes: an approximation（「约10」,「大约10」,
+ *「近10」）and a trailing-plus（「10+」）still parse as the count 10.
+ * Neither is a spelling of a bound this repo has seen on a report, and
+ * both would need their own decision about what 「approximately」 may
+ * earn.
+ */
+const D4Z4_BOUND_WORDS =
+  '[大小高低多少]于|[大小高低多少]於|超过|超過|不足|以上|以下|以内|以內|之上|之下|之内|之內|至少|最多';
+const D4Z4_BOUNDED = new RegExp(
+  `${COMPARATOR_SOURCE}|${RANGE_SEPARATOR_SOURCE_WITHOUT_PLAIN_HYPHEN}|--|${D4Z4_BOUND_WORDS}`,
+);
+
+/**
  * What a D4Z4 measurement OCR'd off a genetics report actually says.
  *
  * `value` is non-null only for a single unambiguous number. Everything
@@ -2820,35 +2875,8 @@ export const parseD4Z4Reading = (raw: string | null | undefined): D4Z4Reading =>
       : null;
 
   // A comparison operator or a dash/CJK range word means the lab gave a
-  // bound, not a count. Two numbers in the string mean the same thing
-  //（「1-10」uses a plain hyphen, which is not in the operator class）.
-  //
-  // BOTH SPELLINGS OF EVERY OPERATOR, AND THE WORDS. A Chinese report is
-  // typed in a full-width IME and this repo's own copy of the guideline
-  // writes the bound out —「若重复单元数大于 10」— so the half-width class
-  // alone refused「<10」and accepted its twin「＜10」/「大于10」as a count of
-  // 10. That is the worst direction available: a cell whose whole content
-  // is 「this array is NOT contracted」 came out 基因确诊 / 可用于入组 with
-  // the 8–10 灰区 note attached, and 「＜4」 earned the AAN dilated-fundus
-  // recommendation off a bound nobody measured.
-  //
-  // THE WHOLE 以/之 FAMILY, NOT THE TWO MEMBERS OF IT SOMEBODY THOUGHT
-  // OF. 以上 and 以下 were here and 以内 was not, so 「10 以内」 — one cell
-  // whose entire content is a bound — came out the determinate count 10,
-  // in the grey zone, 可用于入组. The two spellings are the same word with
-  // a different suffix; listing one and not the other is how this class
-  // fails on the report it was widened for.
-  //
-  // WHAT THIS DOES NOT CATCH, said out loud so the next reader does not
-  // trust it further than it goes: an approximation（「约10」,「大约10」,
-  //「近10」）and a trailing-plus（「10+」）still parse as the count 10.
-  // Neither is a spelling of a bound this repo has seen on a report, and
-  // both would need their own decision about what 「approximately」 may
-  // earn.
-  const bounded =
-    /[<>≤≥~＜＞≦≧⩽⩾﹤﹥～〜]|--|–|—|[大小高低多少]于|[大小高低多少]於|超过|超過|不足|以上|以下|以内|以內|之上|之下|之内|之內|至少|最多|至|到/.test(
-      text,
-    );
+  // bound, not a count. Two numbers in the string mean the same thing.
+  const bounded = D4Z4_BOUNDED.test(text);
   const numbers = text.match(/\d+(?:\.\d+)?/g);
   if (bounded || (numbers?.length ?? 0) > 1) {
     return { raw: text, value: null, isRange: true, unit };

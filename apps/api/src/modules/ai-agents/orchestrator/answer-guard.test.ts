@@ -1934,6 +1934,42 @@ describe('every way a Chinese bound is written, and which side of the number it 
     '11 个重复单元以上',
     '11 之上',
     '11以上',
+    // ...THE SUFFIX NEGATOR WITH MORE THAN ONE TAIL TOKEN, which is the
+    // most ordinary way a Chinese report says a threshold was not
+    // reached. 没 + 有 was already the single token the old pattern
+    // allowed, so 发现 / 检出 / 测出 / 达到 had nowhere to stand, no
+    // negator matched, and every one of these read as its own opposite.
+    '没有发现 11 个以下',
+    '没有检出 11 个以下',
+    '没有测出 11 个以下',
+    '没有达到 11 个以下',
+    '未发现 11 个以下',
+    '未能达到 11 个以下',
+    '没见 11 个以下',
+    // ...AND THE PREFIX NEGATOR WITH A MODAL OR AN ASPECT PARTICLE
+    // BETWEEN IT AND THE DIRECTION WORD, which is how a Chinese
+    // reference statement is written. The negator had to sit against
+    // the direction word, so the bare 低于 matched one character later
+    // and AT LEAST 11 entered the turn as 「<11」.
+    '不得低于 11',
+    '不能低于 11',
+    '不应低于 11',
+    '不可低于 11',
+    '不该低于 11',
+    '不须低于 11',
+    '不会低于 11',
+    '不要低于 11',
+    '不能够低于 11',
+    '不可以低于 11',
+    '不应该低于 11',
+    '不应当低于 11',
+    '不曾低于 11',
+    '未曾低于 11',
+    '不再低于 11',
+    '无法低于 11',
+    '未见低于 11',
+    '未检出低于 11',
+    '没有达到低于 11',
   ];
 
   const AT_OR_BELOW_10 = [
@@ -1974,6 +2010,35 @@ describe('every way a Chinese bound is written, and which side of the number it 
     '10 个重复单元以下',
     '10 之内',
     '10 之下',
+    // the suffix negator with more than one tail token — see the note
+    // in the list above; these read as 「>10」 before this round.
+    '没有发现 10 个以上',
+    '没有检出 10 个以上',
+    '没有测出 10 个以上',
+    '没有达到 10 个以上',
+    '未发现 10 个以上',
+    '未检出 10 个以上',
+    '未能达到 10 个以上',
+    '没有达 10 个以上',
+    '没有 10 个以上',
+    '未见 10 个以上',
+    '无 10 个以上',
+    // the prefix negator with a modal or an aspect particle in the gap
+    '不得超过 10',
+    '不能超过 10',
+    '不应超过 10',
+    '不可超过 10',
+    '不得高于 10',
+    '不能够超过 10',
+    '不可以超过 10',
+    '不应该超过 10',
+    '不曾超过 10',
+    '未曾超过 10',
+    '不再超过 10',
+    '无法超过 10',
+    '从未超过 10',
+    '未见超过 10',
+    '没有达到超过 10',
   ];
 
   it.each(AT_OR_ABOVE_11)('reads 「%s」 as the band at or above 11', (form) => {
@@ -2045,6 +2110,142 @@ describe('every way a Chinese bound is written, and which side of the number it 
     expect(
       inspectAnswer('你的甲基化的正常参考范围是 40% 以上。', withRange).map((v) => v.kind),
     ).toContain('fabricated_reference_range');
+  });
+});
+
+// ---------------------------------------------------------------------
+// THE NEGATION AND THE DIRECTION ARE NOW DERIVED SEPARATELY, so the
+// properties below are properties of the GRAMMAR rather than of a list
+// of shapes, and they are asserted as such: the same negator, moved
+// across the number and separated by any closed-class material, flips
+// the same direction exactly once.
+describe('a negator flips a bound exactly once, whatever stands between it and the direction', () => {
+  // The negation composes with the direction rather than being spelt
+  // out per pair, so the flip must be visible as a flip: the same
+  // sentence with and without the negator must give opposite bands.
+  it.each([
+    ['低于 11', '<11', '不得低于 11', '>11'],
+    ['低于 11', '<11', '没有发现低于 11', '>11'],
+    ['超过 100', '>100', '不能超过 100', '<100'],
+    ['超过 100', '>100', '未曾超过 100', '<100'],
+    ['11 个以上', '>11', '没有发现 11 个以上', '<11'],
+    ['11 个以上', '>11', '没有检出 11 个以上', '<11'],
+    ['10 个以下', '<10', '没有达到 10 个以下', '>10'],
+  ])('reads 「%s」 as %s and 「%s」 as %s', (plain, plainKey, negated, negatedKey) => {
+    expect(intervalsIn(plain)).toEqual([plainKey]);
+    expect(intervalsIn(negated)).toEqual([negatedKey]);
+  });
+
+  // The safety property the gap exists to preserve. 没有人 is a
+  // quantifier over people, not a negated bound, and the band 11 以上
+  // really is stated in that sentence — so 人, a content word, ends the
+  // gap and the sentence contributes the band it states.
+  it('does not let a negator reach across a content word', () => {
+    expect(intervalsIn('没有人的重复数在 11 个以上')).toEqual(['>11']);
+    expect(intervalsIn('未见异常，11 个以上属于正常')).toEqual(['>11']);
+  });
+
+  // The atoms are not negations of anything and the gap must not take
+  // them apart, even though 足 and 到 are gap tokens.
+  it.each([
+    ['不足 10', '<10'],
+    ['不到 10', '<10'],
+    ['不满 10', '<10'],
+    ['未满 10', '<10'],
+  ])('still reads 「%s」 as the whole atom %s', (form, key) => {
+    expect(intervalsIn(form)).toEqual([key]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// THE UNIT A LABORATORY GLUES TO A BOUND NUMBER. Every one of these
+// produced NO interval at all, so `fabricated_reference_range` had
+// nothing to compare for the cell and the record's own bound was
+// invisible to the check that exists to protect it.
+describe('a bound number with the unit glued to it, which is how a report prints one', () => {
+  it.each([
+    ['>38kb', '>38'],
+    ['≥38kb', '>38'],
+    ['≤38kb', '<38'],
+    ['<38KB', '<38'],
+    ['<0.5mg/L', '<0.5'],
+    ['>200U/L', '>200'],
+    ['大于 38kb', '>38'],
+    ['>38 kb', '>38'],
+    ['不得低于 38kb', '>38'],
+    ['不能超过 0.5mg/dL', '<0.5'],
+    ['<100%', '<100'],
+    ['＞95％', '>95'],
+  ])('reads 「%s」 as %s', (form, key) => {
+    expect(intervalsIn(form)).toEqual([key]);
+  });
+
+  // ...and the lookahead this relaxes is still doing its job: a number
+  // inside an IDENTIFIER is a digit followed by letters followed by a
+  // digit, and it is still not a measurement.
+  it.each(['4qA 型', '4q35 区域', 'D4Z4 重复数', '大于 4q35 的'])(
+    'still reads no bound out of 「%s」',
+    (form) => {
+      expect(intervalsIn(form)).toHaveLength(0);
+    },
+  );
+
+  // What it cost, through the check that reads this parser: the record
+  // printed its EcoRI bound with the unit glued on, and the model
+  // reprinting that very bound was flagged as inventing it.
+  it('admits the interval the record printed as 「>38kb」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { fragmentSize: '35kb', fragmentReference: '>38kb' } }],
+      emitted: { fields: new Set(['fragmentSize']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['EcoRI 片段长度: 35kb'],
+    });
+    expect(withRange.recordIntervals.has('>38')).toBe(true);
+    expect(
+      inspectAnswer('报告上印的参考范围是 >38kb，你的片段长度是 35kb。', withRange),
+    ).toHaveLength(0);
+  });
+
+  it('still catches an invented bound beside a record that printed a glued-unit one', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { fragmentSize: '35kb', fragmentReference: '>38kb' } }],
+      emitted: { fields: new Set(['fragmentSize']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['EcoRI 片段长度: 35kb'],
+    });
+    expect(
+      inspectAnswer('你的参考范围是 <20kb，你的片段长度是 35kb。', withRange).map((v) => v.kind),
+    ).toContain('fabricated_reference_range');
+  });
+
+  // The record printed its bound in the negated suffix form that used
+  // to invert. Both directions, through the guard.
+  it('admits the interval the record printed as 「没有发现 11 个以上」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '没有发现 11 个以上' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('<11')).toBe(true);
+    expect(withRange.recordIntervals.has('>11')).toBe(false);
+    expect(
+      inspectAnswer('报告上印的参考范围是 11 个以下，你的结果是 3 个。', withRange),
+    ).toHaveLength(0);
+  });
+
+  it('admits the interval the record printed as 「不得低于 11 个」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '不得低于 11 个' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('>11')).toBe(true);
+    expect(withRange.recordIntervals.has('<11')).toBe(false);
+    expect(
+      inspectAnswer('报告上印的参考范围是 11 个以上，你的结果是 3 个。', withRange),
+    ).toHaveLength(0);
   });
 });
 

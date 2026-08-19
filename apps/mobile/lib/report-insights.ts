@@ -291,47 +291,141 @@ type PrintedIntervalVerdict = 'above' | 'below';
  * 0.5 was compared, publishing a verdict about a number nobody
  * measured.
  *
+ * AND THE WORDS WERE WHAT THAT WIDENING LEFT BEHIND. Thirteen dashes
+ * went in and 至/到 did not, so 「0.5至1.2」 in a result cell — the very
+ * same mis-parse, spelled the way a Chinese laboratory writes an
+ * interval OUT — still walked past `VALUE_IS_A_RANGE` and 报告详情 still
+ * published 「本平台比对：低于该区间」 about 0.5. The four ASCII digraphs
+ * were missing with them: 「<=25」 is what a keyboard-typed reference
+ * looks like and it read as no bound at all.
+ *
  * THE SET IS COPIED FROM THE PRODUCER. `_read_row_reference` in
  * apps/report-manager/app/services/fshd_report_service.py returns the
  * interval RAW, so whatever the laboratory typed arrives here
- * unaltered, and its `_RANGE_DASHES` / `_COMPARATORS` / `_DIGIT_GROUPS`
- * are the exact set this side has to accept. The full argument, the
- * codepoint-by-codepoint listing and what is still NOT accepted are in
- * `compareWithPrintedInterval` in
- * apps/api/src/modules/patient-profile/profile.passport.ts; these
- * literals are its word-for-word twin and have to stay identical or the
- * two screens disagree about whether a number fits its own row.
+ * unaltered, and its `_RANGE_DASHES` / `_RANGE_WORDS` / `_COMPARATORS`
+ * / `_DIGIT_GROUPS` are the floor this side has to reach. The full
+ * argument, the codepoint-by-codepoint listing and what is still NOT
+ * accepted are in apps/api/src/utils/clinical-notation.ts; the
+ * literals below are its word-for-word twin and have to stay identical
+ * or the two screens disagree about whether a number fits its own row.
  *
  * THE EXCLUSIVE / INCLUSIVE SPLIT IS THE PART A WIDENING LOSES. The
  * parser only needs to know 「＜」 names a CEILING; this file needs to
- * know it EXCLUDES its own limit while 「⩽」 does not. Hence four
- * classes, not two.
+ * know it EXCLUDES its own limit while 「⩽」 does not — and that the
+ * digraph 「<=」 is INCLUSIVE even though it starts with the exclusive
+ * mark, which is why it is matched whole and never stripped down to
+ * the character it begins with. Hence four classes, not two.
+ *
+ * ══════════════════════════════════════════════════════════════════════
+ * WHY THIS IS A COPY, AND EXACTLY WHAT WOULD MAKE IT AN IMPORT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The api half of this vocabulary is now ONE module —
+ * apps/api/src/utils/clinical-notation.ts — read by the interval
+ * comparison, the MMT cell reader and the D4Z4 bound reader alike. This
+ * file cannot import it: a handset bundle has no path into apps/api,
+ * and adding one would pull a server module's whole transitive graph
+ * (`node:` builtins, the Prisma client) into a Metro bundle.
+ *
+ * The change that would fix it, written out so it is decided rather
+ * than rediscovered:
+ *
+ *   1. A NEW WORKSPACE, `packages/clinical-notation`, holding nothing
+ *      but the character sets, the two regex sources, `PRINTED_NUMBER`
+ *      and `classifyComparator` — no imports at all, so it is bundler-
+ *      neutral and Metro-safe.
+ *   2. A ROOT-MANIFEST CHANGE: `packages/*` added to the root
+ *      package.json `workspaces` array, which today lists only
+ *      `apps/*`. This is the part that cannot be done from inside
+ *      either app and is why the split survives.
+ *   3. `@openrd/clinical-notation` added as a dependency of
+ *      @openrd/api and @openrd/mobile, plus a `metro.config.js`
+ *      `watchFolders` entry so Metro follows the symlink out of
+ *      apps/mobile, and a `moduleNameMapper` / path alias for the two
+ *      test runners.
+ *   4. THE TWO TABLE TESTS STAY. They would then assert one imported
+ *      set instead of two literal ones, which is a smaller assertion
+ *      but the same one.
+ *
+ * UNTIL THAT IS DONE, what holds the two sides together is that each
+ * side's test pins the SAME table — the sets below are asserted
+ * character by character in __tests__/report-insights.printed-interval
+ * .test.ts and in apps/api/src/utils/clinical-notation.test.ts — so a
+ * mark added to one side and not the other fails on the side that was
+ * not updated.
  */
 const RANGE_DASHES = '-~‐‑‒–—―−〜﹣－～';
+/** 「1至10」 and 「1到10」 are the same interval as 「1-10」, written out.
+ *  Not punctuation, so they cannot live in a character class — which is
+ *  the whole reason the separator is a regex SOURCE below. */
+const RANGE_WORDS = ['到', '至'];
 const CEILING_EXCLUSIVE = '<＜﹤';
 const CEILING_INCLUSIVE = '≤⩽≦';
 const FLOOR_EXCLUSIVE = '>＞﹥';
 const FLOOR_INCLUSIVE = '≥⩾≧';
-const COMPARATORS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
+/** The ASCII spellings of 「≤」 and 「≥」, both orders. INCLUSIVE. */
+const CEILING_INCLUSIVE_DIGRAPHS = ['<=', '=<'];
+const FLOOR_INCLUSIVE_DIGRAPHS = ['>=', '=>'];
+const COMPARATOR_CHARS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
+const COMPARATOR_DIGRAPHS = [...CEILING_INCLUSIVE_DIGRAPHS, ...FLOOR_INCLUSIVE_DIGRAPHS];
+
+/** A character class body with every regex-significant member escaped,
+ *  so a class stays correct no matter what order it is declared in. */
+const charClass = (chars: string) => `[${chars.replace(/[\\\]^-]/g, (mark) => '\\' + mark)}]`;
+
+/** 「A to B」, as one regex source. A non-capturing GROUP and not a bare
+ *  alternation, or dropped into a longer pattern it would split that
+ *  whole pattern in two. */
+const RANGE_SEPARATOR_SOURCE = `(?:${charClass(RANGE_DASHES)}|${RANGE_WORDS.join('|')})`;
+
+/** A comparator, as one regex source. THE DIGRAPHS COME FIRST: a regex
+ *  alternation is ordered, so with the character class first 「<=25」
+ *  would match 「<」, leave 「=25」 behind, and an unanchored reader
+ *  would answer EXCLUSIVE about a limit the laboratory wrote as
+ *  inclusive. */
+const COMPARATOR_SOURCE = `(?:${COMPARATOR_DIGRAPHS.join('|')}|${charClass(COMPARATOR_CHARS)})`;
+
+type ComparatorKind =
+  | 'ceiling_exclusive'
+  | 'ceiling_inclusive'
+  | 'floor_exclusive'
+  | 'floor_inclusive';
+
+/** Which side a comparator names, and whether it admits its own limit.
+ *  Digraphs before single characters, and emptiness before either —
+ *  every 「includes('')」 is true, so an absent capture would otherwise
+ *  be answered by whichever class is asked first. */
+const classifyComparator = (mark: string | undefined | null): ComparatorKind | null => {
+  if (!mark) return null;
+  if (CEILING_INCLUSIVE_DIGRAPHS.includes(mark)) return 'ceiling_inclusive';
+  if (FLOOR_INCLUSIVE_DIGRAPHS.includes(mark)) return 'floor_inclusive';
+  if (mark.length !== 1) return null;
+  if (CEILING_EXCLUSIVE.includes(mark)) return 'ceiling_exclusive';
+  if (CEILING_INCLUSIVE.includes(mark)) return 'ceiling_inclusive';
+  if (FLOOR_EXCLUSIVE.includes(mark)) return 'floor_exclusive';
+  if (FLOOR_INCLUSIVE.includes(mark)) return 'floor_inclusive';
+  return null;
+};
 
 /** 「3,250」 is one number, and the grouped spelling has to come first
  *  in the alternation or the scan stops at the first group. The comma
  *  in both widths, as `_DIGIT_GROUPS` has it. */
 const PRINTED_NUMBER = String.raw`\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
 const PRINTED_RANGE = new RegExp(
-  `^(${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(${PRINTED_NUMBER})$`,
+  `^(${PRINTED_NUMBER})\\s*${RANGE_SEPARATOR_SOURCE}\\s*(${PRINTED_NUMBER})$`,
 );
-const PRINTED_BOUND = new RegExp(`^([${COMPARATORS}])\\s*(${PRINTED_NUMBER})$`);
+const PRINTED_BOUND = new RegExp(`^(${COMPARATOR_SOURCE})\\s*(${PRINTED_NUMBER})$`);
 const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
-/** A READING that is itself a bound — 「<0.01」, 「＜0.01」 — is a
- *  detection limit, not a number that sits anywhere on an interval. */
-const READING_IS_A_BOUND = new RegExp(`^[${COMPARATORS}]`);
+/** A READING that is itself a bound — 「<0.01」, 「＜0.01」, 「<=0.01」 —
+ *  is a detection limit, not a number that sits anywhere on an
+ *  interval. */
+const READING_IS_A_BOUND = new RegExp(`^${COMPARATOR_SOURCE}`);
 /** A value cell holding an interval rather than a result — 「0.5-1.2」
- *  in the result column is the row's reference interval mis-parsed, and
- *  placing its low end against another interval would compare a number
- *  nobody measured. */
+ *  or 「0.5至1.2」 in the result column is the row's reference interval
+ *  mis-parsed, and placing its low end against another interval would
+ *  compare a number nobody measured. */
 const VALUE_IS_A_RANGE = new RegExp(
-  `^(?:${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(?:${PRINTED_NUMBER})`,
+  `^(?:${PRINTED_NUMBER})\\s*${RANGE_SEPARATOR_SOURCE}\\s*(?:${PRINTED_NUMBER})`,
 );
 
 const toNumber = (text: string): number | null => {
@@ -372,20 +466,24 @@ const compareWithPrintedInterval = (
   if (bound) {
     const limit = toNumber(bound[2]);
     if (limit === null) return null;
-    // 「<25」 excludes 25 and 「≤25」 does not; the two characters are
-    // the laboratory saying which. Asked of the four classes, so a
-    // spelling added to one is answered without a branch being added
-    // here and without one being forgotten. Emptiness first, because
-    // every 「includes('')」 is true and an absent capture would answer
-    // the first class asked.
-    const comparator = bound[1];
-    if (!comparator) return null;
-    if (CEILING_EXCLUSIVE.includes(comparator)) return measured >= limit ? 'above' : null;
-    if (CEILING_INCLUSIVE.includes(comparator)) return measured > limit ? 'above' : null;
-    if (FLOOR_EXCLUSIVE.includes(comparator)) return measured <= limit ? 'below' : null;
-    // The inclusive floor, and nothing else: `PRINTED_BOUND` admits
-    // exactly the four classes.
-    return measured < limit ? 'below' : null;
+    // 「<25」 excludes 25 and 「≤25」 does not; the mark is the laboratory
+    // saying which, and `classifyComparator` is the one place that
+    // knows. The default is a REFUSAL and not a fifth reading: a mark
+    // `PRINTED_BOUND` matched but the vocabulary cannot place is a hole
+    // between the two, and the honest answer to a hole is the row as it
+    // stands.
+    switch (classifyComparator(bound[1])) {
+      case 'ceiling_exclusive':
+        return measured >= limit ? 'above' : null;
+      case 'ceiling_inclusive':
+        return measured > limit ? 'above' : null;
+      case 'floor_exclusive':
+        return measured <= limit ? 'below' : null;
+      case 'floor_inclusive':
+        return measured < limit ? 'below' : null;
+      default:
+        return null;
+    }
   }
 
   return null;
@@ -882,12 +980,55 @@ const buildCoverageSummary = (
   return `当前已识别 ${joined}，${partialText}`;
 };
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * A RANGE IN AN MMT CELL, AND THE MRC ± MODIFIER, TOLD APART BY WHETHER
+ * A NUMBER FOLLOWS THE SIGN.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The API's twin, for the same reason `compareWithPrintedInterval` is:
+ * 我的档案 and 临床护照 are one tap apart, they are built off the SAME
+ * payload, and they were answering differently about the same cell.
+ * This side read the first run of digits and stopped, so
+ *
+ *   「4-5级」  — an examiner declining to choose between 4 and 5 —
+ *              printed 平均肌力 4.0 here and was excluded from the
+ *              average by the passport;
+ *   「4-级」   — grade four MINUS — printed 4.0 here and 3.7 there.
+ *
+ * Neither number was measured by anybody, and the one on the phone was
+ * the one the patient sees first.
+ *
+ * THE SEPARATOR IS THE SAME `RANGE_SEPARATOR_SOURCE` the interval
+ * comparison above uses, which is what makes 「4‐5级」 (U+2010, what an
+ * OCR pass hands back for a printed dash) a range on both screens
+ * rather than on neither.
+ *
+ * EVERY DASH THE ± MODIFIER ACCEPTS IS IN THAT SEPARATOR, which is what
+ * keeps 「4-5级」 from being read as grade 4 minus and averaged as 3.7 —
+ * a number below BOTH bounds of the interval it came off.
+ *
+ * 「4/5」 is NOT a range: it is grade 4 out of 5, the commonest way an
+ * MMT sheet writes a single grade, so the separator and not the count
+ * of digits is what decides. The cell is still DISPLAYED verbatim by
+ * `buildStrengthSummary` — what a range loses is its vote in the
+ * average, not its place on the page.
+ */
+const STRENGTH_RANGE_CELL = new RegExp(`\\d\\s*${RANGE_SEPARATOR_SOURCE}\\s*\\d`);
+
+/** The ± of an MRC grade in both widths — a Chinese physical-exam sheet
+ *  is typed in a full-width IME, so 「4＋」 has to mean what 「4+」 means. */
+const STRENGTH_PLUS = /[+＋﹢]/;
+const STRENGTH_MODIFIER = /(\d+(?:\.\d+)?)\s*([-+＋﹢−﹣－])?/;
+
 const parseScore = (value: string) => {
-  const match = value.match(/(\d+(?:\.\d+)?)/);
+  if (STRENGTH_RANGE_CELL.test(value)) return null;
+  const match = STRENGTH_MODIFIER.exec(value);
   if (!match) return null;
-  const parsed = Number(match[1]);
-  if (Number.isNaN(parsed)) return null;
-  return parsed;
+  const base = Number(match[1]);
+  if (Number.isNaN(base)) return null;
+  const modifier = match[2] ? (STRENGTH_PLUS.test(match[2]) ? 0.3 : -0.3) : 0;
+  return Math.min(5, Math.max(0, base + modifier));
 };
 
 const compactText = (value?: string | null, fallback = '暂无数据') => {

@@ -844,54 +844,157 @@ const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
  * predicate, so in the suffix form it sits in front of the NUMBER rather
  * than in front of the boundary word.
  *
- * IT IS DELIBERATELY TIGHT AGAINST THE NUMBER, and that is a safety
- * property rather than tidiness. 「没有人的重复数在 11 个以上」 is not a
- * negated bound — it is a quantifier over people that happens to open
- * with 没有 — and a negator allowed to reach across the sentence would
- * flip it. So the negator must stand immediately before the number, with
- * at most ONE of the closed existential verbs between them (见 / 到 /
- * 有 / 满 / 达 / 达到 / 发现 / 检出 / 测出 / 超过): that is what makes
- * 「未见 11」 one predicate. A negator this misses leaves the form
- * reading as the un-negated bound it already read as, which is the
- * behaviour being replaced, so widening it later cannot make anything
- * worse than it is today.
+ * IT IS NOT ALLOWED TO REACH ACROSS A CONTENT WORD, and that is a
+ * safety property rather than tidiness. 「没有人的重复数在 11 个以上」 is
+ * not a negated bound — it is a quantifier over people that happens to
+ * open with 没有, and the band 11 以上 really is stated in it — so a
+ * negator allowed to reach across the sentence would flip a bound the
+ * sentence asserts.
+ *
+ * ---------------------------------------------------------------------
+ * AND THE THIRD ROUND ON THIS PARSER, WHICH IS WHY THE BOUND IS NOW
+ * DERIVED INSTEAD OF ENUMERATED.
+ *
+ * Twice this parser was widened by adding a shape, and twice the next
+ * round found a shape it read BACKWARDS rather than merely missed. The
+ * reason was structural and it was the same reason both times: NEGATION
+ * AND DIRECTION WERE FUSED INTO ONE PATTERN THAT REQUIRED THEM
+ * ADJACENT.
+ *
+ *   - the PREFIX parser spelt its negated forms as `NEGATOR DIRECTION`
+ *     with nothing allowed between them, so 「不得低于 11」 /
+ *     「不能超过 100」 / 「不应低于 11」 / 「未曾超过 100」 — a modal
+ *     or an aspect particle standing between the negator and the
+ *     direction word, which is how a Chinese reference statement is
+ *     actually written — did not match the negated branch at all. The
+ *     engine then matched the BARE direction word one character later,
+ *     so 「不得低于 11」 — AT LEAST 11 — entered the turn as 「<11」.
+ *   - the SUFFIX parser allowed EXACTLY ONE tail token after the
+ *     negator, so 「没有发现 11 个以上」 / 「没有检出 11 个以上」 /
+ *     「没有测出 11 个以上」 / 「没有达到 11 个以上」 — 没 + 有 is
+ *     already the one token and 发现 / 检出 / 测出 / 达到 had nowhere
+ *     to stand — matched no negator at all and canonicalised to
+ *     「>11」, the interval of everything they deny. That is the most
+ *     ordinary way a Chinese report or a Chinese answer states that a
+ *     threshold was NOT reached.
+ *
+ * Both are the same inversion, closed twice already, arriving each time
+ * on the shape the negator grammar did not cover. So the grammar is
+ * written down once, COMPOSITIONALLY:
+ *
+ *   A BOUND IS A DIRECTION, OPTIONALLY NEGATED, AND THE NEGATION FLIPS
+ *   IT EXACTLY ONCE, WHATEVER CLOSED-CLASS MATERIAL STANDS BETWEEN THE
+ *   NEGATOR AND THE DIRECTION WORD.
+ *
+ * The direction is parsed on its own (`BELOW_WORD` / `ABOVE_WORD`, which
+ * no longer carry a negator branch at all), the negation is parsed on
+ * its own (`BOUND_NEGATION`), and the two are combined by the SAME XOR
+ * on both sides of the number. One rule replaces four hand-fused
+ * alternations, so the next unlisted modal costs a token added to one
+ * closed list rather than a fifth shape read backwards.
+ *
+ * WHAT MAY STAND IN THE GAP is closed, and it is function words only:
+ * modals (得 / 能 / 可 / 应 / 该 / 须 / 会 / 要 / 能够 / 可以 / 应该 /
+ * 应当 / 必须 / 法, as in 无法), aspect particles (曾 / 曾经 / 过 /
+ * 再) and the attainment verbs that make a negator and a number one
+ * predicate (有 / 见 / 到 / 满 / 足 / 达 / 达到 / 发现 / 检出 / 测出 /
+ * 超过 / 超出). A CONTENT WORD IS NOT IN IT, and that is exactly what
+ * keeps 「没有人的重复数在 11 个以上」 un-flipped: 人 ends the gap,
+ * the negator branch fails, and the sentence contributes the band it
+ * really states.
+ *
+ * THE RESIDUAL FAILURE MODE IS STATED SO IT IS NOT REDISCOVERED: a
+ * negator this gap cannot reach falls back to the UN-NEGATED reading,
+ * which is the reading the parser gave before this round. A gap token
+ * this list misses therefore cannot make anything worse than it is
+ * today, and it is a token in a closed function-word list rather than a
+ * new pattern.
+ *
+ * 不足 / 不到 / 不满 / 未满 stay WHOLE ATOMS and the gap cannot take
+ * them apart: 足 and 到 are in the gap list, but no direction word
+ * follows them, so the engine backtracks off the negator branch and
+ * reaches the atom. 「不足 11」 is 「<11」 and not the flip of anything.
+ *
+ * ---------------------------------------------------------------------
+ * AND THE UNIT GLUED TO THE BOUND NUMBER, WHICH IS HOW A REPORT PRINTS
+ * ONE AND WHICH PRODUCED NO INTERVAL AT ALL.
+ *
+ * `BOUND_NUMBER` ended in a negative lookahead that refused a Latin
+ * letter after the digits. The lookahead is there for a reason — it
+ * stops a number inside an IDENTIFIER (4qA, D4Z4, 4q35) being read as a
+ * measurement — but a laboratory prints its bounds 「>38kb」
+ * 「≤38kb」 「<0.5mg/L」 「>200U/L」, unit glued to the digits, and
+ * every one of those matched NOTHING: `intervalsIn` returned an empty
+ * list for the cell, `fabricated_reference_range` had nothing to
+ * compare, and the check that exists to protect the record's OWN
+ * intervals could not see them. Same cost as the 个 and the 及 forms
+ * before their rounds, on the side of the notation this file had never
+ * looked at.
+ *
+ * A UNIT AND AN IDENTIFIER ARE TOLD APART STRUCTURALLY, not by a list of
+ * unit names — which is what keeps this from being a seventh lexicon: a
+ * unit is a short Latin run (optionally a 「/」 denominator, or a percent
+ * sign) that IS NOT FOLLOWED BY A DIGIT. 「38kb」 ends after its letters
+ * and is a unit; 「4q35」 puts a digit after the letter and stays an
+ * identifier, so it is still refused, and so is 「≥11个」-style Chinese
+ * measure text, which `MEASURE_TAIL` owns. The unit carries no
+ * arithmetic and is dropped from the key, which is the convention
+ * `MEASURE_TAIL` already established — 「>38kb」 and 「>38」 are one
+ * interval — and the comparison stays symmetric because the record's
+ * intervals and the answer's intervals both come through this function.
  */
 /** 大于等于 / 大于或等于 — the inclusive tail, which changes no direction
  *  and therefore no key. */
 const OR_EQUAL = '(?:或?等于)?';
 const UP_WORD = '(?:大于|高于|多于|超过|超出)';
 const DOWN_WORD = '(?:小于|低于|少于)';
-/** 不 / 未 / 没 / 没有 — the negator that flips a direction word. */
-const BOUND_NEGATOR = '(?:不|未|没有?)';
-/** Whole atoms: not negations of a direction word, so rule 2 must not
- *  be allowed to take them apart. */
+/** 不 / 未 / 没 / 无 — the negator core that flips a direction word. */
+const BOUND_NEGATOR = '(?:不|未|没|无)';
+/** The closed function words that may stand between the negator and the
+ *  direction word it negates: modals, aspect particles, and the
+ *  attainment verbs that make a negator and a number one predicate. A
+ *  content word is deliberately absent — see the block above. Longest
+ *  alternative first, for the same reason `MEASURE_TAIL` is sorted. */
+const NEGATOR_LINK =
+  '(?:达到|能够|可以|应该|应当|必须|发现|检出|测出|超过|超出|曾经|得|能|可|应|该|须|会|要|法|曾|过|再|有|见|到|满|足|达)';
+/** A negator and its gap: 「不」「不得」「未曾」「无法」「没有发现」.
+ *  Bounded, so it is a grammatical join and not a reach across a
+ *  sentence, and so the engine cannot backtrack pathologically. */
+const BOUND_NEGATION = `${BOUND_NEGATOR}(?:\\s*${NEGATOR_LINK}){0,3}\\s*`;
+/** Whole atoms: not negations of a direction word, so the negator rule
+ *  must not be allowed to take them apart. */
 const BELOW_ATOM = '(?:不足|不到|不满|未满|至多|最多)';
 const ABOVE_ATOM = '(?:至少|最少|起码)';
 /** The complete comparator classes — see `BELOW_SYMBOL_CHARS`. The
  *  ASCII digraphs come first so `<=` is not consumed as a bare `<`. */
 const BELOW_SYMBOL = `(?:<=|=<|[${BELOW_SYMBOL_CHARS}])`;
 const ABOVE_SYMBOL = `(?:>=|=>|[${ABOVE_SYMBOL_CHARS}])`;
-const BELOW_PREFIX = `(?:${BELOW_SYMBOL}|${BOUND_NEGATOR}${UP_WORD}${OR_EQUAL}|${DOWN_WORD}${OR_EQUAL}|${BELOW_ATOM})`;
-const ABOVE_PREFIX = `(?:${ABOVE_SYMBOL}|${BOUND_NEGATOR}${DOWN_WORD}${OR_EQUAL}|${UP_WORD}${OR_EQUAL}|${ABOVE_ATOM})`;
-const BOUND_NUMBER = '([0-9]+(?:\\.[0-9]+)?)(?![0-9A-Za-z.])';
+/** THE DIRECTION ALONE. The negator is no longer fused in here: it is
+ *  `BOUND_NEGATION`, and the flip is the XOR in `intervalsIn`. */
+const BELOW_WORD = `(?:${BELOW_SYMBOL}|${DOWN_WORD}${OR_EQUAL}|${BELOW_ATOM})`;
+const ABOVE_WORD = `(?:${ABOVE_SYMBOL}|${UP_WORD}${OR_EQUAL}|${ABOVE_ATOM})`;
+/** The unit a report glues to a bound number — kb, mg/L, U/L, % — told
+ *  apart from an identifier by what follows it, not by name. */
+const GLUED_UNIT = '(?:\\s*(?:%|％)|\\s*[A-Za-z]{1,6}(?:\\s*/\\s*[A-Za-z]{1,6})?)?';
+const BOUND_NUMBER = `(?<pnum>[0-9]+(?:\\.[0-9]+)?)${GLUED_UNIT}(?![0-9A-Za-z.])`;
 
-/** 「不低于 11」「≥11」「大于等于 11」 — the bound in front of the number. */
+/** 「不低于 11」「不得低于 11」「≥11」「大于等于 11」「>38kb」 — the
+ *  bound in front of the number, its direction and its negation parsed
+ *  separately and combined by the XOR in `intervalsIn`. */
 const INTERVAL_BOUND_PREFIX = new RegExp(
-  `(?:(?<below>${BELOW_PREFIX})|(?<above>${ABOVE_PREFIX}))\\s*${BOUND_NUMBER}`,
+  `(?<pneg>${BOUND_NEGATION})?(?:(?<pbelow>${BELOW_WORD})|(?<pabove>${ABOVE_WORD}))\\s*${BOUND_NUMBER}`,
   'gu',
 );
 
-/** 未 / 没(有) / 不, and the one existential verb that may stand between
- *  it and the number. See the block above: it is deliberately adjacent,
- *  so 「没有人的重复数在 11 个以上」 is not read as a negated bound. */
-const SUFFIX_NEGATOR = '(?:不|未|没)(?:有|见|到|满|足|达到|达|发现|检出|测出|超过)?\\s*';
-
-/** 「11 个及以上」「10 个以内」「没有 11 个以上」 — the bound after the
- *  number, and the negator in front of it that flips the direction. See
+/** 「11 个及以上」「10 个以内」「没有发现 11 个以上」 — the bound
+ *  after the number, and the negator in front of it that flips the
+ *  direction. `BOUND_NEGATION` is the same negator grammar the prefix
+ *  form uses, standing where Chinese puts it in this shape: in front of
+ *  the NUMBER rather than in front of the boundary word. See
  *  `MEASURE_TAIL` and `BOUND_CONNECTIVE` for what may stand between the
  *  number and the boundary word. */
 const INTERVAL_BOUND_SUFFIX = new RegExp(
-  `(?<![0-9A-Za-z.])(?<sneg>${SUFFIX_NEGATOR})?(?<snum>[0-9]+(?:\\.[0-9]+)?)` +
+  `(?<![0-9A-Za-z.])(?<sneg>${BOUND_NEGATION})?(?<snum>[0-9]+(?:\\.[0-9]+)?)` +
     `${MEASURE_TAIL}${BOUND_CONNECTIVE}` +
     '(?:(?<sbelow>以下|以内|之下|之内)|(?<sabove>以上|之上))',
   'gu',
@@ -909,17 +1012,25 @@ export const intervalsIn = (text: string): string[] => {
   };
   scan(INTERVAL_BAND, (match) => `${Number(match[1])}~${Number(match[2])}`);
   scan(INTERVAL_BOUND_PREFIX, (match) => {
-    const value = Number(match[3]);
+    const value = Number(match.groups?.pnum);
     if (!Number.isFinite(value)) return null;
-    return `${match.groups?.below === undefined ? '>' : '<'}${value}`;
+    // The SAME XOR the suffix form uses, because it is the same grammar:
+    // a direction, optionally negated, and the negation flips it exactly
+    // once however many closed-class tokens stand between the two.
+    // 「低于 11」 is 「<11」, 「不低于 11」 and 「不得低于 11」 are both
+    // 「>11」, and 「不能超过 100」 is 「<100」.
+    const below = match.groups?.pbelow !== undefined;
+    const negated = match.groups?.pneg !== undefined;
+    return `${below !== negated ? '<' : '>'}${value}`;
   });
   scan(INTERVAL_BOUND_SUFFIX, (match) => {
     const value = Number(match.groups?.snum);
     if (!Number.isFinite(value)) return null;
     // XOR, because that is what negating a bound does: 「11 个以上」 is
-    // 「>11」 and 「没有 11 个以上」 is 「<11」, and 「没有 10 个以下」 —
-    // 「not fewer than 10」 — is 「>10」. Same grammar as the prefix
-    // parser's `BOUND_NEGATOR`, applied on the other side of the number.
+    // 「>11」 and 「没有发现 11 个以上」 is 「<11」, and 「没有 10 个以下」
+    // — 「not fewer than 10」 — is 「>10」. Literally the same
+    // `BOUND_NEGATION` the prefix parser uses, applied on the other side
+    // of the number, and combined by the same XOR.
     const below = match.groups?.sbelow !== undefined;
     const negated = match.groups?.sneg !== undefined;
     return `${below !== negated ? '<' : '>'}${value}`;

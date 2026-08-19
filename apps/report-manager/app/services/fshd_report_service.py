@@ -867,8 +867,41 @@ _GROUP_SEPARATOR = re.compile("(?<=\\d)[,\uff0c \u00a0](?=\\d)")
 #: publishable as the patient's own result.
 #:
 #: `-` IS FIRST IN BOTH CLASSES so it is a literal and not a range.
+#:
+#: 「≦」 (U+2266) AND 「≧」 (U+2267) ARE NOT 「≤」 AND 「≥」. They are the
+#: CJK-typeset spellings of the same two comparators — the ones a
+#: Chinese LIS emits and an OCR pass returns for a printed 「≤」 — and
+#: the class had the Unicode-mathematical pair and not this one. A
+#: reference limit printed 「≦25」 matched no comparator anywhere in this
+#: file: `_ROW_BOUND` did not see a limit, so the row published no
+#: ceiling at all, and `_BOUND_CELL` did not see one either, so on the
+#: 项目 / 参考区间 / 结果 order the limit cell became the patient's own
+#: reading. Both TypeScript readers carry the pair; this file did not.
 _RANGE_DASHES = "-~—～－–‐‑‒―−〜﹣"
-_COMPARATORS = "<>≤≥＜＞⩽⩾﹤﹥"
+_COMPARATORS = "<>≤≥＜＞≦≧⩽⩾﹤﹥"
+
+#: AND THE TWO-CHARACTER SPELLINGS, WHICH A CHARACTER CLASS CANNOT HOLD.
+#:
+#: 「<=」, 「>=」 and the reversed 「=<」, 「=>」 are what a LIS text export
+#: prints where the report shows 「≤」 and 「≥」, and a class of single
+#: characters can only ever see the first half of one. On 「<=0.01」 the
+#: comparator was not matched, the scan simply started one character
+#: later, and a below-detection reading the laboratory refused to state
+#: was published as a determinate 0.01; on 「D4Z4重复单元数 >=11」
+#: `_BOUND_BEFORE_VALUE` saw no bound and the count 11 was published as
+#: this patient's own array size. Longest spelling first, so 「<=」 is
+#: never read as a bare 「<」 with a stray 「=」 left over.
+_COMPARATOR_DIGRAPHS: Tuple[str, ...] = ("<=", "=<", ">=", "=>")
+
+#: THE WHOLE GRAMMAR OF A COMPARATOR, AS ONE REGEX SOURCE — THIS IS THE
+#: ONE PLACE A COMPARATOR IS SPELLED, exactly as `_RANGE_SEPARATOR` is
+#: the one place a separator is. Every reader interpolates this rather
+#: than the bare class, which is what keeps the digraphs from being a
+#: spelling only half the file knows.
+_COMPARATOR = (
+    rf"(?:{'|'.join(re.escape(digraph) for digraph in _COMPARATOR_DIGRAPHS)}"
+    rf"|[{_COMPARATORS}])"
+)
 
 #: AND THE TWO WORDS AN INTERVAL IS ALSO PRINTED WITH. 「1至10」 and
 #: 「1到10」 are the same interval as 「1-10」, written out; they are not
@@ -903,10 +936,23 @@ _RANGE_SEPARATOR = rf"(?:[{_RANGE_DASHES}]|{'|'.join(_RANGE_WORDS)})"
 #: `in "<≤"`, which was a substring test over the two ASCII spellings —
 #: so 「＜25」 was recorded as a LOWER limit of 25 the moment the
 #: full-width spelling started matching at all.
-_UPPER_LIMIT_COMPARATORS: frozenset = frozenset("<≤＜⩽﹤")
+#:
+#: IT HOLDS STRINGS, NOT CHARACTERS, because `_COMPARATOR` can match
+#: two of them. 「≦」 was missing here for as long as it was missing from
+#: `_COMPARATORS`, and a set that lists the ten single characters and
+#: not the digraphs reads 「<=25」 BACKWARDS — `_read_row_reference` asks
+#: this set and takes the else branch, so a ceiling of 25 is recorded as
+#: a FLOOR of 25 and every reading under it is marked abnormal-low.
+_UPPER_LIMIT_COMPARATORS: frozenset = frozenset({*"<≤＜≦⩽﹤", "<=", "=<"})
+
+#: A leading comparator, for the readers that ask 「is this cell a bare
+#: number」 of a string rather than of a match. `text[0] in _COMPARATORS`
+#: was that test, and it cannot see the second half of a digraph — 「=<5」
+#: begins with a character no class holds.
+_LEADING_COMPARATOR = re.compile(rf"^\s*{_COMPARATOR}")
 
 #: A whole cell that is one number, with or without a comparator.
-_NUMBER_CELL = re.compile(rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}$")
+_NUMBER_CELL = re.compile(rf"^{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}$")
 
 
 def _strip_group_separators(text: str) -> str:
@@ -1827,7 +1873,11 @@ def _find_line_regex(
 
 
 def _find_reading_regex(
-    text: str, patterns: Iterable[str], flags: int = re.IGNORECASE
+    text: str,
+    patterns: Iterable[str],
+    flags: int = re.IGNORECASE,
+    *,
+    crossings: Optional["re.Pattern"] = None,
 ) -> Tuple[Optional[re.Match], Optional[str]]:
     """`_find_regex`, refusing a hit whose number is a reference bound.
 
@@ -1845,13 +1895,64 @@ def _find_reading_regex(
     only falls back to these patterns; this is the same rule stated for
     the fallback, so a report the row reader cannot see is not published
     with its intervals read as its results.
+
+    AND IT REFUSES A NUMBER THAT IS PART OF A PRINTED UNIT, which is the
+    other half of the same rule and the half only the row reader had.
+    `extract_numeric_value` reserves `_unit_digit_spans` — the 10 of
+    「10E9/L」, 「10^9/L」, 「×10⁹/L」, the 2 of 「cmH2O」 — and this fallback
+    reserved nothing, so it read the exponent's BASE as the patient's
+    result the moment the row reader declined to answer. The row reader
+    declines whenever the 结果 column is not a number, which a
+    laboratory prints often: a blank, 「---」, 「未见」, 「少量」, or a
+    rejection note such as 「标本凝集」 or 「溶血」. Measured on a synthetic
+    血常规 in the 项目 / 单位 / 结果 order,
+
+        白细胞计数(WBC) 10E9/L 标本凝集 3.5-9.5
+
+    published `wbc: 10` — a leucocytosis a clinician acts on, invented
+    out of the unit column, on a row whose specimen was never counted.
+    A row whose result is not a number must publish NO number.
+
+    AND IT REFUSES A NUMBER PRINTED ON ANOTHER ANALYTE'S ROW. The gap
+    class between a name and its reading excludes `\\n` so that it cannot
+    leave its own line — and `_panel_haystacks` joins two adjacent lines
+    WITHOUT a separator, which deletes the newline the gap was refusing.
+    So a row whose result is a Chinese word reached over the seam and
+    took the NEXT ROW'S figure. Measured on a synthetic 尿常规 whose
+    sediment rows read the way a laboratory prints them,
+
+        白细胞 少量 /HP
+        红细胞 8 个/uL
+
+    published `urine_wbc: 8` — the red cell count, under the white cell
+    key, with 「白细胞 少量 /HP」 shipped as its evidence: the value and
+    its own provenance disagreeing on the same field. 「细菌 未见 /HP」
+    took the 上皮细胞 count the same way.
+
+    `crossings` is the panel's other declared analyte names. A name
+    printed between the matched name and the captured number means the
+    scan walked off its own row, and the honest answer there is the one
+    the row reader already gives — nothing.
     """
     for pattern in patterns:
         for match in re.finditer(_cjk_safe(pattern), text, flags):
-            if match.lastindex and _inside_a_reference_interval(text, match.span(1)):
+            if match.lastindex and (
+                _inside_a_reference_interval(text, match.span(1))
+                or _inside_a_printed_unit(text, match.span(1))
+                or _crosses_another_row(text, match, crossings)
+            ):
                 continue
             return match, pattern
     return None, None
+
+
+def _crosses_another_row(
+    text: str, match: "re.Match", crossings: Optional["re.Pattern"]
+) -> bool:
+    """Is another analyte's name printed between this name and its number?"""
+    if crossings is None:
+        return False
+    return bool(crossings.search(text[match.start() : match.start(1)]))
 
 
 def _inside_a_reference_interval(text: str, span: Tuple[int, int]) -> bool:
@@ -1862,15 +1963,25 @@ def _inside_a_reference_interval(text: str, span: Tuple[int, int]) -> bool:
     )
 
 
+def _inside_a_printed_unit(text: str, span: Tuple[int, int]) -> bool:
+    """`span` is a digit a UNIT spells itself with. See `_unit_digit_spans`."""
+    return any(
+        start <= span[0] and end >= span[1] for start, end in _unit_digit_spans(text)
+    )
+
+
 def _extract_named_number(
     text: str,
     patterns: Iterable[str],
     unit: Optional[str] = None,
     *,
     avoid_reference_intervals: bool = False,
+    crossings: Optional["re.Pattern"] = None,
 ) -> Tuple[Optional[str], Optional[float], Optional[str]]:
-    finder = _find_reading_regex if avoid_reference_intervals else _find_regex
-    match, _ = finder(text, patterns)
+    if avoid_reference_intervals:
+        match, _ = _find_reading_regex(text, patterns, crossings=crossings)
+    else:
+        match, _ = _find_regex(text, patterns)
     if not match:
         return None, None, None
     # The reading leaves canonical, grouped spelling folded away: this
@@ -2080,18 +2191,24 @@ def _extract_numeric_panel(
     context: Dict[str, List[str]] = dict(vocabulary)
     for name, meta in (neighbours or {}).items():
         context.setdefault(name, list(meta.get("keywords", [])))
+    frozen_context = _freeze_vocabulary(context)
     for field_name, meta in definitions.items():
         row = _read_analyte_row(context, field_name, lines)
         raw_value = row.value
         normalized_value = _safe_float(raw_value) if raw_value is not None else None
         unit = meta.get("unit")
         if raw_value is None:
+            # THE OTHER ROWS OF THIS PANEL, so a pattern that reaches
+            # across a window seam cannot publish one of their figures
+            # under this analyte's key. See `_find_reading_regex`.
+            crossings = _analyte_crossing_pattern(frozen_context, field_name)
             for haystack in haystacks:
                 raw_value, normalized_value, unit = _extract_named_number(
                     haystack,
                     meta.get("patterns", []),
                     meta.get("unit"),
                     avoid_reference_intervals=True,
+                    crossings=crossings,
                 )
                 if raw_value is not None:
                     break
@@ -2428,7 +2545,15 @@ def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
 #: and answer with the wrong side. The lookbehind on the emphasis
 #: pattern refuses a side that a comparison word introduces for the same
 #: reason.
-_ASYMMETRY_EMPHASIS_WORDS = "著|重|明显|显著|突出|严重"
+#:
+#: 「为主」 AND 「甚」 ARE EMPHASIS WORDS, NOT LINKING ONES. 「以右侧为
+#: 主」 is the commonest way a Chinese radiologist names the heavier
+#: side after 「以…为著」, and 「以左侧为甚」 is the next; both came back
+#: `asymmetry: none`. 甚 was listed in `_ASYMMETRY_LINKING` — the class
+#: of characters that may sit BETWEEN the side and the emphasis word —
+#: where it can never be reached, because 「右侧为甚」 ends on it and the
+#: pattern then requires an emphasis word that is not there.
+_ASYMMETRY_EMPHASIS_WORDS = "著|重|明显|显著|突出|严重|为主|甚"
 _ASYMMETRY_COMPARISON = re.compile(
     rf"([左右])侧[^,\n]{{0,12}}?[较比]([左右对健])侧[^,\n]{{0,8}}?"
     rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
@@ -2448,7 +2573,7 @@ _ASYMMETRY_COMPARISON = re.compile(
 #: asymmetry. These are the linking words themselves, so a clause that
 #: changes subject between the side and the emphasis word cannot be
 #: joined back up.
-_ASYMMETRY_LINKING = "为更较相对尤稍略甚"
+_ASYMMETRY_LINKING = "为更较相对尤稍略"
 _ASYMMETRY_SIDE_EMPHASIS = re.compile(
     rf"(?<![较比于和与及])([左右])侧?(?:受累|病变|改变)?[{_ASYMMETRY_LINKING}]{{0,3}}"
     rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
@@ -3620,7 +3745,7 @@ _LENGTH_UNIT_AFTER = _cjk_safe_compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
 #: reference in words as often as in symbols, and — see `_cjk_safe` —
 #: they are matched without `\b`, which would never fire against CJK.
 _BOUND_BEFORE_VALUE = re.compile(
-    rf"(?:[{_COMPARATORS}]|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
+    rf"(?:{_COMPARATOR}|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
     r"|大于|小于|超过|多于|少于|至少|最多)\s*$"
 )
 
@@ -5437,7 +5562,7 @@ _PANEL_NAME_TO_VALUE = r"[^\d\n(]{0,16}"
 #: the fallback path may not read 「3,250」 as a 3 where the row reader
 #: no longer does. See `_NUMBER_SOURCE`.
 #:
-#: THE COMPARATOR COMES FROM `_COMPARATORS`, which is the same
+#: THE COMPARATOR COMES FROM `_COMPARATOR`, which is the same
 #: one-source rule `_RANGE_SEPARATOR` states for the dashes. This class
 #: was the two ASCII spellings while every other comparator reader in
 #: the file had all ten, so a below-detection reading printed 「＜0.01」
@@ -5446,7 +5571,7 @@ _PANEL_NAME_TO_VALUE = r"[^\d\n(]{0,16}"
 #: measurement. The row reader answers first on every layout measured,
 #: so this is the fallback closing behind it rather than a live
 #: reading; it is spelled from the shared class so that it stays shut.
-_PANEL_READING = rf"([{_COMPARATORS}]?{_NUMBER_SOURCE})"
+_PANEL_READING = rf"({_COMPARATOR}?{_NUMBER_SOURCE})"
 
 
 def _numeric_analyte(
@@ -6013,6 +6138,70 @@ def _competing_analyte_keywords(
     return tuple(dict.fromkeys(competing))
 
 
+#: A panel's vocabulary as something an `lru_cache` can key on. The
+#: panels are static, so the crossing pattern for a given analyte is
+#: compiled once for the life of the process rather than rebuilt for
+#: every field of every parse.
+_FrozenVocabulary = Tuple[Tuple[str, Tuple[str, ...]], ...]
+
+
+def _freeze_vocabulary(analytes: Dict[str, List[str]]) -> _FrozenVocabulary:
+    return tuple((name, tuple(words)) for name, words in sorted(analytes.items()))
+
+
+def _neighbouring_analyte_names(
+    analytes: _FrozenVocabulary, field_name: str
+) -> Tuple[str, ...]:
+    """Every OTHER analyte this panel declares — the names of other rows.
+
+    NOT `_competing_analyte_keywords`, WHICH ANSWERS A DIFFERENT
+    QUESTION. That one lists the names that CONTAIN one of mine, because
+    the collision it settles is 肌酸激酶 matching inside 肌酸激酶同工酶.
+    The question here is 「did this reading come off somebody else's
+    row」, and 红细胞 does not have to contain 白细胞 to be a different
+    row — it only has to be printed between my name and the number.
+
+    A name that is a PIECE of one of mine is dropped, because it occurs
+    inside my own printed name and marks no crossing: 红细胞 sits inside
+    红细胞计数 on the row that IS mine.
+    """
+    mine = [
+        keyword.strip().lower()
+        for name, keywords in analytes
+        if name == field_name
+        for keyword in keywords
+        if keyword and keyword.strip()
+    ]
+    others: List[str] = []
+    for name, keywords in analytes:
+        if name == field_name:
+            continue
+        for keyword in keywords:
+            token = (keyword or "").strip()
+            if not token or any(token.lower() in m for m in mine):
+                continue
+            others.append(token)
+    return tuple(dict.fromkeys(others))
+
+
+@lru_cache(maxsize=512)
+def _analyte_crossing_pattern(
+    analytes: _FrozenVocabulary, field_name: str
+) -> Optional["re.Pattern"]:
+    """This panel's OTHER row names, as one anchored alternation.
+
+    Anchored through `_anchored_keyword_source` for the reason every
+    other reader is: 「EC」 and 「OB」 are analyte names on a 尿常规, and an
+    unanchored substring test finds them inside the next Latin word.
+    """
+    names = _neighbouring_analyte_names(analytes, field_name)
+    if not names:
+        return None
+    return re.compile(
+        "|".join(_anchored_keyword_source(name) for name in names), re.IGNORECASE
+    )
+
+
 #: A CELL THAT IS THE TABLE'S OWN ROW INDEX — 「*9」, 「#12」. The marker
 #: is the printer's, not the laboratory's, and the digits after it are a
 #: position in the table, so it is never a measurement. This is the cell
@@ -6120,6 +6309,12 @@ def _unit_token_spans(line: str) -> Tuple[Tuple[int, int], ...]:
     )
 
 
+#: A Chinese character, and a run with none in it. See the seam note in
+#: `_unit_digit_spans`.
+_CJK_RUN = re.compile(r"[一-龥]")
+_NON_CJK_RUN = re.compile(r"[^\s一-龥]+")
+
+
 @lru_cache(maxsize=1024)
 def _unit_digit_spans(line: str) -> Tuple[Tuple[int, int], ...]:
     """Where on `line` a UNIT SPELLS ITSELF WITH DIGITS.
@@ -6152,15 +6347,36 @@ def _unit_digit_spans(line: str) -> Tuple[Tuple[int, int], ...]:
     that regex already draws: a number followed by something that
     STARTS a unit is a reading with its unit attached, and a number
     followed by 「^9/L」 is not. A token that splits keeps its number.
+
+    AND A WINDOW SEAM IS NOT A CELL BOUNDARY. `_panel_haystacks` joins
+    two adjacent lines WITHOUT a separator, so the last cell of the
+    first line and the first cell of the second arrive welded into one
+    「token」 — 「10E9/L血红蛋白(HGB)」 — which is not a unit, so nothing
+    was reserved and the panel fallback read the exponent's base as the
+    reading. It costs a row whose 结果 column the laboratory left blank,
+    which is the row the fallback is reached on. A unit never mixes CJK
+    with a Latin run, so the seam is visible: where a token carries CJK,
+    each of its non-CJK runs is asked the same question the whole token
+    is asked.
     """
     spans: List[Tuple[int, int]] = []
     for token in re.finditer(r"\S+", line):
         cell = token.group()
         if not any(character.isdigit() for character in cell):
             continue
-        if not _is_unit_cell(cell) or _CELL_NUMBER_THEN_UNIT.match(cell):
+        if _is_unit_cell(cell) and not _CELL_NUMBER_THEN_UNIT.match(cell):
+            spans.append((token.start(), token.end()))
             continue
-        spans.append((token.start(), token.end()))
+        if not _CJK_RUN.search(cell):
+            continue
+        for piece in _NON_CJK_RUN.finditer(cell):
+            run = piece.group()
+            if not any(character.isdigit() for character in run):
+                continue
+            if not _is_unit_cell(run) or _CELL_NUMBER_THEN_UNIT.match(run):
+                continue
+            start = token.start() + piece.start()
+            spans.append((start, start + len(run)))
     return tuple(spans)
 
 
@@ -6237,19 +6453,19 @@ _WORD_FLAG_CELLS: Dict[str, Optional[str]] = {
 #: scan starting or ending in the middle of a number, so 「1.41 1.2-1.6」
 #: reads the interval and not 「41 1」.
 _ROW_RANGE = re.compile(
-    rf"(?<![\d.])({_NUMBER_SOURCE})\s*[{_RANGE_DASHES}]\s*({_NUMBER_SOURCE})(?![\d.])"
+    rf"(?<![\d.])({_NUMBER_SOURCE})\s*{_RANGE_SEPARATOR}\s*({_NUMBER_SOURCE})(?![\d.])"
 )
 
 #: A number on a row, with whatever unit is glued to its right. THE
 #: GROUPED SPELLING IS ONE NUMBER — see `_NUMBER_SOURCE`; without it this
 #: scan stopped at the first group and published 「3,250」 as 3.
-_LAB_NUMBER = re.compile(rf"([{_COMPARATORS}]?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/\-]+)?")
+_LAB_NUMBER = re.compile(rf"({_COMPARATOR}?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/\-]+)?")
 
 #: A ONE-SIDED reference limit — 「<25」, 「>1.04」. Recorded as one-sided
 #: rather than dropped: an upper limit with no lower one is the whole of
 #: what a CKMB or a cholesterol row prints, and dropping it leaves the
 #: reading with nothing to be abnormal against.
-_ROW_BOUND = re.compile(rf"([{_COMPARATORS}])\s*({_NUMBER_SOURCE})(?![\d.])")
+_ROW_BOUND = re.compile(rf"({_COMPARATOR})\s*({_NUMBER_SOURCE})(?![\d.])")
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:
@@ -6467,7 +6683,9 @@ def _extract_lab_value(
         candidates = [
             match for match in _LAB_NUMBER.finditer(line) if is_a_reading(match.span(1))
         ]
-        bare = [match for match in candidates if match.group(1)[0] not in _COMPARATORS]
+        bare = [
+            match for match in candidates if not _LEADING_COMPARATOR.match(match.group(1))
+        ]
         chosen = next(iter(bare or candidates), None)
         if chosen is None:
             return None, None
@@ -6503,8 +6721,8 @@ def _extract_lab_value(
     def is_reference_range(line: str) -> bool:
         return bool(
             re.fullmatch(
-                rf"[{_COMPARATORS}]?{_NUMBER_CELL_SOURCE}\s*[{_RANGE_DASHES}]\s*"
-                rf"[{_COMPARATORS}]?{_NUMBER_CELL_SOURCE}"
+                rf"{_COMPARATOR}?{_NUMBER_CELL_SOURCE}\s*{_RANGE_SEPARATOR}\s*"
+                rf"{_COMPARATOR}?{_NUMBER_CELL_SOURCE}"
                 r"(?:\s*[A-Za-z/%μµ·/\-]+)?",
                 line.strip(),
             )
@@ -7449,11 +7667,11 @@ _VALUE_CELL = re.compile(rf"^{_NUMBER_CELL_SOURCE}$")
 #: A bound is therefore a REFERENCE by default, and is accepted as the
 #: value only when the row prints no bare number at all — which is what
 #: keeps a genuinely one-sided result such as 「<0.01」 readable.
-_BOUND_CELL = re.compile(rf"^[{_COMPARATORS}]\s*{_NUMBER_CELL_SOURCE}$")
+_BOUND_CELL = re.compile(rf"^{_COMPARATOR}\s*{_NUMBER_CELL_SOURCE}$")
 
 #: A reference range rather than a result.
 _RANGE_CELL = re.compile(
-    rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}\s*[{_RANGE_DASHES}]\s*{_NUMBER_CELL_SOURCE}$"
+    rf"^{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}\s*{_RANGE_SEPARATOR}\s*{_NUMBER_CELL_SOURCE}$"
 )
 
 #: WHAT A PRINTED UNIT IS MADE OF, AND IT IS NOT ONLY ASCII.
@@ -7583,8 +7801,8 @@ def _is_unit_cell(cell: str) -> bool:
 #: defence that checks a value against its own reference could not fire
 #: on that row either.
 _NUMERIC_DATA_CELL = re.compile(
-    rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}"
-    rf"(?:\s*[{_RANGE_DASHES}]\s*[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE})?"
+    rf"^{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*{_RANGE_SEPARATOR}\s*{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE})?"
     rf"\s*(?:[A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
 )
 
@@ -7615,8 +7833,8 @@ _EXPONENT_UNIT_TAIL = r"(?![Ee]\d)"
 #: 「^9/L」 — and must not start with an exponent, which is what keeps
 #: 「10E9/L」 whole for the same reason.
 _CELL_NUMBER_THEN_UNIT = re.compile(
-    rf"^([{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}"
-    rf"(?:\s*[{_RANGE_DASHES}]\s*[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE})?)"
+    rf"^({_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*{_RANGE_SEPARATOR}\s*{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE})?)"
     rf"\s*{_EXPONENT_UNIT_TAIL}([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
 )
 
