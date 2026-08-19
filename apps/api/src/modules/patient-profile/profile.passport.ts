@@ -1199,6 +1199,169 @@ const ANALYTE_FLAG_ZH: Record<string, string> = {
   abnormal_unspecified: '异常',
 };
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * A NUMBER THE LABORATORY DID NOT MARK, OUTSIDE THE INTERVAL THAT
+ * LABORATORY PRINTED BESIDE IT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * 「CK 693（参考区间 50-310）」 was the whole row on the passport, the
+ * share page a clinician opens from a link, the referral pack handed
+ * across a desk and the markdown export — a value at 2.2× the upper
+ * limit of the interval printed two characters to its right, with
+ * nothing anywhere on the sheet saying the two do not fit. The
+ * laboratory's own 提示 column was blank on that row, so `flag` is null
+ * and `ANALYTE_FLAG_ZH` had nothing to print.
+ *
+ * THE PREVIOUS ROUND'S DECISION STANDS AND THIS IS NOT A REVERSAL OF
+ * IT. This platform does not invent a verdict: it does not say 危险, it
+ * does not grade, it does not decide that an out-of-range CK means
+ * anything in particular — on this disease it usually means the
+ * disease. What it may not do is print two numbers side by side, having
+ * ALREADY compared them (the read-path guard in profile.service.ts
+ * files exactly this comparison as `outside_reference_interval`), and
+ * leave the reader to do the arithmetic a second time. Silence there is
+ * not neutrality. It is withholding a comparison this product made.
+ *
+ * SO THE REGISTER IS THE WHOLE OF THE ANSWER, and it has two halves:
+ *
+ *   1. WHAT THE REPORT SAID comes first and stays in the laboratory's
+ *      words — the 偏高 / 偏低 / 异常 token and the interval verbatim.
+ *   2. WHAT THIS PLATFORM DID is separated from it by a semicolon and
+ *      says so in the first person: 「报告未标注异常，本平台比对：高于
+ *      该区间」. Not 偏高 — that is the laboratory's word for the
+ *      laboratory's own verdict, and borrowing it would attribute this
+ *      comparison to them. Not 异常, not 超标, not a direction with a
+ *      severity attached. An arithmetic statement about two printed
+ *      numbers, attributed to whoever did the arithmetic.
+ *
+ * AND IT SPEAKS ONLY WHEN THE ROW WAS NOT MARKED. Where the laboratory
+ * printed its own direction this platform has nothing to add; a second
+ * opinion beside a first one is noise at best and a contradiction at
+ * worst. `_read_row_flag` in the parser maps 正常 / 未见异常 to no flag
+ * at all, so 「报告未标注异常」 is true of a blank 提示 cell and true of
+ * one that said 正常 — which is why the sentence says 未标注异常 and
+ * not 未标注.
+ *
+ * AND ONLY IN THE OUTSIDE DIRECTION. A row inside its interval already
+ * prints the interval, and that is what lets a reader check for
+ * themselves; adding 「本平台比对：在区间内」 would be this platform
+ * issuing a clean bill on a laboratory row, which is the verdict it has
+ * always refused to issue. A false 「outside」 sends someone to look at
+ * a report they are holding. A false 「inside」 is reassurance, and
+ * reassurance is the one thing that cannot be taken back.
+ */
+type PrintedIntervalVerdict = 'above' | 'below';
+
+/** 「3,250」 IS ONE NUMBER, and the grouped spelling has to come first
+ *  in the alternation or the scan stops at the first group and reads
+ *  3. Same rule, same reason, as `_NUMBER_SOURCE` in the parser. */
+const PRINTED_NUMBER = String.raw`\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
+
+/** 「50-310」, 「1.2~1.6」 — the exact shape `_read_row_reference`
+ *  returns for a two-sided interval, anchored so nothing else is read
+ *  as one. */
+const PRINTED_RANGE = new RegExp(`^(${PRINTED_NUMBER})\\s*[-~—～]\\s*(${PRINTED_NUMBER})$`);
+
+/** 「<25」, 「>1.04」, 「≤25」, 「≥9」 — a one-sided limit, which is the
+ *  whole of what a CKMB or a cholesterol row prints. */
+const PRINTED_BOUND = new RegExp(`^([<>≤≥])\\s*(${PRINTED_NUMBER})$`);
+
+/** The number at the head of a display value: 「693U/L」 → 693. The
+ *  unit is glued on the right and is the SAME unit the interval was
+ *  printed under, because they are two cells of one row. */
+const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
+
+/** A value cell holding an interval rather than a result. */
+const VALUE_IS_A_RANGE = new RegExp(`^(?:${PRINTED_NUMBER})\\s*[-~—～]\\s*(?:${PRINTED_NUMBER})`);
+
+const toNumber = (text: string): number | null => {
+  const parsed = Number(text.replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/**
+ * Does `value` fall outside `reference`, and on which side — or is the
+ * pair one this function declines to place?
+ *
+ * NULL IS THE ANSWER FOR EVERYTHING IT CANNOT READ, and the list is
+ * long on purpose: a qualitative result (阴性), a one-sided READING
+ * (「<0.01」 — a detection limit, not a number that can be placed
+ * against an interval), an interval printed in words, an interval whose
+ * bounds arrive inverted. Each of those is a row where the honest thing
+ * is the row as it stands. This function's output becomes a sentence
+ * about a patient's laboratory result; a guess would be a sentence
+ * about a patient's laboratory result that nobody checked.
+ */
+export const compareWithPrintedInterval = (
+  value: string,
+  reference: string | null | undefined,
+): PrintedIntervalVerdict | null => {
+  if (!reference) return null;
+  const printed = reference.trim();
+  const reading = value.trim();
+  // A reading that is itself a bound cannot be placed: 「<0.01」 says
+  // the assay stopped looking, not that the analyte is 0.01.
+  if (/^[<>≤≥]/.test(reading)) return null;
+  // A VALUE THAT IS ITSELF A RANGE IS NOT A READING. 「0.5-1.2」 in the
+  // value cell is a mis-parse — the row's reference interval landed in
+  // the result column — and placing its low end against another
+  // interval would be this platform comparing a number nobody measured.
+  if (VALUE_IS_A_RANGE.test(reading)) return null;
+  const head = LEADING_NUMBER.exec(reading);
+  if (!head) return null;
+  const measured = toNumber(head[1]);
+  if (measured === null) return null;
+
+  const range = PRINTED_RANGE.exec(printed);
+  if (range) {
+    const low = toNumber(range[1]);
+    const high = toNumber(range[2]);
+    if (low === null || high === null || low > high) return null;
+    if (measured < low) return 'below';
+    if (measured > high) return 'above';
+    return null;
+  }
+
+  const bound = PRINTED_BOUND.exec(printed);
+  if (bound) {
+    const limit = toNumber(bound[2]);
+    if (limit === null) return null;
+    switch (bound[1]) {
+      // 「<25」 EXCLUDES 25 and 「≤25」 does not — the two characters are
+      // the laboratory saying which, and collapsing them would put a
+      // reading exactly on the limit on the wrong side of it.
+      case '<':
+        return measured >= limit ? 'above' : null;
+      case '≤':
+        return measured > limit ? 'above' : null;
+      case '>':
+        return measured <= limit ? 'below' : null;
+      // 「≥」, and nothing else: `PRINTED_BOUND` admits exactly these
+      // four characters, so the default branch is that one case rather
+      // than a catch-all.
+      default:
+        return measured < limit ? 'below' : null;
+    }
+  }
+
+  return null;
+};
+
+/** The clause this platform adds in its own name. ONE TABLE, not a
+ *  string per branch: the passport, the share page, the referral pack
+ *  and the markdown export are all built off `buildMonitoringSummary`,
+ *  so a second spelling anywhere would be two surfaces of one product
+ *  saying different things about one number. The mobile bundle carries
+ *  a word-for-word twin (`PRINTED_INTERVAL_NOTE_ZH` in
+ *  apps/mobile/lib/report-insights.ts) because a handset cannot import
+ *  from apps/api; both are pinned to these exact strings by their own
+ *  test files. */
+const PRINTED_INTERVAL_NOTE_ZH: Record<PrintedIntervalVerdict, string> = {
+  above: '报告未标注异常，本平台比对：高于该区间',
+  below: '报告未标注异常，本平台比对：低于该区间',
+};
+
 const latestDoc = (
   documents: PatientDocumentDTO[],
   predicate: (document: PatientDocumentDTO) => boolean,
@@ -1548,6 +1711,11 @@ const VENTILATORY_PATTERN_ZH: Record<string, string> = {
  * suppression of 「expected」 abnormals — a CK three times its limit is
  * the ordinary finding in this disease and it is still what the
  * clinician came to see.
+ *
+ * AND ON AN UNMARKED ROW THE COMPARISON IS SAID OUT LOUD, in this
+ * platform's own name and behind a semicolon that separates it from
+ * everything the laboratory wrote. See `compareWithPrintedInterval` for
+ * why silence there was not neutrality, and for the register.
  */
 const buildMonitoringSummary = (
   fields: Record<string, unknown> | undefined,
@@ -1559,9 +1727,21 @@ const buildMonitoringSummary = (
     if (!reading) return [];
     const value = spec.values?.[reading.value] ?? withUnit(reading.value, spec.unit);
     const flag = reading.flag ? ANALYTE_FLAG_ZH[reading.flag.toLowerCase()] : undefined;
-    const bracket = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
+    const reported = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
       .filter(Boolean)
       .join('，');
+    // Compared against the PAYLOAD's value and not the display string
+    // above: `spec.values` swaps a wire enum for Chinese words and
+    // `withUnit` glues a unit on, and neither is the number the
+    // laboratory measured. Only where the row carries no flag of its
+    // own — a second opinion beside a first one is not this platform's
+    // to give.
+    const observed = reading.flag
+      ? null
+      : compareWithPrintedInterval(reading.value, reading.reference);
+    const bracket = [reported, observed ? PRINTED_INTERVAL_NOTE_ZH[observed] : '']
+      .filter(Boolean)
+      .join('；');
     return [bracket ? `${spec.label} ${value}（${bracket}）` : `${spec.label} ${value}`];
   });
   return parts.length > 0 ? parts.join('，') : fallback;

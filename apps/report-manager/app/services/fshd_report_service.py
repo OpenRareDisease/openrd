@@ -1779,26 +1779,32 @@ def _append_panel_number(
     reference_low: Optional[float] = None,
     reference_high: Optional[float] = None,
 ) -> None:
-    panel[field_name] = normalized_value if normalized_value is not None else raw_value
-    _append_field(
-        fields,
-        _build_field(
-            field_name,
-            raw_value,
-            normalized_value=normalized_value,
-            unit=unit,
-            source_text=source_text,
-            confidence=confidence,
-            # PASSED THROUGH RATHER THAN READ HERE. `_build_field` writes
-            # each of these only when the row printed one, so a caller
-            # that reads no reference column produces exactly the shape
-            # it always did. See `_row_context` for what the row said.
-            abnormal_flag=abnormal_flag,
-            reference_range_raw=reference_range_raw,
-            reference_low=reference_low,
-            reference_high=reference_high,
-        ),
+    # THE FIELD IS BUILT BEFORE THE PANEL IS WRITTEN, because
+    # `_build_field` is where a row whose flag contradicts its own
+    # interval is refused — and a refusal that still wrote
+    # `panel[field_name]` would withhold the number from
+    # `structured_fields` and publish it on `normalized_summary`, which
+    # is the same screen.
+    field = _build_field(
+        field_name,
+        raw_value,
+        normalized_value=normalized_value,
+        unit=unit,
+        source_text=source_text,
+        confidence=confidence,
+        # PASSED THROUGH RATHER THAN READ HERE. `_build_field` writes
+        # each of these only when the row printed one, so a caller that
+        # reads no reference column produces exactly the shape it always
+        # did. See `_row_context` for what the row said.
+        abnormal_flag=abnormal_flag,
+        reference_range_raw=reference_range_raw,
+        reference_low=reference_low,
+        reference_high=reference_high,
     )
+    if field is None:
+        return
+    panel[field_name] = normalized_value if normalized_value is not None else raw_value
+    _append_field(fields, field)
 
 
 def _append_panel_text(
@@ -1983,13 +1989,49 @@ def _extract_text_panel(
     *,
     confidence: float = 0.88,
 ) -> None:
+    """Every qualitative laboratory panel, read off the ROW.
+
+    THE SAME MIGRATION `_extract_numeric_panel` MADE, ONE COLUMN OVER.
+    The numeric panels stopped scanning for 「the name, then the first
+    number」 because on 项目 / 参考区间 / 结果 that number is the
+    interval's lower bound. These panels went on scanning for 「the name,
+    then the first 阴性/阳性」 — which is the identical assumption about
+    the identical column order, and on that order the verdict it finds
+    is the laboratory's REFERENCE. A 尿常规 reporting 蛋白质 阳性
+    published 阴性; so did 潜血, 葡萄糖 and every other qualitative row on
+    the page, and so did a hepatitis or HIV screen printed the same way.
+
+    `_read_qualitative_row` CORROBORATES THE PATTERN, WHICH IS THE SHAPE
+    `_row_context` ALREADY USES one panel over. The patterns keep their
+    reading wherever the row agrees with it, so a report this module
+    already read correctly is published exactly as before, down to which
+    half of 「阴性(-)」 the alternation stopped at. The row's answer
+    replaces it only where the two say DIFFERENT THINGS — a positive
+    against a negative — because that disagreement is the defect: the
+    pattern took the reference column and the row reader did not. Where
+    the row was found and could not be read at all, nothing is
+    published; falling back would publish the very cell the refusal
+    exists to withhold.
+    """
     haystacks = _panel_haystacks(text, lines)
+    columns = _page_columns(lines)
+    vocabulary: Dict[str, List[str]] = {
+        name: list(meta.get("keywords", [])) for name, meta in definitions.items()
+    }
     for field_name, meta in definitions.items():
+        row_value = _read_qualitative_row(vocabulary, field_name, lines, columns)
+        if row_value is _AMBIGUOUS_QUALITATIVE:
+            continue
         raw_value = None
         for haystack in haystacks:
             raw_value = _extract_named_text(haystack, meta.get("patterns", []))
             if raw_value is not None:
                 break
+        if row_value is not None and (
+            raw_value is None
+            or _qualitative_polarity(row_value) != _qualitative_polarity(raw_value)
+        ):
+            raw_value = row_value
         if raw_value is None:
             continue
         if meta.get("normalize_qualitative"):
@@ -2035,13 +2077,37 @@ def _build_field(
     reference_low: Optional[float] = None,
     reference_high: Optional[float] = None,
     extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
+    """One published field, or `None` where the row contradicts itself.
+
+    NOTHING ANYWHERE IN THIS FILE COMPARED THE FLAG AGAINST THE
+    INTERVAL, and this is the one place both halves of the row arrive
+    together. A reading below its own printed reference floor carrying
+    the laboratory's own HIGH marker is not a reading — it is a row
+    whose columns were read out of order, shipped at the confidence of
+    one that was read correctly. See `_row_contradicts_itself` for what
+    counts and, just as importantly, what does not.
+
+    Returning `None` is how the refusal reaches the payload: every
+    caller in this module hands the result to `_append_field`, which has
+    always dropped a field it is given nothing for. The two callers that
+    also write the panel dict — `_append_panel_number` and
+    `_extract_labs` — build the field FIRST and write the panel only if
+    one came back, so a refused reading is absent from both.
+    """
     if normalized_value is NO_NORMALIZED_VALUE:
         normalized: Any = None
     elif normalized_value is not None:
         normalized = normalized_value
     else:
         normalized = field_value
+    typed = (
+        float(normalized)
+        if isinstance(normalized, (int, float)) and not isinstance(normalized, bool)
+        else _exact_float(field_value)
+    )
+    if _row_contradicts_itself(typed, abnormal_flag, reference_low, reference_high):
+        return None
     payload: Dict[str, Any] = {
         "field_name": field_name,
         "field_value": field_value,
@@ -4353,8 +4419,291 @@ def _pft_pred_pct_patterns(name: str) -> List[str]:
     ]
 
 
+#: One printed figure on a pulmonary row, with the percent sign it
+#: carries if it carries one. The sign is a SHAPE, and it is the first
+#: of the three ways this reader tells the columns apart.
+_PFT_FIGURE = re.compile(rf"({_NUMBER_SOURCE})\s*([%％])?")
+
+#: Every metric name this reader knows, for cutting a row off where the
+#: NEXT metric begins — the same statement `_ends_the_row` makes for a
+#: laboratory table. Without it 「肺功能 FVC 62%,FEV1 下降」 handed the
+#: FVC reader the 1 of 「FEV1」 as a second figure of its own row.
+_PFT_METRIC_NAMES: Tuple[str, ...] = (
+    _PFT_FVC,
+    _PFT_FEV1,
+    _PFT_TLC,
+    _PFT_DLCO,
+    r"FEV ?1\s*/\s*FVC",
+    r"DLCO\s*/\s*VA",
+)
+
+
+def _pft_row_figures(line: str, name_source: str) -> Optional[List[Tuple[str, bool]]]:
+    """The figures printed on `line` after this metric's name.
+
+    `None` where the metric is not named on the line at all — which is
+    what lets the caller tell 「this row says nothing I can read」 from
+    「this metric has no row here」. Bracketed runs are dropped first
+    because that is where the unit is printed, 「[mmol/min/kPa]」, and a
+    unit is not a figure.
+    """
+    match, _ = _find_regex(line, [name_source])
+    if not match:
+        return None
+    tail = line[match.end() :]
+    cuts = [
+        found.start()
+        for pattern in _PFT_METRIC_NAMES
+        for found in [re.search(_cjk_safe(pattern), tail, re.IGNORECASE)]
+        if found
+    ]
+    if cuts:
+        tail = tail[: min(cuts)]
+    tail = re.sub(r"[\[(（][^\])）]*[\])）]", " ", tail)
+    return [
+        (figure.group(1), bool(figure.group(2)))
+        for figure in _PFT_FIGURE.finditer(tail)
+    ]
+
+
+def _pft_measured_index(values: List[float]) -> Optional[int]:
+    """Which figure is 实测值, from the identity the three of them obey.
+
+    实测值 = 预计值 × 占预计值 ÷ 100. THAT IS AN EQUATION THE ROW ITSELF
+    ANSWERS, and it is the reason a three-figure pulmonary row does not
+    need anyone to assume a column order: exactly one of the three
+    figures is the product of the other two over a hundred, and it is
+    the patient's measurement whichever position the printer put it in.
+    So 「FVC 5.55 3.45 62.1」 and 「FVC 2.31 3.72 62.1」 — 预计值 first on
+    one report, 实测值 first on the other — are both read correctly, and
+    the reader that took 「the second group, always」 published a
+    predicted FVC as the patient's own on the second.
+
+    Which is not a small thing to get wrong. Pulmonary function is the
+    surveillance FSHD is monitored by, and a predicted value is by
+    construction a normal-looking number: it is what this patient's
+    lungs would do if they were well.
+
+    The tolerance is absolute-or-relative because a laboratory prints
+    the percentage rounded. `None` where more than one figure satisfies
+    the identity, or none does — the row is then read by the header, or
+    not at all.
+    """
+    # A cubic search, bounded by the fact that a pulmonary row prints
+    # three or four columns. A line carrying more figures than that is
+    # not a metric row and is refused rather than searched.
+    if len(values) > 6:
+        return None
+    hits = set()
+    span = range(len(values))
+    for index in span:
+        for other in span:
+            for third in span:
+                if len({index, other, third}) < 3:
+                    continue
+                product = values[other] * values[third] / 100.0
+                if abs(product - values[index]) <= max(0.05, abs(values[index]) * 0.015):
+                    hits.add(index)
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _pft_percent_index(values: List[float], measured: int) -> Optional[int]:
+    """Which of the two remaining figures is 占预计值 rather than 预计值.
+
+    THE IDENTITY CANNOT ANSWER THIS ONE and it is honest to say so:
+    m = p × c ÷ 100 holds just as well with p and c exchanged, so the
+    arithmetic that pins 实测值 leaves these two tied. What separates
+    them is that 预计值 IS THE SAME MEASURAND AS 实测值 — the same
+    litres, the same mmol/min/kPa — and a percentage is not. A predicted
+    FVC beside a measured 3.45 L is 5.55 L; the 62.1 beside them is not
+    a volume any lung has.
+
+    So the percentage is the figure whose magnitude is FAR from the
+    reading where the predicted value's is NEAR, and it is required to
+    be at least twice as far before either is named. Where the two are
+    comparably close the row is not readable this way and nothing is
+    published — 占预计值 is a number a clinician acts on, and the wrong
+    one is worse than none.
+    """
+    others = [index for index in range(len(values)) if index != measured]
+    if len(others) != 2:
+        return None
+    reading = abs(values[measured])
+    if reading == 0:
+        return None
+
+    def distance(index: int) -> float:
+        figure = abs(values[index])
+        if figure == 0:
+            return float("inf")
+        return max(figure, reading) / min(figure, reading)
+
+    far, near = sorted(others, key=distance, reverse=True)
+    if distance(far) < 2 * distance(near):
+        return None
+    return far
+
+
+def _read_pft_row(
+    lines: List[str],
+    name_source: str,
+    columns: _TableColumns,
+    *,
+    percent_is_the_reading: bool = False,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """This metric's row, as `(measurement, 占预计值, the row itself)`.
+
+    THREE WAYS TO TELL THE COLUMNS APART AND NOT ONE ASSUMPTION AMONG
+    THEM: the percent sign a figure carries (shape), the identity the
+    three figures obey (`_pft_measured_index`), and the header the page
+    printed (`_TableColumns`). Where none of them answers, the
+    measurement comes back `None` and the caller publishes nothing for
+    it — the row was found, so falling back to 「the first number after
+    the name」 would be reinstating the assumption this function exists
+    to remove.
+
+    `percent_is_the_reading` is FEV1/FVC and nothing else: the ratio's
+    own unit is a percent, so a percent sign on its row marks the
+    reading rather than a proportion of predicted.
+    """
+    #: A row printing two or more figures, or one figure carrying a
+    #: percent sign, is a TABLE row for this metric. A row printing a
+    #: single bare figure may be one — 「FVC 3.45 L」 — or may be a title
+    #: or a requisition that happens to name the metric beside a date,
+    #: so it is held back and used only if no table row is found.
+    strong: Optional[Tuple[Optional[str], Optional[str], str]] = None
+    weak: Optional[Tuple[Optional[str], Optional[str], str]] = None
+    fallback: Optional[str] = None
+    for line in lines:
+        figures = _pft_row_figures(line, name_source)
+        if not figures:
+            continue
+        if fallback is None:
+            fallback = line.strip()
+        values = [_safe_float(raw) for raw, _ in figures]
+        if any(value is None for value in values):
+            continue
+        typed: List[float] = [value for value in values if value is not None]
+        marked = [index for index, (_, percent) in enumerate(figures) if percent]
+        plain = [index for index in range(len(figures)) if index not in marked]
+
+        measured_index: Optional[int] = None
+        percent_index: Optional[int] = None
+
+        if percent_is_the_reading:
+            if len(figures) == 1:
+                measured_index = 0
+        else:
+            if len(marked) == 1:
+                percent_index = marked[0]
+                if len(plain) == 1:
+                    measured_index = plain[0]
+            elif len(figures) == 1:
+                measured_index = 0
+
+        if measured_index is None and len(figures) >= 3:
+            measured_index = _pft_measured_index(typed)
+            if measured_index is not None and percent_index is None and not percent_is_the_reading:
+                percent_index = _pft_percent_index(typed, measured_index)
+
+        if measured_index is None:
+            roles = columns.value_roles()
+            if len(roles) == len(figures) and len(set(roles)) == len(roles):
+                if "result" in roles:
+                    measured_index = roles.index("result")
+                if percent_index is None and "pred_pct" in roles:
+                    percent_index = roles.index("pred_pct")
+
+        measured = figures[measured_index][0] if measured_index is not None else None
+        percent = (
+            figures[percent_index][0]
+            if percent_index is not None and percent_index != measured_index
+            else None
+        )
+        # THE FIRST ROW THAT CAN BE READ, NOT THE FIRST ROW THAT CARRIES
+        # A DIGIT. A metric named on a title or a requisition line —
+        # 「肺功能检查报告 FVC 2024」 — carries a figure and determines
+        # nothing, and stopping there leaves the table below it unread.
+        if len(figures) >= 2 or figures[0][1]:
+            if measured is not None or percent is not None:
+                return measured, percent, line.strip()
+            if strong is None:
+                strong = (None, None, line.strip())
+        elif weak is None and measured is not None:
+            weak = (measured, percent, line.strip())
+    if strong is not None:
+        return strong
+    if weak is not None:
+        return weak
+    return None, None, fallback
+
+
 def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    """Pulmonary function, read off the ROW rather than off a column index.
+
+    THE TABLE PATTERNS TOOK GROUP 2, ALWAYS. They were written
+    「name, then three figures」 and hard-coded the second as the
+    measurement and the third as 占预计值, which is one printed order —
+    预计值 / 实测值 / 占预计值 — asserted as if it were the only one. On
+    the equally ordinary 实测值 / 预计值 / 占预计值 the second figure is
+    the PREDICTED value, so this platform published, as a patient's own
+    FVC, the number describing the lungs that patient does not have.
+
+    A predicted value is by construction a normal-looking one, and
+    pulmonary function is the surveillance FSHD is monitored by: the
+    reading that decides whether a patient is referred for ventilation
+    was being replaced by a reading that never triggers a referral.
+
+    `_read_pft_row` determines the columns instead — percent sign,
+    then the identity 实测值 = 预计值 × 占预计值 ÷ 100, then the page's
+    own header — and where none of the three answers it publishes
+    nothing. The name patterns stay as the fallback for the shapes a row
+    has none of: a metric quoted in a sentence, a value the OCR
+    recovered as prose. They are NOT tried for a metric whose row was
+    found and refused, because 「the first number after the name」 is the
+    assumption being removed.
+    """
     text = "\n".join(lines)
+    columns = _page_columns(lines)
+    panel: Dict[str, Any] = {}
+
+    #: Each metric: its anchored name, the 占预计值 field it feeds, and
+    #: whether a percent sign on its row marks its OWN reading — true of
+    #: FEV1/FVC alone, whose unit is a percent.
+    metrics: Tuple[Tuple[str, str, Optional[str], bool], ...] = (
+        ("fvc", _PFT_FVC, "fvc_pred_pct", False),
+        ("fev1", _PFT_FEV1, "fev1_pred_pct", False),
+        ("tlc", _PFT_TLC, "tlc_pred_pct", False),
+        ("dlco", _PFT_DLCO, "dlco_pred_pct", False),
+        ("fev1_fvc", r"FEV ?1\s*/\s*FVC", None, True),
+        ("dlco_va", r"DLCO\s*/\s*VA", None, False),
+    )
+
+    #: field -> (printed value, unit, the row it was read off, confidence)
+    resolved: Dict[str, Tuple[str, Optional[str], str, float]] = {}
+    #: Metrics whose row was found and could not be read. The fallback
+    #: patterns are not tried for these: the row is there, and a pattern
+    #: reading it would be reading it by position.
+    refused: set = set()
+
+    for field_name, name_source, pct_field, percent_reading in metrics:
+        measured, percent, row_text = _read_pft_row(
+            lines, name_source, columns, percent_is_the_reading=percent_reading
+        )
+        if row_text is None:
+            continue
+        if measured is not None:
+            resolved[field_name] = (
+                measured,
+                "%" if percent_reading else None,
+                row_text,
+                0.96,
+            )
+        else:
+            refused.add(field_name)
+        if pct_field and percent is not None:
+            resolved[pct_field] = (percent, "%", row_text, 0.95)
+
     metric_patterns = {
         "fvc": [rf"{_PFT_FVC}{_PFT_NAME_TO_VALUE}({_NUMBER_SOURCE})\s*(L|%)?"],
         "fvc_pred_pct": _pft_pred_pct_patterns(_PFT_FVC),
@@ -4367,12 +4716,26 @@ def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings:
         "dlco_pred_pct": _pft_pred_pct_patterns(_PFT_DLCO),
         "dlco_va": [rf"DLCO\s*/\s*VA[^\d\n(]{{0,12}}({_NUMBER_SOURCE})\s*([A-Za-z/%·]+)?"],
     }
-    panel: Dict[str, Any] = {}
 
     for field_name, patterns in metric_patterns.items():
-        raw_value, normalized_value, unit = _extract_named_number(text, patterns)
+        if field_name in resolved or field_name in refused:
+            continue
+        raw_value, _, unit = _extract_named_number(text, patterns)
         if raw_value is None:
             continue
+        source_text = (
+            _find_best_line(
+                lines, [field_name.upper(), field_name.lower().replace("_", "/")]
+            )
+            or raw_value
+        )
+        resolved[field_name] = (raw_value, unit, source_text, 0.94)
+
+    for field_name in metric_patterns:
+        if field_name not in resolved:
+            continue
+        raw_value, unit, source_text, confidence = resolved[field_name]
+        normalized_value = _safe_float(raw_value)
         panel[field_name] = normalized_value if normalized_value is not None else raw_value
         _append_field(
             fields,
@@ -4381,53 +4744,10 @@ def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings:
                 raw_value,
                 normalized_value=normalized_value,
                 unit=unit,
-                source_text=_find_best_line(lines, [field_name.upper(), field_name.lower().replace("_", "/")]) or raw_value,
-                confidence=0.94,
+                source_text=source_text,
+                confidence=confidence,
             ),
         )
-
-    table_patterns = {
-        "fvc": [r"\bFVC\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "fev1": [r"\bFEV ?1\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "fev1_fvc": [r"FEV ?1\s*[%/ ]\s*FVC[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "tlc": [r"\bTLC[- ]?SB\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "dlco": [r"\bDLCO[- ]?SB\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "dlco_va": [r"\bDLCO\s*/\s*VA\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-    }
-
-    for field_name, patterns in table_patterns.items():
-        match, _ = _find_regex(text, patterns)
-        if not match:
-            continue
-        actual_value = match.group(2)
-        actual_numeric = _safe_float(actual_value)
-        pct_value = match.group(3)
-        pct_numeric = _safe_float(pct_value)
-        panel[field_name] = actual_numeric if actual_numeric is not None else actual_value
-        _append_field(
-            fields,
-            _build_field(
-                field_name,
-                actual_value,
-                normalized_value=actual_numeric,
-                source_text=_panel_source_line(lines, [field_name.upper().replace("_", "/"), field_name.upper()], actual_value),
-                confidence=0.96,
-            ),
-        )
-        if field_name in {"fvc", "fev1", "tlc", "dlco"} and pct_numeric is not None:
-            pct_field = f"{field_name}_pred_pct"
-            panel[pct_field] = pct_numeric
-            _append_field(
-                fields,
-                _build_field(
-                    pct_field,
-                    pct_value,
-                    normalized_value=pct_numeric,
-                    unit="%",
-                    source_text=_panel_source_line(lines, [field_name.upper().replace("_", "/"), field_name.upper()], pct_value),
-                    confidence=0.95,
-                ),
-            )
 
     ventilatory_pattern = None
     if _find_best_line(lines, ["限制性通气"]):
@@ -4857,10 +5177,19 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
     text_definitions = {
         "urine_color": {"patterns": [rf"(?:颜色|尿色){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["颜色", "尿色"]},
         "urine_clarity": {"patterns": [rf"(?:透明度|浊度|清晰度){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["透明度", "浊度", "清晰度"]},
-        "urine_glucose": {"patterns": [r"(?:葡萄糖(?:\(GLU\))?|GLU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "GLU"], "normalize_qualitative": True},
+        # 尿糖 AND 尿蛋白 ARE THE ORDINARY CHINESE NAMES OF THESE TWO ROWS
+        # AND NEITHER WAS READ. The readers matched 葡萄糖|GLU and
+        # 蛋白质|PRO — what a laboratory prints when it prints the Latin
+        # abbreviation beside the name. A 尿常规 that prints 「尿糖 阴性」
+        # and 「尿蛋白 阳性(+)」, with no Latin anywhere on either row,
+        # yielded NEITHER field, silently, on two of the rows a 尿常规 is
+        # ordered for. The other 尿-prefixed spellings need nothing here:
+        # 尿潜血, 尿胆红素, 尿酮体 and 尿亚硝酸盐 each CONTAIN the name
+        # already listed, and these two do not.
+        "urine_glucose": {"patterns": [r"(?:葡萄糖(?:\(GLU\))?|尿糖(?:\(GLU\))?|GLU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "尿糖", "GLU"], "normalize_qualitative": True},
         "urine_ketone": {"patterns": [r"(?:酮体(?:\(KET\))?|KET)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["酮体", "KET"], "normalize_qualitative": True},
         "urine_bilirubin": {"patterns": [r"(?:胆红素(?:\(BIL\))?|BIL)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["胆红素", "BIL"], "normalize_qualitative": True},
-        "urine_protein": {"patterns": [r"(?:蛋白质(?:\(PRO\))?|PRO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "PRO"], "normalize_qualitative": True},
+        "urine_protein": {"patterns": [r"(?:蛋白质(?:\(PRO\))?|尿蛋白(?:\(PRO\))?|PRO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "尿蛋白", "PRO"], "normalize_qualitative": True},
         "urine_nitrite": {"patterns": [r"(?:亚硝酸盐(?:\(NIT\))?|NIT)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
         "urine_occult_blood": {"patterns": [r"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
         "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "白细胞", "LEU"], "normalize_qualitative": True},
@@ -5554,42 +5883,14 @@ def _extract_lab_value(
     keyword_tokens = [keyword.lower().strip() for keyword in keywords if keyword and keyword.strip()]
 
     def matched_span(lowered_line: str) -> Optional[Tuple[int, int]]:
-        """Where this analyte is named on the line, if it really is.
+        """Where this analyte is named on the line — `_analyte_match_span`.
 
-        A hit COVERED BY a competing analyte's longer name is that other
-        analyte's row, not this one — 肌酸激酶 inside 肌酸激酶同工酶. The
-        line is not refused outright, only that hit: a flattened OCR row
-        naming both still lets each find its own.
-
-        A hit covered by a METHOD NAME is not a row at all — 乳酸脱氢酶
-        inside 乳酸脱氢酶法, the assay printed in the ALT row's method
-        column. Same mechanism, same reason, one more list of spans; see
-        `_names_a_method` for the reading it cost.
-
-        A hit STRICTLY INSIDE a unit is that unit — `mg` inside 「mg/dL」.
-        Strictly, because a whole token may legitimately be both: see
-        `_unit_token_spans`.
+        SHARED WITH THE QUALITATIVE ROW READER. Locating an analyte's own
+        row is the same question whether the cell that follows is a
+        number or a 阴性, and the two readers answering it separately is
+        how they ended up with different ideas of where a row is.
         """
-        covering: List[Tuple[int, int]] = list(_method_name_spans(lowered_line))
-        for token in competing:
-            covering.extend(
-                (other.start(), other.end())
-                for other in _analyte_keyword_pattern(token).finditer(lowered_line)
-            )
-        units = _unit_token_spans(lowered_line)
-        for keyword in keyword_tokens:
-            for hit in _analyte_keyword_pattern(keyword).finditer(lowered_line):
-                covered = any(
-                    start <= hit.start() and end >= hit.end() for start, end in covering
-                ) or any(
-                    start <= hit.start()
-                    and end >= hit.end()
-                    and (end - start) > (hit.end() - hit.start())
-                    for start, end in units
-                )
-                if not covered:
-                    return hit.start(), hit.end()
-        return None
+        return _analyte_match_span(lowered_line, keyword_tokens, competing)
 
     def extract_numeric_value(line: str) -> Tuple[Optional[str], Optional[str]]:
         """The row's READING — never a number belonging to its interval.
@@ -5637,7 +5938,19 @@ def _extract_lab_value(
         # group takes the `H`, which is the laboratory's abnormal flag.
         # Same statement as `is_unit_only` makes for the cell-per-line
         # layout, one column earlier.
-        if unit and _is_row_flag_cell(unit):
+        #
+        # AND IT IS ASKED THE WAY `_is_unit_cell` ASKS IT, which is the
+        # last path in this file that still asked 「is this cell NOT one
+        # of the four flag letters we listed」. A 提示 column prints
+        # 「HI」, 「LO」, 「N」, 「A」, 「AB」 and a laboratory's own house
+        # spelling, and every one of those is a Latin run glued to the
+        # reading by this scan — so 「谷丙转氨酶(ALT) 88 HI 9-50 U/L」
+        # published `unit: 「HI」` with the laboratory's own 「U/L」 never
+        # reached, on the same row shape `_is_unit_cell` was written for.
+        # The flag test stays alongside it because 「L」 is a unit name
+        # AND the low marker, and on a row that prints a 提示 column it
+        # is the marker.
+        if unit and (_is_row_flag_cell(unit) or not _is_unit_cell(unit)):
             unit = None
         # The reading leaves here as ONE number — see `_canonical_number`.
         return _strip_group_separators(chosen.group(1)), unit
@@ -5681,41 +5994,6 @@ def _extract_lab_value(
             return False
         return _is_unit_cell(stripped)
 
-    def ends_the_row(candidate: str) -> bool:
-        """`candidate` belongs to the NEXT analyte's row, not this one.
-
-        THE VALUE FOR AN ANALYTE COMES OFF THAT ANALYTE'S OWN ROW. The
-        forward scan had no boundary at all, so on the cell-per-line
-        layout it read four cells ahead whatever they belonged to — and
-        what it found first, past the end of the row it started on, was
-        the next row's INDEX. `extract_lab_table_rows` has stated the
-        rule since it was written («The next analyte ends this row»);
-        this scan is the other reader of the same layout and never had
-        it.
-
-        Four ways a row ends, all of them the next row starting: the next
-        analyte's name, a table header printed as one line, a metadata
-        or column label, and the next row's marked index. A flag is none
-        of those — it is part of the row it flags, whatever
-        `_looks_like_analyte` makes of it.
-
-        `_is_header_only` IS IN HERE BECAUSE `_looks_like_analyte` IS NOT
-        ENOUGH ON ITS OWN. It refuses 「碱性磷酸酶(ALP)」 — a Chinese name
-        with a Latin abbreviation, which is how the majority of rows on a
-        Chinese biochemistry panel are printed — because that shape is
-        also how a column header looks. Both readings agree the cell is a
-        LABEL; for a row boundary a label is a boundary either way, and
-        without this the CK row read the ALP row's reference interval.
-        """
-        if _is_row_flag_cell(candidate):
-            return False
-        return bool(
-            _looks_like_analyte(candidate)
-            or _is_header_row(candidate)
-            or _is_header_only(candidate)
-            or _ROW_INDEX_CELL.match(candidate)
-        )
-
     def finish(
         raw_value: Optional[str],
         unit: Optional[str],
@@ -5746,31 +6024,8 @@ def _extract_lab_value(
             reference_high=high,
         )
 
-    def starts_no_row(line: str) -> bool:
-        """`line` is the requisition, not a row of the results table.
-
-        THE SAME TEST `ends_the_row` ALREADY MAKES, ASKED OF THE LINE THE
-        ROW WOULD START ON. 「检验目的: FT3、FT4、STSH」 names the tests
-        that were ORDERED; it carries no reading, and reading forward
-        from it lands in whatever follows. It cost a reading directly
-        too: the next analyte's abbreviation is a number to a scan
-        looking for one, so 「FT3、FT4」 published this patient's free T3
-        as 4.
-
-        ONLY THE REQUISITION FORMS, NOT EVERYTHING `_is_header_only`
-        REFUSES. Its third branch calls any 「短词(拉丁内容)」 a label
-        carrying a unit, and that is the shape most rows on a Chinese
-        laboratory report are printed in — 「白细胞计数(WBC)」, 「镁(MG)」.
-        Refusing those here would refuse the table itself.
-        """
-        stripped = line.strip()
-        return bool(
-            any(stripped.startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES)
-            or _LABEL_ONLY.match(stripped)
-        )
-
     for index, line in enumerate(lines):
-        if matched_span(line.lower()) is None or starts_no_row(line):
+        if matched_span(line.lower()) is None or _starts_no_row(line):
             continue
 
         segment = search_segment(line)
@@ -5802,7 +6057,7 @@ def _extract_lab_value(
         # column the whole of `finish` exists to record and the only
         # thing either number can be abnormal against.
         #
-        # Nothing else bounds the row: `ends_the_row` and the four-cell
+        # Nothing else bounds the row: `_ends_the_row` and the four-cell
         # window are the same boundary the value search already ran
         # under, so reading on cannot reach the next analyte's cells.
         source_parts = [line]
@@ -5814,7 +6069,7 @@ def _extract_lab_value(
             candidate = lines[next_index].strip()
             if not candidate:
                 continue
-            if ends_the_row(candidate):
+            if _ends_the_row(candidate):
                 break
             source_parts.append(candidate)
             row_cells.append(candidate)
@@ -5902,6 +6157,489 @@ def _row_context(
     if reading.value is None or not _same_reading(reading.value, raw_value):
         return _NO_LAB_READING
     return reading
+
+
+# --------------------------------------------------------------------
+# WHICH COLUMN IS THE PATIENT'S RESULT — DETERMINED ONCE, NOT ASSUMED
+
+# THIS FILE HAS NOW FIXED THE SAME DEFECT ON FIVE READERS. `_BOUND_CELL`,
+# `_find_reading_regex`, `extract_lab_table_rows`, the qualitative panel
+# patterns and the pulmonary table patterns each carried their own answer
+# to 「which of these cells is the reading」, and each of them was taught
+# separately — so a laboratory printing its columns the other way round
+# was read correctly by whichever reader had been taught last, and read
+# as its own reference interval by the rest.
+#
+# THE ORDER CAN BE DETERMINED, AND THERE ARE ONLY TWO WAYS TO DO IT.
+# Neither of them is 「the reading is the Nth cell」:
+#
+#   1. THE ROW'S OWN SHAPES, WHERE THE COLUMNS DIFFER IN SHAPE. A
+#      two-sided interval is not a reading; a one-sided limit is a
+#      reference unless it is all the row prints; a unit is not a
+#      number; a percentage is not a volume. `extract_lab_table_rows`
+#      collects the row and classifies afterwards for exactly this
+#      reason, and `_extract_lab_value` and `_find_reading_regex` refuse
+#      an interval's own bounds for the same one. A reader that
+#      classifies by shape is order-independent BY CONSTRUCTION and
+#      needs nothing from this section — which is why the numeric
+#      readers are not rewritten here.
+#
+#   2. THE TABLE'S OWN HEADER, WHERE THE COLUMNS DO NOT DIFFER IN SHAPE.
+#      「阴性」 under 参考区间 and 「阳性」 under 结果 are the same shape,
+#      and so are the three bare figures of a 实测值 / 预计值 / 占预计值
+#      row. Nothing on the row separates them. The heading printed above
+#      them does, it is printed once for the whole table, and it is read
+#      here once for the whole page.
+#
+# So this section is (2): `_table_columns` reads the header ONCE and
+# `_TableColumns` is handed to the readers that shape cannot serve. It
+# RETIRED the two remaining per-reader assumptions —
+# `_extract_text_panel` 「the first 阴性/阳性 after the name is the
+# result」 and `_extract_pulmonary` 「group 2 of the table pattern is the
+# measurement」 — and it is the one place a new spelling of a column
+# heading is added.
+#
+# WHERE NEITHER (1) NOR (2) ANSWERS, NOTHING IS PUBLISHED. That is the
+# rule the rest of this file already follows and the one both retired
+# assumptions broke: an unread cell is visibly missing and a cell read
+# out of the wrong column is not. The one exception is stated where it
+# is taken — `_pick_qualitative_cell`, where every candidate on the row
+# says the same thing and the choice cannot change what is published.
+
+#: How a Chinese laboratory or pulmonary report spells each column
+#: heading. Longest spelling first at any position: 占预计值 contains
+#: 预计值, 检验项目 contains 项目, and 参考区间 contains 参考.
+_COLUMN_ROLE_SPELLINGS: Tuple[Tuple[str, str], ...] = (
+    ("序号", "index"), ("编号", "index"), ("No", "index"),
+    ("检验项目", "name"), ("检测项目", "name"), ("项目名称", "name"),
+    ("英文缩写", "name"), ("英文名称", "name"), ("项目", "name"), ("名称", "name"),
+    ("检验结果", "result"), ("检测结果", "result"), ("本次结果", "result"),
+    ("结果值", "result"), ("测定值", "result"), ("检测值", "result"),
+    ("实测值", "result"), ("结果", "result"),
+    ("生物参考区间", "reference"), ("正常参考值", "reference"),
+    ("参考区间", "reference"), ("参考范围", "reference"), ("参考值", "reference"),
+    ("正常值", "reference"), ("参考", "reference"),
+    ("单位", "unit"),
+    ("异常提示", "flag"), ("结果提示", "flag"), ("提示", "flag"), ("标志", "flag"),
+    ("检测方法", "method"), ("方法", "method"),
+    ("占预计值%", "pred_pct"), ("占预计值％", "pred_pct"), ("占预计值", "pred_pct"),
+    ("实测/预计", "pred_pct"), ("预计值%", "pred_pct"), ("预计值％", "pred_pct"),
+    ("%Pred", "pred_pct"), ("Pred%", "pred_pct"),
+    ("预计值", "predicted"), ("预测值", "predicted"), ("Pred", "predicted"),
+)
+
+_COLUMN_ROLE_BY_SPELLING: Dict[str, str] = {
+    spelling.lower(): role for spelling, role in _COLUMN_ROLE_SPELLINGS
+}
+
+_COLUMN_HEADER_CELL = re.compile(
+    "|".join(
+        re.escape(spelling)
+        for spelling, _ in sorted(
+            _COLUMN_ROLE_SPELLINGS, key=lambda item: -len(item[0])
+        )
+    ),
+    re.IGNORECASE,
+)
+
+#: The columns that can hold a figure or a verdict — the ones an order
+#: has to separate. 单位, 方法 and 提示 are told apart by shape.
+_VALUE_BEARING_ROLES: frozenset = frozenset(
+    {"result", "reference", "predicted", "pred_pct"}
+)
+
+
+class _TableColumns(NamedTuple):
+    """The order this page's results table prints its columns in."""
+
+    roles: Tuple[str, ...] = ()
+
+    def position_of(self, role: str) -> Optional[int]:
+        return self.roles.index(role) if role in self.roles else None
+
+    def result_precedes(self, other: str) -> Optional[bool]:
+        """Is 结果 printed to the LEFT of `other`? None where unknown.
+
+        None is not False. A reader that cannot tell the two apart must
+        publish nothing rather than fall back to either order — that
+        fallback IS the defect this section exists to end.
+        """
+        here, there = self.position_of("result"), self.position_of(other)
+        if here is None or there is None:
+            return None
+        return here < there
+
+    def value_roles(self) -> Tuple[str, ...]:
+        """The value-bearing columns, in printed order."""
+        return tuple(role for role in self.roles if role in _VALUE_BEARING_ROLES)
+
+
+_NO_TABLE_COLUMNS = _TableColumns()
+
+
+def _header_roles_on(line: str) -> Tuple[str, ...]:
+    """The column headings `line` is made of, or `()` if it is data.
+
+    A HEADER ROW IS NOTHING BUT HEADINGS, which is the whole of the
+    test: 「项目 参考区间 结果 单位」 is covered end to end by known
+    spellings and 「检测结果: D4Z4 重复单元数 18」 is not. Requiring full
+    coverage is what stops a 结果 anywhere on the page from being read
+    as a declaration of the column order — see `_TABLE_HEADER_CELLS`,
+    which makes the same distinction cell by cell for the row scanners.
+    """
+    stripped = line.strip()
+    dense = re.sub(r"\s", "", stripped)
+    if not dense:
+        return ()
+    matches = list(_COLUMN_HEADER_CELL.finditer(stripped))
+    if not matches:
+        return ()
+    covered = sum(len(re.sub(r"\s", "", match.group(0))) for match in matches)
+    if covered < len(dense):
+        return ()
+    return tuple(_COLUMN_ROLE_BY_SPELLING[match.group(0).lower()] for match in matches)
+
+
+@lru_cache(maxsize=64)
+def _table_columns(lines: Tuple[str, ...]) -> _TableColumns:
+    """This page's column order, read off its header row. Once.
+
+    BOTH SHAPES OF HEADER, because both shapes of table reach this
+    module: PaddleOCR emits one cell per line, so the header arrives as
+    a RUN of single-heading lines; a flattened row arrives as one line
+    of several. Two headings are the minimum either way — a lone 「结果」
+    line is a genetic report's section heading, not a table's column.
+    """
+    run: List[str] = []
+    for line in lines:
+        roles = _header_roles_on(line)
+        if len(roles) >= 2:
+            return _TableColumns(roles)
+        if len(roles) == 1:
+            run.append(roles[0])
+            continue
+        if len(run) >= 2:
+            return _TableColumns(tuple(run))
+        run = []
+    if len(run) >= 2:
+        return _TableColumns(tuple(run))
+    return _NO_TABLE_COLUMNS
+
+
+def _page_columns(lines: Iterable[str]) -> _TableColumns:
+    """`_table_columns` for a caller holding a list."""
+    return _table_columns(tuple(lines))
+
+
+# --------------------------------------------------------------------
+# The row boundary, shared
+
+# `_extract_lab_value` grew these as closures and they capture nothing,
+# so the qualitative reader below was about to grow a second copy of
+# each. A row boundary that exists twice is a row boundary that gets
+# fixed once; see `_extract_numeric_panel` for the same statement about
+# the reading itself.
+
+
+def _analyte_match_span(
+    lowered_line: str, keyword_tokens: Iterable[str], competing: Iterable[str]
+) -> Optional[Tuple[int, int]]:
+    """Where this analyte is named on the line, if it really is.
+
+    A hit COVERED BY a competing analyte's longer name is that other
+    analyte's row, not this one — 肌酸激酶 inside 肌酸激酶同工酶. The
+    line is not refused outright, only that hit: a flattened OCR row
+    naming both still lets each find its own.
+
+    A hit covered by a METHOD NAME is not a row at all — 乳酸脱氢酶
+    inside 乳酸脱氢酶法, the assay printed in the ALT row's method
+    column. Same mechanism, same reason, one more list of spans; see
+    `_names_a_method` for the reading it cost.
+
+    A hit STRICTLY INSIDE a unit is that unit — `mg` inside 「mg/dL」.
+    Strictly, because a whole token may legitimately be both: see
+    `_unit_token_spans`.
+    """
+    covering: List[Tuple[int, int]] = list(_method_name_spans(lowered_line))
+    for token in competing:
+        covering.extend(
+            (other.start(), other.end())
+            for other in _analyte_keyword_pattern(token).finditer(lowered_line)
+        )
+    units = _unit_token_spans(lowered_line)
+    for keyword in keyword_tokens:
+        for hit in _analyte_keyword_pattern(keyword).finditer(lowered_line):
+            covered = any(
+                start <= hit.start() and end >= hit.end() for start, end in covering
+            ) or any(
+                start <= hit.start()
+                and end >= hit.end()
+                and (end - start) > (hit.end() - hit.start())
+                for start, end in units
+            )
+            if not covered:
+                return hit.start(), hit.end()
+    return None
+
+
+def _ends_the_row(candidate: str) -> bool:
+    """`candidate` belongs to the NEXT analyte's row, not this one.
+
+    THE VALUE FOR AN ANALYTE COMES OFF THAT ANALYTE'S OWN ROW. The
+    forward scan had no boundary at all, so on the cell-per-line
+    layout it read four cells ahead whatever they belonged to — and
+    what it found first, past the end of the row it started on, was
+    the next row's INDEX. `extract_lab_table_rows` has stated the
+    rule since it was written («The next analyte ends this row»);
+    this scan is the other reader of the same layout and never had
+    it.
+
+    Four ways a row ends, all of them the next row starting: the next
+    analyte's name, a table header printed as one line, a metadata
+    or column label, and the next row's marked index. A flag is none
+    of those — it is part of the row it flags, whatever
+    `_looks_like_analyte` makes of it.
+
+    `_is_header_only` IS IN HERE BECAUSE `_looks_like_analyte` IS NOT
+    ENOUGH ON ITS OWN. It refuses 「碱性磷酸酶(ALP)」 — a Chinese name
+    with a Latin abbreviation, which is how the majority of rows on a
+    Chinese biochemistry panel are printed — because that shape is
+    also how a column header looks. Both readings agree the cell is a
+    LABEL; for a row boundary a label is a boundary either way, and
+    without this the CK row read the ALP row's reference interval.
+    """
+    if _is_row_flag_cell(candidate):
+        return False
+    return bool(
+        _looks_like_analyte(candidate)
+        or _is_header_row(candidate)
+        or _is_header_only(candidate)
+        or _ROW_INDEX_CELL.match(candidate)
+    )
+
+
+def _starts_no_row(line: str) -> bool:
+    """`line` is the requisition, not a row of the results table.
+
+    THE SAME TEST `_ends_the_row` ALREADY MAKES, ASKED OF THE LINE THE
+    ROW WOULD START ON. 「检验目的: FT3、FT4、STSH」 names the tests
+    that were ORDERED; it carries no reading, and reading forward
+    from it lands in whatever follows. It cost a reading directly
+    too: the next analyte's abbreviation is a number to a scan
+    looking for one, so 「FT3、FT4」 published this patient's free T3
+    as 4.
+
+    ONLY THE REQUISITION FORMS, NOT EVERYTHING `_is_header_only`
+    REFUSES. Its third branch calls any 「短词(拉丁内容)」 a label
+    carrying a unit, and that is the shape most rows on a Chinese
+    laboratory report are printed in — 「白细胞计数(WBC)」, 「镁(MG)」.
+    Refusing those here would refuse the table itself.
+    """
+    stripped = line.strip()
+    return bool(
+        any(stripped.startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES)
+        or _LABEL_ONLY.match(stripped)
+    )
+
+
+def _row_segment_after_name(line: str, name_end: int) -> str:
+    """The rest of the row, once the analyte's own name is off the front."""
+    return re.sub(r"^\s*\([^)]+\)\s*", "", line[name_end:])
+
+
+# --------------------------------------------------------------------
+# The qualitative row: 阴性 under 参考区间 and 阳性 under 结果
+
+#: What a QUALITATIVE cell can say. A closed vocabulary on purpose: it
+#: is what lets a 阴性/阳性 cell be recognised without asking
+#: `_looks_like_analyte`, which calls 「阴性」 a name and would end the
+#: row on the very cell being read.
+_QUALITATIVE_WORDS: Tuple[str, ...] = (
+    "弱阳性", "可疑阳性", "阳性", "阴性", "未检出", "检出", "未见异常", "未见",
+)
+
+#: The same verdict printed as a sign — 「(-)」, 「+」, 「++」, 「±」.
+_QUALITATIVE_SIGN = re.compile(r"^[(（]?\s*[-+±]{1,4}\s*[)）]?$")
+
+
+def _is_qualitative_value_cell(cell: str) -> bool:
+    """`cell` is a qualitative READING — 「阴性」, 「阳性(+)」, 「(-)」.
+
+    NOT A FLAG CELL. 「正常」 and 「异常」 say the same kind of thing and
+    are printed in the 提示 column, where they are the laboratory's
+    verdict on a row rather than the row's own result;
+    `_is_row_flag_cell` owns them and this must not compete for them.
+    """
+    stripped = cell.strip().replace(" ", "")
+    if not stripped or _is_row_flag_cell(stripped):
+        return False
+    if _QUALITATIVE_SIGN.match(stripped):
+        return True
+    for word in _QUALITATIVE_WORDS:
+        if stripped.startswith(word):
+            rest = stripped[len(word) :]
+            if not rest or _QUALITATIVE_SIGN.match(rest):
+                return True
+    return False
+
+
+def _qualitative_polarity(cell: str) -> Optional[str]:
+    """Whether `cell` says positive, negative, or neither."""
+    stripped = cell.strip().replace(" ", "")
+    negative = "阴性" in stripped or stripped.startswith(("未检出", "未见"))
+    positive = "阳性" in stripped or (
+        "检出" in stripped and not stripped.startswith("未检出")
+    )
+    if "+" in stripped:
+        positive = True
+    if "-" in stripped and not positive:
+        negative = True
+    if positive and not negative:
+        return "positive"
+    if negative and not positive:
+        return "negative"
+    return None
+
+
+#: Returned by `_pick_qualitative_cell` when the row prints more than one
+#: verdict and nothing on the page says which column is which. It is not
+#: `None`: `None` means 「this reader found no row」 and lets the caller
+#: fall back to the panel patterns, which would then publish the very
+#: cell this refusal exists to withhold.
+_AMBIGUOUS_QUALITATIVE = object()
+
+
+def _pick_qualitative_cell(candidates: List[str], columns: _TableColumns) -> Any:
+    """Which of a row's verdict cells is the PATIENT'S, not the reference.
+
+    ONE CANDIDATE IS THE WHOLE OF THE ORDINARY CASE — a 尿常规 that
+    prints no reference column has one verdict per row and there is
+    nothing to choose. It is the two-column printing that carries the
+    defect: on 项目 / 参考区间 / 结果 the FIRST 阴性/阳性 after the name
+    is the laboratory's reference, and every reader here took it.
+
+    THE HEADER DECIDES WHERE THERE IS ONE. Failing that, the reference
+    column of a qualitative row is the NORMAL one — no laboratory prints
+    「阳性」 as the value a healthy result should take — so a row showing
+    exactly one positive among its verdicts has told us which cell is
+    the patient's. That is a determination, not a preference for
+    positives: it reads the meaning the reference column has.
+
+    AND WHERE EVERY CANDIDATE SAYS THE SAME THING, THE CHOICE CANNOT
+    CHANGE WHAT IS PUBLISHED. 「抗梅毒螺旋体抗体(TPPA) 阴性(-) 阴性
+    凝集法」 is a negative screen read off either cell, so the first is
+    taken and nothing is withheld for a distinction with no consequence.
+    Anything else — two different verdicts, no positive, no header — is
+    a row this platform cannot read, and it is published as unread.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    precedes = columns.result_precedes("reference")
+    if precedes is not None:
+        return candidates[0] if precedes else candidates[-1]
+    positives = [cell for cell in candidates if _qualitative_polarity(cell) == "positive"]
+    if len(positives) == 1:
+        return positives[0]
+    polarities = {_qualitative_polarity(cell) for cell in candidates}
+    if len(polarities) == 1 and None not in polarities:
+        return candidates[0]
+    return _AMBIGUOUS_QUALITATIVE
+
+
+def _read_qualitative_row(
+    vocabulary: Dict[str, List[str]],
+    field_name: str,
+    lines: List[str],
+    columns: _TableColumns,
+) -> Any:
+    """`field_name`'s verdict, read off its own ROW rather than scanned.
+
+    THE QUALITATIVE PANELS WERE THE LAST ONES NOT READING A ROW.
+    `_extract_numeric_panel` moved to the shared row reader precisely so
+    that a fix for a column order lands everywhere; the text panels kept
+    a per-analyte regex written 「the name, then the first 阴性/阳性」,
+    which is an assumption about the column order spelled as a gap
+    class. On 项目 / 参考区间 / 结果 that first verdict is the reference,
+    so a 尿常规 with 蛋白质 阳性 published 阴性 — a positive urinary
+    protein reported to the patient as a negative one, and the same for
+    every other qualitative row on the page, and for a hepatitis or HIV
+    screen printed the same way.
+
+    Returns the cell, `None` where no row was found (the caller falls
+    back to its patterns), or `_AMBIGUOUS_QUALITATIVE` where the row was
+    found and could not be read.
+    """
+    keywords = [word.lower().strip() for word in vocabulary.get(field_name, ()) if word and word.strip()]
+    if not keywords:
+        return None
+    competing = _competing_analyte_keywords(vocabulary, field_name)
+    for index, line in enumerate(lines):
+        span = _analyte_match_span(line.lower(), keywords, competing)
+        if span is None or _starts_no_row(line):
+            continue
+        cells: List[str] = []
+        for cell in _row_segment_after_name(line, span[1]).split():
+            if _ends_the_row(cell) and not _is_qualitative_value_cell(cell):
+                break
+            cells.append(cell)
+        # The cell-per-line layout, where the name is alone on its line
+        # and its verdict is the line below. Bounded by the same
+        # `_ends_the_row` the numeric scan uses, with the same exception
+        # the flag cells needed: a verdict is not the next analyte,
+        # however much `_looks_like_analyte` thinks 「阴性」 is a name.
+        for offset in range(1, 5):
+            next_index = index + offset
+            if next_index >= len(lines):
+                break
+            candidate = lines[next_index].strip()
+            if not candidate:
+                continue
+            if _ends_the_row(candidate) and not _is_qualitative_value_cell(candidate):
+                break
+            cells.append(candidate)
+        candidates = [cell for cell in cells if _is_qualitative_value_cell(cell)]
+        if not candidates:
+            continue
+        return _pick_qualitative_cell(candidates, columns)
+    return None
+
+
+# --------------------------------------------------------------------
+# The row that contradicts itself
+
+
+def _row_contradicts_itself(
+    value: Optional[float],
+    flag: Optional[str],
+    reference_low: Optional[float],
+    reference_high: Optional[float],
+) -> bool:
+    """The laboratory's FLAG and the laboratory's INTERVAL disagree.
+
+    THE CHEAPEST SELF-CHECK IN THIS FILE, AND NOTHING WAS MAKING IT.
+    Both halves are printed on the row, both are already parsed onto the
+    same field, and a reading that is BELOW its own reference interval
+    while carrying the laboratory's HIGH marker cannot be a correct
+    reading of that row — one of the two cells was read out of the wrong
+    column. The row is mis-read whichever half is wrong, and a field
+    that ships anyway ships a confident number that the page it came
+    from contradicts.
+
+    STRICTLY OUTSIDE, IN THE WRONG DIRECTION — that and nothing wider.
+    A value INSIDE its interval carrying a flag is an ordinary sight on
+    a real report: laboratories flag against age- and sex-specific
+    limits they do not print, and against the previous result. Those are
+    not contradictions and refusing them would withhold readings that
+    are correct. Below the floor while marked high is not that; it is
+    arithmetic.
+    """
+    if value is None or flag is None:
+        return False
+    if flag == "high" and reference_low is not None and value < reference_low:
+        return True
+    if flag == "low" and reference_high is not None and value > reference_high:
+        return True
+    return False
 
 
 # --------------------------------------------------------------------
@@ -6462,22 +7200,25 @@ def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_sum
         if reading.value is None:
             continue
         numeric_value = _safe_float(reading.value)
-        panel[field_name] = numeric_value if numeric_value is not None else reading.value
-        _append_field(
-            fields,
-            _build_field(
-                field_name,
-                reading.value,
-                normalized_value=numeric_value,
-                unit=reading.unit,
-                source_text=reading.source_text,
-                confidence=0.93,
-                abnormal_flag=reading.flag,
-                reference_range_raw=reading.reference_raw,
-                reference_low=reading.reference_low,
-                reference_high=reading.reference_high,
-            ),
+        # BUILT FIRST, PANEL WRITTEN SECOND — see `_append_panel_number`.
+        # A row refused for contradicting itself must be absent from
+        # `normalized_summary` as well as from `structured_fields`.
+        field = _build_field(
+            field_name,
+            reading.value,
+            normalized_value=numeric_value,
+            unit=reading.unit,
+            source_text=reading.source_text,
+            confidence=0.93,
+            abnormal_flag=reading.flag,
+            reference_range_raw=reading.reference_raw,
+            reference_low=reading.reference_low,
+            reference_high=reading.reference_high,
         )
+        if field is None:
+            continue
+        panel[field_name] = numeric_value if numeric_value is not None else reading.value
+        _append_field(fields, field)
 
     normalized_summary["lab_panel"] = panel
 

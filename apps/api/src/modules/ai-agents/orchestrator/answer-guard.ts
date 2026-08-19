@@ -202,8 +202,21 @@ import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
  * gets quoted back to the model and what the excision has to find
  * again, so it is kept beside it rather than replaced.
  *
- * `*`, backtick and `~` are removed unconditionally — none of the three
- * is a word character in Chinese or in this platform's vocabulary.
+ * `*` and backtick are removed unconditionally — neither is a word
+ * character in Chinese or in this platform's vocabulary.
+ *
+ * SINGLE `~` IS NOT EMPHASIS, AND STRIPPING IT WAS BLINDING THE CHECK
+ * THAT NEEDS IT MOST. No fact-versus-lexicon question arises here: this
+ * file already states, as a fact about its own vocabulary, that `~` is a
+ * BAND SEPARATOR — `BAND_SOURCE` lists it beside `–`, `～`, 到 and 至,
+ * and the canonical interval key `intervalsIn` mints is literally
+ * `${low}~${high}`. Every check reads the normalised text, so a band the
+ * model wrote 「1~3」 arrived at `carriesBandAround` as the four-digit
+ * string 13: the severity check saw no band, the reference-range check
+ * saw no interval, and the one notation this file uses for a band
+ * internally was the one notation it could not read. Markdown
+ * strikethrough is `~~` and only `~~`, so that is what comes off.
+ *
  * SINGLE `_` IS DELIBERATELY LEFT: this platform's own wire tokens are
  * snake_case (`not_read_off_a_laboratory_report`), the localisation
  * above runs before any of this, and mangling an unrecognised token
@@ -211,7 +224,7 @@ import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
  * `__` — which can only be emphasis — is removed.
  */
 const ZERO_WIDTH = /[\u200b-\u200f\u2060\ufeff]/gu;
-const EMPHASIS = /\*|`|~|__/gu;
+const EMPHASIS = /\*|`|~~|__/gu;
 
 export const normaliseForMatch = (text: string): string =>
   text.replace(ZERO_WIDTH, '').replace(EMPHASIS, '');
@@ -586,6 +599,31 @@ const MEASURE_TAIL =
   '\\s*(?:%|％|kb|KB)?\\s*(?:个|条|段|次|例)?\\s*(?:重复单元|重复数|单元|拷贝|单位|copies?|units?)?\\s*';
 
 /**
+ * ...AND THE CONJUNCTION THAT JOINS THE MEASURE TO THE BOUNDARY WORD,
+ * WHICH IS THE ORDINARY CHINESE FORM AND NOT AN EVASION.
+ *
+ * 「11 个及以上」「10 个及以下」 is how a Chinese laboratory sheet and a
+ * Chinese answer write an open-ended interval — 及 is the ordinary
+ * inclusive conjunction, and 「11 个以上」 is the terser variant, not the
+ * standard one. The patterns below required 以上 to sit against
+ * `MEASURE_TAIL`, so the 及 forms produced NO interval at all: a
+ * 参考范围 column reading 「正常参考：11 个及以上」 gave `intervalsIn`
+ * nothing to return, `fabricated_reference_range` had nothing to compare,
+ * and an invented laboratory threshold published beside the patient's
+ * own value.
+ *
+ * NO FACT THIS TURN HOLDS CAN ANSWER 「is this string an interval」 — it
+ * is a question about notation — but this is also not a claim lexicon:
+ * it is a closed grammatical join, it carries no arithmetic (「11 个及
+ * 以上」 and 「11 以上」 are the same interval), and so it is skipped
+ * rather than captured and the canonical form is unchanged. It is
+ * applied SYMMETRICALLY — to the intervals read off the record and to
+ * the intervals read out of the answer — so widening it can only ever
+ * add a comparison, never a permission.
+ */
+const BOUND_CONNECTIVE = '(?:及|或|或者|及其|乃至)?\\s*';
+
+/**
  * A BAND, IN THE SHAPES A REPORT AND A PAPER ACTUALLY WRITE ONE.
  *
  * The unit is optional on BOTH endpoints because a laboratory writes
@@ -599,11 +637,11 @@ const BAND_SOURCE = `(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:-|
 
 const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
 const INTERVAL_BELOW = new RegExp(
-  `(?:<|≤|<=|小于|低于|不足)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:以下|以内)`,
+  `(?:<|≤|<=|小于|低于|不足)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}${BOUND_CONNECTIVE}(?:以下|以内)`,
   'gu',
 );
 const INTERVAL_ABOVE = new RegExp(
-  `(?:>|≥|>=|大于|高于|超过)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}以上`,
+  `(?:>|≥|>=|大于|高于|超过)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}${BOUND_CONNECTIVE}以上`,
   'gu',
 );
 
@@ -746,6 +784,42 @@ const collectScalars = (value: unknown, depth: number, out: string[]): void => {
  * and letting a cell with an unparseable value fall through to the
  * conversation would admit any digit standing beside 单倍型.
  *
+ * ---------------------------------------------------------------------
+ * AND THE SEGMENT THAT CARRIES THE NUMBER IS NOT ALWAYS THE SEGMENT THAT
+ * NAMES THE CELL, WHICH IS HOW THE PATIENT ASKS THE SECOND QUESTION.
+ *
+ * The gate above is per SEGMENT: the sentence has to name the cell and
+ * carry the number. A patient's follow-up does neither in one sentence.
+ * Driven against the running stack, 「那 3 个是不是意味着我病情比较重？」
+ * — after an assistant turn that had said 「你的 D4Z4 重复数这一格我读到
+ * 了。报告上写的是 3。」 — put the cell in one sentence and the number in
+ * the next, and then referred back to the number with a BARE CLASSIFIER,
+ * which names nothing at all. Every segment failed the gate, the number
+ * set came out empty, and check 1 stood down on the most direct question
+ * a patient can ask about their own count.
+ *
+ * THE FACT HALF IS ALREADY IN THIS TURN, and it is the same fact
+ * `inspectAnswer` uses for 「这一项」: WHICH CELLS THE CONVERSATION NAMES
+ * ANYWHERE. Chinese puts the antecedent on either side of the anaphor
+ * and this run hands the question in FIRST and the history after, so
+ * 「the sentence before」 is not even well defined here — but 「this
+ * conversation is about methylation and this turn's record did not bring
+ * methylation back」 is a fact, and it is what licenses reading a
+ * pronoun-shaped reference at all.
+ *
+ * THE LEXICAL HALF IS THE ANAPHOR ITSELF, and it is deliberately the
+ * NARROW direction. Every other list in this file may be incomplete for
+ * free, because a missing entry costs a sentence that should have been
+ * cut. THIS ONE IS THE OTHER WAY AROUND: a number wrongly admitted here
+ * enters the set as though it were the patient's, and check 1 then
+ * DELETES true sentences that happen to contain it. So the anaphor is
+ * required to be a demonstrative over a BARE classifier — no head noun
+ * after it, which is precisely what makes it anaphoric — and only the
+ * number it points at is taken, not every digit in the sentence.
+ * 「那 2 个孩子」 has a head noun and is not read; 「那 3 个是不是…」 has
+ * none and is. A shape this misses costs a caught violation, which is
+ * the direction this particular list has to fail in.
+ *
  * WHAT THE FALLBACK CANNOT DO, stated rather than papered over. It
  * cannot tell his number from a cohort number the conversation
  * mentioned, so inside the fallback it treats both as his and fails
@@ -759,37 +833,85 @@ const CALENDAR_SUFFIX = /^\s*(?:年|月|日|岁|周|天|次|小时|分钟|号|�
 const NUMBER_IN_PROSE =
   /(?<![0-9A-Za-z./])([0-9]+(?:\.[0-9]+)?)\s*(%|％|kb|KB)?(?![0-9A-Za-z./])/gu;
 
+/**
+ * 「那 3 个」「这 95%」 — a demonstrative over a number whose head noun is
+ * ELIDED, which is Chinese's own way of pointing back at something
+ * already said.
+ *
+ * The elision is the whole signal, so it is what the pattern tests for:
+ * after the classifier there must be a clause boundary or a grammatical
+ * continuation, never a noun. That is what separates 「那 3 个是不是意味
+ * 着…」 — a reference — from 「那 2 个孩子」 — a noun phrase about
+ * something else entirely, whose 2 must not enter this patient's number
+ * set. The continuation list is short on purpose: see the block above
+ * for why this is the one list in the file that has to fail NARROW.
+ */
+const BARE_CLASSIFIER_REFERENCE = new RegExp(
+  '(?:那|这)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(%|％|kb|KB)?\\s*(?:个|条|段|次|例)?' +
+    '(?=\\s*(?:$|[，,。、；;：:！？!?…—「」『』()（）]|是|就|会|能|算|属|指|意味|代表|说明|到底|究竟|有没有|多|够))',
+  'gu',
+);
+
 const collectConversationNumbers = (
   texts: readonly string[],
   cellsOnFile: ReadonlySet<string>,
   out: PatientNumber[],
 ): void => {
-  for (const text of texts) {
-    for (const segment of segmentsOf(text)) {
-      // Only the cells this turn's own records did NOT carry. A segment
-      // that names nothing but covered cells is a sentence about a cell
-      // the record already answered authoritatively, and its numbers are
-      // whatever the conversation happened to quote.
-      const cells = CELL_NAMES.filter(
-        (cell) => !cellsOnFile.has(cell) && cellTermsPresent(segment.match, cell),
-      );
-      if (cells.length === 0) continue;
+  const segments = texts.flatMap((text) => segmentsOf(text));
+  // WHICH CELLS THIS CONVERSATION IS ABOUT, read over the whole of it
+  // rather than sentence by sentence. The antecedent of a bare
+  // classifier may sit on either side of it, and this run hands the
+  // question in before the history, so 「somewhere in this conversation」
+  // is the only honest scope. Cells this turn's own records carry are
+  // excluded here for the same reason they are excluded below: the
+  // record already answered them authoritatively.
+  const named = CELL_NAMES.filter(
+    (cell) =>
+      !cellsOnFile.has(cell) && segments.some((segment) => cellTermsPresent(segment.match, cell)),
+  );
+
+  const take = (
+    literal: string,
+    unit: string | undefined,
+    after: string,
+    cells: readonly string[],
+  ): void => {
+    if (CALENDAR_LITERAL.test(literal)) return;
+    if (!unit && CALENDAR_SUFFIX.test(after)) return;
+    const value = Number(literal);
+    if (!Number.isFinite(value)) return;
+    out.push({
+      value,
+      cell: cells.length === 1 ? cells[0] : null,
+      unit: canonicalUnit(unit),
+      origin: 'conversation',
+    });
+  };
+
+  for (const segment of segments) {
+    // Only the cells this turn's own records did NOT carry. A segment
+    // that names nothing but covered cells is a sentence about a cell
+    // the record already answered authoritatively, and its numbers are
+    // whatever the conversation happened to quote.
+    const cells = CELL_NAMES.filter(
+      (cell) => !cellsOnFile.has(cell) && cellTermsPresent(segment.match, cell),
+    );
+    let match: RegExpExecArray | null;
+    if (cells.length > 0) {
       NUMBER_IN_PROSE.lastIndex = 0;
-      let match: RegExpExecArray | null;
       while ((match = NUMBER_IN_PROSE.exec(segment.match)) !== null) {
-        const literal = match[1];
-        if (CALENDAR_LITERAL.test(literal)) continue;
-        const after = segment.match.slice(match.index + match[0].length);
-        if (!match[2] && CALENDAR_SUFFIX.test(after)) continue;
-        const value = Number(literal);
-        if (!Number.isFinite(value)) continue;
-        out.push({
-          value,
-          cell: cells.length === 1 ? cells[0] : null,
-          unit: canonicalUnit(match[2]),
-          origin: 'conversation',
-        });
+        take(match[1], match[2], segment.match.slice(match.index + match[0].length), cells);
       }
+      continue;
+    }
+    // The segment names no cell. It may still be pointing back at a
+    // number this conversation established for one — but only if the
+    // conversation established a cell at all, and only through the
+    // number the anaphor itself covers.
+    if (named.length === 0) continue;
+    BARE_CLASSIFIER_REFERENCE.lastIndex = 0;
+    while ((match = BARE_CLASSIFIER_REFERENCE.exec(segment.match)) !== null) {
+      take(match[1], match[2], segment.match.slice(match.index + match[0].length), named);
     }
   }
 };
@@ -971,6 +1093,27 @@ const makeSegment = (text: string, start: number, end: number): Segment => ({
   end,
 });
 
+/**
+ * A SPAN THAT IS NOTHING BUT MARKDOWN IS NOT A SEGMENT.
+ *
+ * Sentence-splitting cuts at the 。, and the model puts its closing
+ * 「**」 AFTER the 。 — so 「**你的重复数落在 1-3 个重复单元这一档。**」
+ * became two segments, the second one the two characters 「**」. It can
+ * never be a violation (every check reads `match`, which is empty for
+ * it) but it SAT BETWEEN the lead-in and the table, and the lead-in test
+ * asks what comes next. A stray asterisk pair was standing between a
+ * band and the three rows that read it as a prognosis, and all three
+ * published. It also silently broke the 这个区间 chain, whose referent is
+ * the segment immediately before.
+ *
+ * Dropping it is safe in the direction that matters: a span with no
+ * content characters carries no claim, no number and no cell, so nothing
+ * that could have been withheld is lost by not looking at it. A
+ * separator row keeps its pipes and dashes and is NOT dropped —
+ * `isHeaderRow` reads it.
+ */
+const carriesWords = (segment: Segment): boolean => segment.match.trim() !== '';
+
 const segmentsOf = (answer: string): Segment[] => {
   const segments: Segment[] = [];
   let lineStart = 0;
@@ -987,14 +1130,14 @@ const segmentsOf = (answer: string): Segment[] => {
           cursor += ch.length;
           if (!SENTENCE_END.test(ch)) continue;
           const text = line.slice(sentenceStart, cursor);
-          if (text.trim())
-            segments.push(makeSegment(text, lineStart + sentenceStart, lineStart + cursor));
+          const segment = makeSegment(text, lineStart + sentenceStart, lineStart + cursor);
+          if (carriesWords(segment)) segments.push(segment);
           sentenceStart = cursor;
         }
         if (sentenceStart < line.length) {
           const text = line.slice(sentenceStart);
-          if (text.trim())
-            segments.push(makeSegment(text, lineStart + sentenceStart, lineStart + line.length));
+          const segment = makeSegment(text, lineStart + sentenceStart, lineStart + line.length);
+          if (carriesWords(segment)) segments.push(segment);
         }
       }
     }
@@ -1360,10 +1503,60 @@ const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
  * sentence with two subjects is one true half and one false half, and
  * the false half is the one the patient acts on.
  */
-const ABSENCE_MARKER = /(?<!有)没有|不含|未包含|缺少|没做|未做|查不到|未检出|没写|未写|不包括/u;
+/**
+ * THE WAYS CHINESE SAYS A DOCUMENT LACKS A FIELD.
+ *
+ * A REGISTER LIST, and by the rule at the top of this file it has to
+ * be: no fact this turn holds can decide whether a string of Chinese
+ * ASSERTS an absence. The turn knows the cell is on file and that
+ * consent held its value back — that is `withheldCells`, and it is the
+ * fact half of check 4, the half that decides the claim is FALSE. This
+ * half only decides that an absence was claimed at all, and it will
+ * never be complete: this list is the gate on the whole of check 4, and
+ * a phrasing missing from it costs a caught violation.
+ *
+ * It was the 「没有」 register and nothing else, which is one register out
+ * of several a report summary actually uses. 「报告里未提及甲基化」,
+ * 「报告里找不到这一项」, 「这一格是缺失的」, 「那一栏是空白的」 are the
+ * ordinary ways to say it and every one of them walked straight past.
+ *
+ * THE FIELD-STATE FORMS ARE ANCHORED TO THE FIELD WORD, and that is not
+ * tidiness. 缺失 is also the clinical word for a DELETION — 「D4Z4 片段
+ * 缺失」 is a finding the report STATES, not a field it lacks — and a
+ * bare 缺失 in the list would delete that true sentence off the
+ * patient's screen. So the field-state words only count as an absence
+ * when they are predicated of a FIELD (项 / 格 / 栏 / 数据 / 结果 …),
+ * which is the sentence's own structure rather than a guess. Every
+ * marker here still fails toward silence: it only ever decides to
+ * WITHHOLD a sentence, never to publish one.
+ */
+const ABSENCE_MARKER =
+  /(?<!有)没有|不含|未包含|缺少|没做|未做|查不到|未检出|没写|未写|不包括|未提及|未提到|没提及|没提到|找不到|(?:项|格|栏|列|字段|数据|结果|信息|内容|数值|值)\s*(?:是|为|都是)?\s*(?:缺失|空白|空的|空着|留空|未填|没填|空(?![\u4e00-\u9fff]))/u;
 const REPORT_HOLDER = /报告|记录|档案|资料|化验单|单子|检测结果|报告单|这份|上传的|里面/u;
-const SELF_HOLDER = /我这边|我这里|我目前|我手上|我看到|我收到|系统|平台|这边|我方|授权/u;
-const DELIVERY_VERB = /发(?:给|到)|给我|传(?:给|到)|到我|显示|读到|拿到|收到|看到|访问|获取到我/u;
+/**
+ * WHO CAN LACK SOMETHING — AND 授权 CANNOT, WHICH IS WHY IT IS GONE.
+ *
+ * The block above says the consent wording must not become a password,
+ * and then 授权 sat in the holder list, where it became one again by a
+ * different route. The subject resolves to the LAST holder before the
+ * marker, so consent wording placed BETWEEN the report and the absence
+ * — 「你的报告里的甲基化，按当前授权，没有结果。」, which is the ordinary
+ * order for a reason clause in Chinese — made the platform the subject
+ * of a sentence whose subject is plainly the document, and the false
+ * claim published.
+ *
+ * The distinction is structural, not lexical: 我这边 / 系统 / 平台 are
+ * PARTIES that can hold or fail to hold a value, and 授权 is a
+ * CONDITION on delivery. A condition is not a subject. What actually
+ * hands the absence back to this assistant is the delivery verb below —
+ * 「按当前授权没有发给我」 — and that is the wording the file already
+ * relies on and the wording this platform's own projection mints
+ * (`value_withheld`: 「有结果在案，按当前授权没有发出」), so 发出 joins
+ * it.
+ */
+const SELF_HOLDER = /我这边|我这里|我目前|我手上|我看到|我收到|系统|平台|这边|我方/u;
+const DELIVERY_VERB =
+  /发(?:给|到|出|来)|给我|传(?:给|到)|到我|显示|读到|拿到|收到|看到|访问|获取到我/u;
 
 /** The cell, named by a pronoun rather than by its word. Only counts
  *  when the cell's own name was established earlier in the answer —
@@ -1603,15 +1796,84 @@ const LABEL_CONTENT_MAX = 16;
  * short and it is colon-terminated and it names NO BAND, so it
  * propagates nothing.
  *
+ * AND THE THING UNDER THE LEAD-IN IS AS OFTEN A TABLE AS A LIST, which
+ * the first version of this inheritance could not see at all. The label
+ * stack is cleared by any segment that is not a list item, and a table
+ * row is not a list item — so
+ *
+ *   **你落在 1–3 个重复单元这一档**：
+ *   | 项目 | 说明 |
+ *   | --- | --- |
+ *   | 发病年龄 | 通常比较早 |
+ *   | 病情 | 相对较重，进展也快一些 |
+ *
+ * pushed the lead-in and then had it thrown away by the header row,
+ * before a single data row was judged. Driven against the running stack
+ * that is what the model writes when the same question is asked for a
+ * table instead of bullets, and every row published.
+ *
+ * A TABLE UNDER A LEAD-IN IS THE LEAD-IN'S CONTENT, exactly as the
+ * bullets are — markdown's own structure says so, since a table
+ * interrupted by a blank line or a paragraph is a different table. So a
+ * row no longer ENDS the lead-in's scope; it inherits from it and
+ * leaves the stack standing, and the first ordinary sentence after the
+ * table clears it as before. The band gate is unchanged and is what
+ * keeps this honest: 「你的重复数是 3，下面是随访建议：」 names no band,
+ * propagates nothing, and a table of follow-up advice under it is
+ * judged row by row on its own words.
+ *
+ * ...AND THE LONG HEADING WITH NO COLON, which the note here used to
+ * list as an accepted miss and which the table fix above put straight in
+ * front of the model. Asked for the band as one bolded sentence followed
+ * immediately by a table, the running stack wrote
+ *
+ *   **你的重复数落在 1-3 个重复单元这一档。**
+ *   | 发病年龄 | 在群体中往往发病较早… |
+ *   |---|---|
+ *   | 病情特点 | 在群体中往往病情较重… |
+ *   | 进展速度 | 在群体中进展往往较快… |
+ *
+ * — seventeen content characters, one over `LABEL_CONTENT_MAX`, ending
+ * in 「。」 rather than 「：」, so neither branch recognised it and all
+ * three rows published. A CHARACTER COUNT IS NOT WHAT MAKES A SENTENCE A
+ * LEAD-IN, in exactly the way eight characters was not what makes a
+ * possessive attach; and the fact that does make it one is sitting in
+ * the document: WHAT COMES NEXT. A sentence immediately followed by a
+ * list item or a table row introduced them — markdown says so, since
+ * anything else between would break the list or end the table.
+ *
+ * So the third way to qualify is structural: the segment is directly
+ * followed by a list item or a row. It is still gated on the band, which
+ * is the whole safety of this inheritance —
+ * 「你的重复数是 3，下面是随访建议：」 introduces a list too, names no
+ * band, and propagates nothing either way.
+ *
+ * WHAT IT COSTS, stated: an ordinary sentence that happens to name a
+ * band and happens to be followed by a table now propagates into it, so
+ * a row under 「知识库里写 FSHD1 的范围是 1–10 [2]。」 carrying 进展 or
+ * 病程 can be cut. That is the same trade the colon form already made
+ * two paragraphs up, extended to one more shape of lead-in rather than
+ * a new kind of trade.
+ *
  * WHAT IT STILL MISSES, stated: a lead-in whose band is inherited from a
- * sentence two hops back, and a long heading with no colon. Both fail
- * toward publication, and both cost a caught violation rather than a
- * deleted true sentence.
+ * sentence two hops back, and a lead-in separated from its list by an
+ * intervening sentence. Both fail toward publication, and both cost a
+ * caught violation rather than a deleted true sentence.
  */
 const PROSE_LEAD_IN = /[:：]\s*$/u;
 
-const isProseLabel = (text: string): boolean =>
-  PROSE_LEAD_IN.test(text) || contentChars(text).length <= LABEL_CONTENT_MAX;
+const isProseLabel = (text: string, introducedAList: boolean): boolean =>
+  PROSE_LEAD_IN.test(text) || contentChars(text).length <= LABEL_CONTENT_MAX || introducedAList;
+
+/** Does the segment at `index` sit directly on top of a list item or a
+ *  table row? Markdown's own answer to 「did this sentence introduce
+ *  what follows it」 — anything in between would break the list or end
+ *  the table. */
+const introducesAList = (segments: readonly Segment[], index: number): boolean => {
+  const next = segments[index + 1];
+  if (next === undefined) return false;
+  return LIST_ITEM_INDENT.test(next.text) || isTableRow(next);
+};
 
 /** Does the text state an interval at all? The BAND regex is global, so
  *  its `lastIndex` is reset before every use. */
@@ -1702,7 +1964,9 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
 
     const indentMatch = LIST_ITEM_INDENT.exec(segment.text);
     if (indentMatch === null) {
-      labelStack = [];
+      // A TABLE ROW DOES NOT END THE LEAD-IN'S SCOPE — it is what the
+      // lead-in introduced. See the block above PROSE_LEAD_IN.
+      if (!row) labelStack = [];
     } else {
       const indent = indentMatch[1].length;
       while (labelStack.length > 0 && labelStack[labelStack.length - 1].indent >= indent) {
@@ -1722,7 +1986,12 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     const withInherited = [text, inherited, anaphoric].filter(Boolean).join(' ');
     if (indentMatch !== null && contentChars(text).length <= LABEL_CONTENT_MAX) {
       labelStack.push({ indent: indentMatch[1].length, text });
-    } else if (indentMatch === null && !row && isProseLabel(text) && namesABand(withInherited)) {
+    } else if (
+      indentMatch === null &&
+      !row &&
+      isProseLabel(text, introducesAList(segments, segmentIndex)) &&
+      namesABand(withInherited)
+    ) {
       // A lead-in the list under it inherits from. See PROSE_LEAD_IN.
       // Indent −1 so any bullet at any indent stays inside it, and
       // `withInherited` rather than `text` so a lead-in that points at

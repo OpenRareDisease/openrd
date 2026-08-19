@@ -774,7 +774,13 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   // Muscle enzymes / biochemistry
   ck: '肌酸激酶 CK',
   ckmb: '肌酸激酶同工酶 CK-MB',
-  creatineKinase: '肌酸激酶',
+  // THE BRIDGE'S ALIAS FOR `ck`, AND ITS LABEL SAYS SO NOW. See
+  // `OCR_ANALYTE_ALIASES` below: the two are one row on one report, they
+  // are joined before either is published, and this spelling only ever
+  // reaches a prompt in the one state the join refuses — the two
+  // spellings holding DIFFERENT values. A label that read 「肌酸激酶」
+  // beside 「肌酸激酶 CK」 in that state is two analytes to any reader.
+  creatineKinase: '肌酸激酶 CK（另一种拼写）',
   ldh: '乳酸脱氢酶 LDH',
   alt: '丙氨酸氨基转移酶 ALT',
   ast: '天冬氨酸氨基转移酶 AST',
@@ -782,7 +788,7 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   uricAcid: '尿酸',
   uric_acid: '尿酸',
   mb: '肌红蛋白 Mb',
-  myoglobin: '肌红蛋白',
+  myoglobin: '肌红蛋白 Mb（另一种拼写）',
 
   // THE REST OF `_extract_labs`, WHICH IS ONE MAP AND WAS HALF A LIST.
   //
@@ -1185,3 +1191,132 @@ export const OCR_FIELD_LABELS_ZH: Readonly<Record<string, string>> = {
 export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set(
   Object.keys(OCR_FIELD_LABELS_ZH),
 );
+
+/**
+ * THE MEASURED TABLE'S KEYS, AS A SET.
+ *
+ * `projectOcrFields` needs to know whether a cell is a NUMBER a
+ * laboratory prints an interval against before it may compare the two —
+ * see the out-of-interval note there. That is precisely the question
+ * the four-table split above answers and precisely the question
+ * `OCR_FIELDS_SAFE_KEYS_PRECISE` throws away, so it is exported
+ * separately rather than recomputed from a predicate over key names.
+ */
+export const OCR_MEASURED_ANALYTE_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(OCR_MEASURED_ANALYTE_LABELS_ZH),
+);
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * TWO SPELLINGS OF ONE ANALYTE THAT ARE NOT A SNAKE/CAMEL PAIR.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `LEGACY_ANALYTE_TWINS` in services/ocr/embedded-report-ocr.ts mints
+ * `creatineKinase` off `ck` and `myoglobin` off `mb` — deliberately, and
+ * the note there says why: every reader's alias list on this platform is
+ * headed by the readable name, so an archived payload and a live one
+ * both have to carry it. The twin is written through `writeReading`, so
+ * it arrives with its own `creatineKinaseFlag` and
+ * `creatineKinaseReference` as well.
+ *
+ * `projectOcrFields` has exactly one join and it cannot see this pair.
+ * That join is `collapsesToCamelAlias`, which collapses `uric_acid` onto
+ * `uricAcid`; `ck` and `creatineKinase` are BOTH camel spellings and
+ * neither camelises to the other, so both survived it. Measured on a
+ * synthetic 心肌酶谱 whose CK row printed 「693 ↑ 50-310」 and whose Mb row
+ * printed 「210 ↑ 0-110」: precise mode published twelve rows for two
+ * rows of the report — 肌酸激酶 CK / 肌酸激酶 / 肌红蛋白 Mb / 肌红蛋白, each
+ * with its own 异常标记 and 参考区间 — and strict mode published four
+ * 异常标记 rows and 「按当前授权扣下的测量值个数: 8」. Four flagged
+ * analytes where the laboratory ran two, on the one enzyme this disease
+ * is monitored by, into a model that is asked 「我的肌酶高不高」.
+ *
+ * THE JOIN BELONGS HERE AND NOT IN THE BRIDGE. The twin is minted for
+ * compatibility with what is already on disk, so it cannot stop being
+ * minted; what has to stop is one report row reaching a prompt as two
+ * analytes. `alias → canonical`, and the canonical is the spelling the
+ * laboratory's own row is read into (`ck` / `mb`), so the surviving row
+ * is the one whose Chinese carries the abbreviation the report printed.
+ *
+ * THE SAME RULE AS THE SNAKE/CAMEL JOIN, INCLUDING ITS REFUSAL: the
+ * alias yields only when the canonical holds the SAME value. Two
+ * spellings that disagree both stay, because a silent pick between two
+ * different values is the redactor editing clinical data — and that is
+ * the state the alias's own label above is written for.
+ */
+export const OCR_ANALYTE_ALIASES: Readonly<Record<string, string>> = {
+  creatineKinase: 'ck',
+  myoglobin: 'mb',
+};
+
+/**
+ * The canonical spelling of an alias cell — or of one of its two
+ * siblings, because a flag that outlives the value it describes is the
+ * defect `deleteReading` exists to prevent one layer up.
+ *
+ * `null` for every key that is not an alias, which is nearly all of
+ * them.
+ */
+export const canonicalAnalyteKey = (key: string): string | null => {
+  const direct = OCR_ANALYTE_ALIASES[key];
+  if (direct !== undefined) return direct;
+  for (const [suffix, sibling] of [
+    [OCR_FLAG_SUFFIX, flagKey],
+    [OCR_REFERENCE_SUFFIX, referenceKey],
+  ] as const) {
+    if (!key.endsWith(suffix)) continue;
+    const stem = OCR_ANALYTE_ALIASES[key.slice(0, -suffix.length)];
+    if (stem !== undefined) return sibling(stem);
+  }
+  return null;
+};
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * CELLS WHOSE ABSENCE FROM A PROMPT IS NOT A MISSING RESULT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `projectOcrFields` is deny-by-default and now SAYS SO — it publishes
+ * `fieldsNotRecognised`, a count of the cells on the payload that no
+ * table above names. That count is a number a model repeats to a
+ * patient, so it has to be a count of RESULTS. These keys are not
+ * results and are excluded from it:
+ *
+ *   - PIPELINE BOOKKEEPING. `analysisStatus`, `ocrStatus`,
+ *     `extractedTextLength`, `classifiedTypeConfidence`,
+ *     `reportTypeLabel`, `fieldCount`, `reviewRecommendedCount` and
+ *     `ocrIssue` are `buildFields`' record of its own run. They are
+ *     declined in `allowlist.parity.test.ts` under exactly that word.
+ *   - THE ENCOUNTER AND THE PEOPLE ON IT. `facility`, `department`,
+ *     `specimen`, `bedNo`, `orderingDoctor`, `reportTime`, `patientSex`,
+ *     `patientAge`. Their absence is a privacy decision this platform
+ *     takes on purpose — `HARD_DELETE_KEYS` states the same decision
+ *     about the ones that are unambiguously identifying — and counting
+ *     them as 「检查项 this report has and you were not shown」 would be
+ *     the count lying in the other direction.
+ *
+ * A KEY MISSING FROM THIS SET FAILS LOUD, which is why it may be a hand
+ * list at all: a bookkeeping key nobody added here is counted, so the
+ * number reads one too high and a reader goes looking. The reverse — a
+ * result quietly excluded — is the failure this set must not have, and
+ * `allowlist.parity.test.ts` is what holds it: nothing here may be a
+ * cell the parser writes, and nothing here may be on the allowlist.
+ */
+export const OCR_NON_RESULT_KEYS: ReadonlySet<string> = new Set([
+  'analysisStatus',
+  'ocrStatus',
+  'extractedTextLength',
+  'classifiedTypeConfidence',
+  'reportTypeLabel',
+  'fieldCount',
+  'reviewRecommendedCount',
+  'ocrIssue',
+  'facility',
+  'department',
+  'specimen',
+  'bedNo',
+  'orderingDoctor',
+  'reportTime',
+  'patientSex',
+  'patientAge',
+]);

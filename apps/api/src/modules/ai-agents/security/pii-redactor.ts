@@ -91,10 +91,15 @@ import type { RedactionMode, RedactionScope } from './allowlist.js';
 import {
   HARD_DELETE_KEYS_LOWER,
   OCR_FIELDS_SAFE_KEYS_PRECISE,
+  OCR_MEASURED_ANALYTE_KEYS,
+  OCR_NON_RESULT_KEYS,
   PROMPT_ALLOWLIST,
   REPORT_IMPRESSION_CHANNEL_ENABLED,
   REPORT_IMPRESSION_KEYS,
   SAFE_VALUE_MAX_LENGTH,
+  canonicalAnalyteKey,
+  flagKey,
+  referenceKey,
 } from './allowlist.js';
 import { scrubPiiText } from './text-scrub.js';
 import type { AppLogger } from '../../../config/logger.js';
@@ -2024,6 +2029,136 @@ const chunkDocument = (chunk: Record<string, unknown>): GeneticEvidenceDocumentL
 const chunkIsLaboratoryGeneticReport = (chunk: Record<string, unknown>): boolean =>
   isLaboratoryGeneticReport(chunkDocument(chunk));
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE COMPARISON THE REPORT PRINTED BOTH HALVES OF AND NOBODY MADE.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * WHAT WAS INVISIBLE. The only 「this value is abnormal」 statement that
+ * ever reached a prompt was `${analyte}Flag`, and that key exists only
+ * when the laboratory printed an ARROW COLUMN on the row. A great many
+ * Chinese laboratory layouts print the interval and no marker — 「乳酸脱
+ * 氢酶 319 120-250 U/L」 — and for those rows strict mode published
+ * nothing at all: the value is a measurement so it goes into
+ * `numericValuesWithheld`, the interval is a measurement so it goes into
+ * `numericValuesWithheld`, and what the model receives about an LDH at
+ * 1.3 times its stated ceiling is 「按当前授权扣下的测量值个数: 2」.
+ * Measured on a synthetic 生化全套 whose LDH, CK-MB and 钾 rows were all
+ * outside their printed intervals and none of them arrowed: strict mode
+ * published the report type and one counter reading 8.
+ *
+ * BOTH HALVES ARE ON THE PAYLOAD. `writeReading` in
+ * services/ocr/embedded-report-ocr.ts puts the value under the analyte's
+ * key and the interval under `${camel}Reference`, off the same row, in
+ * the units of that row. Comparing them is arithmetic on two cells this
+ * platform is already holding — it invents no boundary, unlike every
+ * genetics reading in this file, because the boundary is the one the
+ * laboratory itself printed on that page.
+ *
+ * IT IS PUBLISHED IN BOTH MODES, and that follows the rule the genetics
+ * cells already state: what this platform makes of a cell does not
+ * depend on consent, only the raw number beside it does. The token
+ * carries no digit, so nothing about it is the 「精确数值」 step a strict
+ * patient declined.
+ *
+ * IT IS MINTED ONLY WHERE THE LABORATORY SAID NOTHING. A row that
+ * carries a flag already has the laboratory's own verdict, which
+ * outranks this one and is what `ANALYTE_FLAG_ZH` prints; minting both
+ * would be two statements about one row and an invitation to read them
+ * as two findings. And the token SAYS which of the two it is — the
+ * Chinese in render.ts ends 「报告没有标异常，这一句是本平台比对出来的」 —
+ * because 「high」 out of this branch and 「high」 off the row are not the
+ * same claim, and the difference is the whole reason a laboratory
+ * bothers to print an arrow.
+ *
+ * NOTHING IS MINTED FOR A VALUE INSIDE THE INTERVAL, and that is not
+ * symmetry lost. A report that did not mark a row and whose row is
+ * inside its interval has said everything there is to say; adding
+ * 「正常」 would be this platform certifying a result, which is a
+ * different act from repeating a comparison the page supports.
+ */
+export const OCR_VS_REFERENCE_SUFFIX = '_vs_reference';
+
+/**
+ * The two tokens that branch can mint, exported as a VALUE so
+ * `render.test.ts` can fence them the way it fences
+ * `GENETIC_READING_REFUSALS`: a token minted here with no Chinese over
+ * there reaches a Chinese-reading patient as a snake_case identifier.
+ */
+export const REFERENCE_COMPARISON_READINGS = {
+  above: 'above_the_interval_this_report_printed',
+  below: 'below_the_interval_this_report_printed',
+} as const;
+
+/**
+ * The number a cell OPENS with, and what follows it.
+ *
+ * `693U/L`, `3.1mmol/L`, `249 10^9/L` and a bare `18` all read as a
+ * number; `阴性`, `<0.5` and `未见异常` read as nothing, which is the
+ * answer that makes this branch decline rather than guess.
+ */
+const numericLead = (text: string): { value: number; rest: string } | null => {
+  const match = /^\s*([+-]?\d+(?:\.\d+)?)/.exec(text);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+  return { value, rest: text.slice(match[0].length) };
+};
+
+/** Everything a laboratory row separates the two ends of an interval
+ *  with, including the two full-width forms and the Chinese word. */
+const INTERVAL_SEPARATOR = /^\s*(?:-|–|—|~|～|至)\s*(?=[+-]?\d)/;
+
+/**
+ * The interval a row printed, as the two ends it states. Either end may
+ * be `null`: 「<25」 is a ceiling and no floor, which is the whole of what
+ * a CK-MB row says, and reading a one-sided limit as no limit is how the
+ * row that matters gets dropped for not being a pair.
+ */
+const parseReferenceInterval = (
+  raw: string,
+): { low: number | null; high: number | null } | null => {
+  const text = raw.trim();
+  const oneSided = /^([<＜≤⩽>＞≥⩾])\s*=?\s*([+-]?\d+(?:\.\d+)?)/.exec(text);
+  if (oneSided) {
+    const bound = Number(oneSided[2]);
+    if (!Number.isFinite(bound)) return null;
+    return '<＜≤⩽'.includes(oneSided[1]) ? { low: null, high: bound } : { low: bound, high: null };
+  }
+  const lead = numericLead(text);
+  if (!lead) return null;
+  const separator = INTERVAL_SEPARATOR.exec(lead.rest);
+  if (!separator) return null;
+  const upper = numericLead(lead.rest.slice(separator[0].length));
+  if (!upper) return null;
+  if (upper.value < lead.value) return null;
+  return { low: lead.value, high: upper.value };
+};
+
+/**
+ * This platform's reading of one analyte against the interval printed
+ * beside it, or `null` for every state in which there is nothing to say:
+ * a value that is not a number, an interval this reader cannot parse, a
+ * value that is itself a range (「120-250」 in the result column is a
+ * transcription fault, not a measurement), and a value inside its
+ * interval.
+ */
+const compareToReferenceInterval = (value: unknown, reference: unknown): string | null => {
+  if (typeof value !== 'string' || typeof reference !== 'string') return null;
+  const measured = numericLead(value);
+  if (!measured) return null;
+  if (INTERVAL_SEPARATOR.test(measured.rest)) return null;
+  const interval = parseReferenceInterval(reference);
+  if (!interval) return null;
+  if (interval.high !== null && measured.value > interval.high) {
+    return REFERENCE_COMPARISON_READINGS.above;
+  }
+  if (interval.low !== null && measured.value < interval.low) {
+    return REFERENCE_COMPARISON_READINGS.below;
+  }
+  return null;
+};
+
 /** Project an OCR fields blob through a mode-specific filter.
  *
  *  In **both** modes this is deny-by-default: only keys we know how to
@@ -2066,6 +2201,9 @@ const projectOcrFields = (
    *  caller so a regression in the extractor is visible rather than
    *  silently absorbed here. */
   const droppedUntrusted: string[] = [];
+  /** Cells this projection has no name for. Counted, not listed, for
+   *  the reason the counter's own note at the bottom gives. */
+  let notRecognised = 0;
 
   // The extractor writes every lab field twice — `stoolColor` and
   // `stool_color`, `trustAb` and `trust_ab` — and both spellings are on
@@ -2089,6 +2227,32 @@ const projectOcrFields = (
    *  for the gate to be a reading of what the loop publishes. */
   const collapsesToCamelAlias = (key: string, value: unknown): boolean =>
     key.includes('_') && camelKeys.has(toCamel(key)) && camelKeys.get(toCamel(key)) === value;
+
+  /**
+   * ...AND THE PAIR THAT IS NOT A SNAKE/CAMEL PAIR AT ALL.
+   *
+   * `creatineKinase` is the bridge's alias for `ck` and `myoglobin` is
+   * its alias for `mb` — see `OCR_ANALYTE_ALIASES` in allowlist.ts for
+   * why the bridge has to keep minting them and why the join has to
+   * happen here. Both spellings are camel, so the rule above could not
+   * see the pair and one CK row on one report reached the model as two
+   * analytes, each with its own 异常标记 and 参考区间.
+   *
+   * SAME RULE, SAME REFUSAL: the alias yields only when the canonical
+   * holds the identical value, so two spellings that disagree both stay.
+   * Asked over the SIBLINGS as well (`canonicalAnalyteKey` resolves
+   * `creatineKinaseFlag` onto `ckFlag`), because a flag that outlives
+   * the value it describes is the same defect one layer down.
+   */
+  const collapsesToCanonicalAnalyte = (key: string, value: unknown): boolean => {
+    const canonical = canonicalAnalyteKey(key);
+    return canonical !== null && canonical in rawFields && rawFields[canonical] === value;
+  };
+
+  /** Every reason this projection skips a cell without it counting as a
+   *  result the report has and the model was not shown. */
+  const collapsesToAlias = (key: string, value: unknown): boolean =>
+    collapsesToCamelAlias(key, value) || collapsesToCanonicalAnalyte(key, value);
 
   // THE HAPLOTYPE THE SAME REPORT STATES, read once for the whole blob,
   // because the D4Z4 grey-zone note is about a 4qA array and this is
@@ -2147,7 +2311,7 @@ const projectOcrFields = (
   let haplotypePermissive: boolean | null = null;
   let haplotypeCellsDisagree = false;
   for (const [key, value] of Object.entries(rawFields)) {
-    if (collapsesToCamelAlias(key, value)) continue;
+    if (collapsesToAlias(key, value)) continue;
     if (geneticBranchFor(key) !== 'haplotype') continue;
     // THE GUARD IS ASKED FIRST, AND A REFUSED CELL IS NOT READ — the
     // sentence `publishGeneticCell` is written under, applied here
@@ -2189,15 +2353,39 @@ const projectOcrFields = (
     },
   };
 
+  /** A cell with nothing in it is not a result anybody was denied. */
+  const isEmpty = (value: unknown): boolean =>
+    value === null || value === undefined || value === '';
+
+  /**
+   * DENY-BY-DEFAULT, SAID OUT LOUD. See `OCR_NON_RESULT_KEYS` in
+   * allowlist.ts for what is excluded from this count and why, and the
+   * counter's own note at the bottom of this function for what the
+   * silence cost.
+   */
+  const countIfResult = (key: string, value: unknown): void => {
+    if (isEmpty(value)) return;
+    if (OCR_NON_RESULT_KEYS.has(key)) return;
+    notRecognised += 1;
+  };
+
   for (const [key, value] of Object.entries(rawFields)) {
-    if (collapsesToCamelAlias(key, value)) continue;
+    if (collapsesToAlias(key, value)) continue;
     // A name the printer chose is not a reviewed key, so it may not buy
     // a clinical band by containing a substring. Deny-by-default, which
     // is what the parser's own docstring promises about it. See
     // `isGenericTableKey`. Asked here as well as inside
     // `geneticBranchFor` because it also has to keep such a key out of
     // the safe-key branch at the bottom.
-    if (isGenericTableKey(key)) continue;
+    //
+    // COUNTED, THOUGH. A `table_<slug>` cell is a row the laboratory
+    // really printed and this platform really has not reviewed the name
+    // of; refusing it is right and refusing it silently is what let a
+    // report reach the model looking empty.
+    if (isGenericTableKey(key)) {
+      countIfResult(key, value);
+      continue;
+    }
     const lower = key.toLowerCase();
     // The one dispatch, shared with the haplotype gate above so that a
     // cell gating a reading and a cell getting one are the same set.
@@ -2243,7 +2431,7 @@ const projectOcrFields = (
       const y = yearFromDate(value);
       if (y !== null) out[`${key}_year`] = y;
     } else if (OCR_FIELDS_SAFE_KEYS_PRECISE.has(key)) {
-      if (value === null || value === undefined || value === '') continue;
+      if (isEmpty(value)) continue;
       // A safe key is not a safe value — see isUntrustworthyValue. The
       // check is asked once, here, so the strict branch below cannot
       // publish what the precise branch refused. It is total over types:
@@ -2278,9 +2466,35 @@ const projectOcrFields = (
       } else {
         withheldNumeric += 1;
       }
+      // THE COMPARISON THE ROW SUPPORTS AND NOBODY MADE. Published
+      // whatever the mode did with the number above, and only where the
+      // laboratory printed an interval and no marker of its own — see
+      // `compareToReferenceInterval`. The interval is minted off the
+      // CAMEL spelling by `writeReading`, which is why the sibling is
+      // looked up under `toCamel(key)` rather than under the key: a
+      // `uric_acid` that reached this line did so by disagreeing with
+      // `uricAcid`, and the interval it disagrees about is still the one
+      // under `uricAcidReference`.
+      if (OCR_MEASURED_ANALYTE_KEYS.has(key)) {
+        const camel = toCamel(key);
+        const printedFlag = rawFields[flagKey(camel)];
+        const printedInterval = rawFields[referenceKey(camel)];
+        if (
+          isEmpty(printedFlag) &&
+          !isEmpty(printedInterval) &&
+          // A cell this platform would not SHOW cannot gate anything —
+          // the rule the haplotype gate above states in full.
+          !isUntrustworthyValue(printedInterval)
+        ) {
+          const reading = compareToReferenceInterval(value, printedInterval);
+          if (reading !== null) out[`${key}${OCR_VS_REFERENCE_SUFFIX}`] = reading;
+        }
+      }
+    } else {
+      // Deny-by-default. Free-form / unknown OCR keys never make it into
+      // the prompt regardless of mode — AND THE MODEL IS TOLD HOW MANY.
+      countIfResult(key, value);
     }
-    // else: deny-by-default. Free-form / unknown OCR keys never make
-    // it into the prompt regardless of mode.
   }
   if (withheldNumeric > 0) {
     out.numericValuesWithheld = withheldNumeric;
@@ -2289,6 +2503,42 @@ const projectOcrFields = (
     // Named, not silent: the model should say「这份报告的这几项读不出来」
     // rather than answer as though the fields did not exist.
     out.fieldsDroppedAsUnsafe = droppedUntrusted.length;
+  }
+  if (notRecognised > 0) {
+    /**
+     * ══════════════════════════════════════════════════════════════════
+     * THE THIRD COUNTER, AND THE ONE THAT WAS MISSING.
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * DENY-BY-DEFAULT IS RIGHT; DENYING SILENTLY IS NOT. The two
+     * statistics above exist because a model handed a short blob has to
+     * be able to tell 「this report holds nothing more」 apart from 「this
+     * platform is not sending you what it holds」 — and neither of them
+     * could see the largest class of all. A cell whose key is on no
+     * table falls out of the loop above without being published, without
+     * being withheld and without being refused, so BOTH counters read
+     * zero and the blob is indistinguishable from an empty parse.
+     *
+     * Measured, in both modes, on a synthetic 膈肌超声 whose twelve
+     * numbers and two conclusions are every one of them declined by name
+     * in `allowlist.parity.test.ts`: the block rendered as 报告类型: 膈肌
+     * 超声 and one row. The model is told a diaphragm ultrasound exists,
+     * shown an empty one, and answers 「你这份报告里没有提取到具体检测数
+     * 据」 — about a report holding fourteen. That sentence is a claim a
+     * patient acts on, and it was false in exactly the case the
+     * allowlist has a gap, which is the case nobody was going to notice.
+     *
+     * A COUNT AND NOT A LIST, the same rule `numericValuesWithheld`
+     * states: naming the analytes is itself a disclosure, and 「there are
+     * fourteen more and this platform cannot name them」 is the whole of
+     * what the model needs in order not to assert the report is empty.
+     *
+     * AND IT COUNTS RESULTS, NOT ROWS. `OCR_NON_RESULT_KEYS` in
+     * allowlist.ts is what it excludes and why — a count that includes
+     * this pipeline's own bookkeeping is a number the model repeats to a
+     * patient, and a wrong one.
+     */
+    out.fieldsNotRecognised = notRecognised;
   }
   return out;
 };

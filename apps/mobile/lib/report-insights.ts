@@ -247,6 +247,109 @@ const pickReading = (
 };
 
 /**
+ * ══════════════════════════════════════════════════════════════════════
+ * A NUMBER THE LABORATORY DID NOT MARK, OUTSIDE THE INTERVAL THAT
+ * LABORATORY PRINTED BESIDE IT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The API's twin, and it has to answer identically or 报告详情 and
+ * 临床护照 — one tap apart, built off the same payload — disagree about
+ * whether a number fits the interval on its own row. See
+ * `compareWithPrintedInterval` in
+ * apps/api/src/modules/patient-profile/profile.passport.ts for the full
+ * argument; the short form is that 「CK 693（参考区间 50-310）」 with
+ * nothing else on the row is not this platform staying neutral, it is
+ * this platform withholding a comparison it has already made, and
+ * asking a patient to do the arithmetic again.
+ *
+ * It is a COPY rather than an import for the reason every rule in this
+ * file is: a handset bundle cannot import from apps/api. What holds the
+ * two together is that each side's test file pins the SAME literal
+ * strings — apps/api/src/modules/patient-profile/
+ * profile.passport.printed-interval.test.ts and
+ * __tests__/report-insights.printed-interval.test.ts — so a reworded
+ * clause on one side fails on that side and is visible as a divergence.
+ */
+type PrintedIntervalVerdict = 'above' | 'below';
+
+/** 「3,250」 is one number, and the grouped spelling has to come first
+ *  in the alternation or the scan stops at the first group. */
+const PRINTED_NUMBER = String.raw`\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
+const PRINTED_RANGE = new RegExp(`^(${PRINTED_NUMBER})\\s*[-~—～]\\s*(${PRINTED_NUMBER})$`);
+const PRINTED_BOUND = new RegExp(`^([<>≤≥])\\s*(${PRINTED_NUMBER})$`);
+const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
+/** A value cell holding an interval rather than a result — 「0.5-1.2」
+ *  in the result column is the row's reference interval mis-parsed, and
+ *  placing its low end against another interval would compare a number
+ *  nobody measured. */
+const VALUE_IS_A_RANGE = new RegExp(`^(?:${PRINTED_NUMBER})\\s*[-~—～]\\s*(?:${PRINTED_NUMBER})`);
+
+const toNumber = (text: string): number | null => {
+  const parsed = Number(text.replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/** Null for everything it cannot place — a qualitative result, a
+ *  one-sided READING (「<0.01」 is a detection limit, not a number that
+ *  sits anywhere on an interval), an interval in words, an interval
+ *  whose bounds arrive inverted. Each of those is a row where the
+ *  honest thing is the row as it stands. */
+const compareWithPrintedInterval = (
+  value: string,
+  reference: string | null | undefined,
+): PrintedIntervalVerdict | null => {
+  if (!reference) return null;
+  const printed = reference.trim();
+  const reading = value.trim();
+  if (/^[<>≤≥]/.test(reading)) return null;
+  if (VALUE_IS_A_RANGE.test(reading)) return null;
+  const head = LEADING_NUMBER.exec(reading);
+  if (!head) return null;
+  const measured = toNumber(head[1]);
+  if (measured === null) return null;
+
+  const range = PRINTED_RANGE.exec(printed);
+  if (range) {
+    const low = toNumber(range[1]);
+    const high = toNumber(range[2]);
+    if (low === null || high === null || low > high) return null;
+    if (measured < low) return 'below';
+    if (measured > high) return 'above';
+    return null;
+  }
+
+  const bound = PRINTED_BOUND.exec(printed);
+  if (bound) {
+    const limit = toNumber(bound[2]);
+    if (limit === null) return null;
+    switch (bound[1]) {
+      // 「<25」 excludes 25 and 「≤25」 does not; the two characters are
+      // the laboratory saying which.
+      case '<':
+        return measured >= limit ? 'above' : null;
+      case '≤':
+        return measured > limit ? 'above' : null;
+      case '>':
+        return measured <= limit ? 'below' : null;
+      // 「≥」, and nothing else: `PRINTED_BOUND` admits exactly these
+      // four characters.
+      default:
+        return measured < limit ? 'below' : null;
+    }
+  }
+
+  return null;
+};
+
+/** Word for word what the API prints, because it is the same claim
+ *  about the same number. Not 偏高 — that is the laboratory's word for
+ *  the laboratory's verdict, and this one is ours. */
+const PRINTED_INTERVAL_NOTE_ZH: Record<PrintedIntervalVerdict, string> = {
+  above: '报告未标注异常，本平台比对：高于该区间',
+  below: '报告未标注异常，本平台比对：低于该区间',
+};
+
+/**
  * The value as a patient reads it: the number, then the laboratory's
  * own bracket where it printed one.
  *
@@ -259,6 +362,13 @@ const pickReading = (
  * no flag prints too, which is the case that lets a patient check a
  * normal result for themselves rather than take it on trust. A value
  * with NEITHER prints bare, and that is the ordinary state, not a gap.
+ *
+ * AND WHERE THE ROW CARRIES NO FLAG AND THE NUMBER IS OUTSIDE THE
+ * INTERVAL ANYWAY, this platform says so in its own name, behind a
+ * semicolon that separates it from everything the laboratory wrote.
+ * Only where there is no flag: a second opinion beside a first one is
+ * not ours to give, and 正常 / 未见异常 reach this file as no flag at
+ * all, which is why the sentence says 未标注异常 rather than 未标注.
  */
 const readingText = (
   reading: { value: string; flag: string | null; reference: string | null },
@@ -266,9 +376,18 @@ const readingText = (
 ): string => {
   const value = values?.[reading.value] ?? reading.value;
   const flag = reading.flag ? ANALYTE_FLAG_ZH[reading.flag.trim().toLowerCase()] : undefined;
-  const bracket = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
+  const reported = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
     .filter(Boolean)
     .join('，');
+  // Against the payload's own value, not the localised display string:
+  // a wire enum swapped for Chinese words is not the number the
+  // laboratory measured.
+  const observed = reading.flag
+    ? null
+    : compareWithPrintedInterval(reading.value, reading.reference);
+  const bracket = [reported, observed ? PRINTED_INTERVAL_NOTE_ZH[observed] : '']
+    .filter(Boolean)
+    .join('；');
   return bracket ? `${value}（${bracket}）` : value;
 };
 
@@ -393,6 +512,35 @@ const getDocumentType = (doc: DocumentLike) => {
     'other'
   );
 };
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ONE PAGE, TWO PANELS, AND ONLY ONE LABEL TO CARRY BOTH.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * An 入院常规 printout prints 血常规 and 尿常规 under their own headings
+ * on one sheet, and the parser reads both off it —
+ * `_split_blood_and_urine_sections` in fshd_report_service.py splits on
+ * the headings and runs BOTH extractors, whichever of the two labels the
+ * classifier landed on. So the payload carries `hgb` AND `urineProtein`.
+ *
+ * THE CLASSIFICATION CANNOT CARRY BOTH, and it is a single string: the
+ * page scores `blood_routine`, because it prints haemoglobin and
+ * platelets and the specimen rule that rescues a pure urine report
+ * cannot fire. This screen's per-metric `docTypes` gate then asked
+ * whether the document's ONE type was `urinalysis`, and every 尿蛋白,
+ * 尿潜血, 尿糖, 尿比重 and 尿 pH the parser had just extracted was
+ * filtered back out — off 检查结果 on 报告详情, off 我的档案 and off
+ * 病程. The fix landed in the parser and stopped at the screen.
+ *
+ * SO THE TWO LABELS ADMIT EACH OTHER, and nothing else changes: a
+ * document typed `urinalysis` was always allowed to supply urine rows
+ * and still is, and the gate still refuses every OTHER type — a
+ * biochemistry panel does not get to supply a urine sediment count.
+ * What it stops doing is trusting a single label to describe a page
+ * this platform already knows prints two panels.
+ */
+const ADMISSION_PANEL_DOC_TYPES = ['blood_routine', 'urinalysis'];
 
 const REPORT_TYPE_LABELS: Record<string, string> = {
   pulmonary_function: '肺功能',
@@ -1089,9 +1237,9 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
   const labCkmb = resolveMetric(docs, ['CKMB', 'ckmb'], ['muscle_enzyme', 'biochemistry']);
   const labCreatinine = resolveMetric(docs, ['creatinine'], ['biochemistry']);
   const labUricAcid = resolveMetric(docs, ['uricAcid', 'uric_acid'], ['biochemistry']);
-  const labWbc = resolveMetric(docs, ['wbc'], ['blood_routine']);
-  const labHgb = resolveMetric(docs, ['hgb'], ['blood_routine']);
-  const labPlt = resolveMetric(docs, ['plt'], ['blood_routine']);
+  const labWbc = resolveMetric(docs, ['wbc'], ADMISSION_PANEL_DOC_TYPES);
+  const labHgb = resolveMetric(docs, ['hgb'], ADMISSION_PANEL_DOC_TYPES);
+  const labPlt = resolveMetric(docs, ['plt'], ADMISSION_PANEL_DOC_TYPES);
   const labFt3 = resolveMetric(docs, ['ft3'], ['thyroid_function']);
   const labFt4 = resolveMetric(docs, ['ft4'], ['thyroid_function']);
   const labTsh = resolveMetric(docs, ['tsh'], ['thyroid_function']);
@@ -1147,9 +1295,9 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
       'blood_routine',
       '血常规',
       [
-        { label: 'WBC', keys: ['wbc'], docTypes: ['blood_routine'] },
-        { label: 'HGB', keys: ['hgb'], docTypes: ['blood_routine'] },
-        { label: 'PLT', keys: ['plt'], docTypes: ['blood_routine'] },
+        { label: 'WBC', keys: ['wbc'], docTypes: ADMISSION_PANEL_DOC_TYPES },
+        { label: 'HGB', keys: ['hgb'], docTypes: ADMISSION_PANEL_DOC_TYPES },
+        { label: 'PLT', keys: ['plt'], docTypes: ADMISSION_PANEL_DOC_TYPES },
       ],
       docs,
       'secondary',
@@ -1187,19 +1335,27 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
       'urinalysis',
       '尿常规',
       [
-        { label: '尿蛋白', keys: ['urineProtein', 'urine_protein'], docTypes: ['urinalysis'] },
+        {
+          label: '尿蛋白',
+          keys: ['urineProtein', 'urine_protein'],
+          docTypes: ADMISSION_PANEL_DOC_TYPES,
+        },
         {
           label: '尿潜血',
           keys: ['urineOccultBlood', 'urine_occult_blood'],
-          docTypes: ['urinalysis'],
+          docTypes: ADMISSION_PANEL_DOC_TYPES,
         },
-        { label: '尿糖', keys: ['urineGlucose', 'urine_glucose'], docTypes: ['urinalysis'] },
+        {
+          label: '尿糖',
+          keys: ['urineGlucose', 'urine_glucose'],
+          docTypes: ADMISSION_PANEL_DOC_TYPES,
+        },
         {
           label: '尿比重',
           keys: ['urineSpecificGravity', 'urine_specific_gravity'],
-          docTypes: ['urinalysis'],
+          docTypes: ADMISSION_PANEL_DOC_TYPES,
         },
-        { label: '尿 pH', keys: ['urinePh', 'urine_ph'], docTypes: ['urinalysis'] },
+        { label: '尿 pH', keys: ['urinePh', 'urine_ph'], docTypes: ADMISSION_PANEL_DOC_TYPES },
       ],
       docs,
       'secondary',

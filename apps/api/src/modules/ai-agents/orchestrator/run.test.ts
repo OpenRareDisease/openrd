@@ -1641,9 +1641,16 @@ describe('Orchestrator.run — strict visibility notice', () => {
       classifiedType: 'genetic',
       status: null,
       uploadYear: null,
-      // Everything in here is dropped by `projectOcrFields`, so the
-      // blob projects to {} while the key still reaches `fieldsUsed`.
-      fields: { patientName: '张三', 送检医院: '某某医院' },
+      // Everything in here is gone before `projectOcrFields` runs, so
+      // the blob projects to {} while the key still reaches `fieldsUsed`.
+      //
+      // HARD-DELETED RATHER THAN MERELY UNRECOGNISED, and that is the
+      // fixture's whole content now. A cell the projection has no name
+      // for is no longer silent — it is counted into
+      // `fieldsNotRecognised`, so it publishes a row and this is not the
+      // empty projection this test is about. `patientName` is removed by
+      // layer 1 at any depth, which leaves the OCR blob genuinely empty.
+      fields: { patientName: '张三' },
     };
     const llm = mkLlm(gatherThenAnswerWith('get_my_reports'));
     await reportsOrchestrator(llm, row).run({

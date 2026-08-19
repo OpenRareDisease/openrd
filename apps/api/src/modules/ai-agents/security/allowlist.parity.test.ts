@@ -17,6 +17,16 @@
  *     urinalysis rendered as its report type and one row with both
  *     「something was withheld」 statistics reading zero. The assistant is
  *     told a urinalysis exists and shown an empty one.
+ *
+ *     THAT DROP IS NO LONGER SILENT. `projectOcrFields` counts such a
+ *     cell into `fieldsNotRecognised` and the block prints the count, so
+ *     the shape this file exists to catch now also fails at RUNTIME and
+ *     not only in CI: a model handed a report with a gap in it is told
+ *     there is a gap, instead of being handed what looks like an empty
+ *     parse. The count is the floor under this file rather than a
+ *     replacement for it — a counted cell is still a reading nobody
+ *     gets, and 「fourteen cells this platform cannot name」 is a much
+ *     worse answer than the fourteen cells.
  *   - A CELL THE LIST CARRIES AND NOTHING WRITES. It reads to the next
  *     maintainer as evidence the key is live, and it is what
  *     `get_my_reports`' description is written from — the `ageGroup`
@@ -41,6 +51,29 @@
  *「嗜酸性粒细胞百分比」 and not that a laboratory prints an interval
  * against it. A derivation would have to invent both, and inventing
  * clinical vocabulary is the one thing this list must not do.
+ *
+ * ASKED AGAIN AND ANSWERED THE SAME WAY, WITH ONE THING ADDED. The
+ * answer above says a derivation would have to INVENT the Chinese and
+ * the table placement, and that has not changed. What has changed is the
+ * other half of the demand: a list that cannot be derived must at least
+ * fail loudly, and until this round it failed in total silence. Three
+ * fences now stand under it, and they are different in kind:
+ *
+ *   1. THIS FILE, in CI, over the parser's own field names — the only
+ *      one that can say WHICH cell is missing.
+ *   2. `fieldsNotRecognised`, at runtime, in the prompt — the only one
+ *      that reaches the model on the turn a gap actually costs a patient
+ *      an answer, and the only one that covers a payload written by a
+ *      pipeline this file has never read.
+ *   3. `OCR_FIELD_LABELS_ZH` being the source of both the admission set
+ *      and the label table, so a key admitted without Chinese does not
+ *      compile.
+ *
+ * The three cover the three ways this inventory has actually failed: a
+ * cell nobody listed, a cell listed that nothing writes, and a cell
+ * listed with no name. Two more lists were added this round and both are
+ * checked against their writer rather than trusted — see the analyte
+ * join and the non-result set at the bottom of this file.
  *
  * SO IT IS CHECKED, IN BOTH DIRECTIONS, AND EVERY KEY IS ACCOUNTED FOR.
  * The parser's field names are read out of the Python source; each is
@@ -71,9 +104,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  OCR_ANALYTE_ALIASES,
   OCR_FIELDS_SAFE_KEYS_PRECISE,
   OCR_FIELD_LABELS_ZH,
   OCR_FLAG_SUFFIX,
+  OCR_NON_RESULT_KEYS,
   OCR_REFERENCE_SUFFIX,
   flagKey,
   referenceKey,
@@ -84,6 +119,10 @@ const PARSER_SOURCE = path.resolve(
   HERE,
   '../../../../../report-manager/app/services/fshd_report_service.py',
 );
+/** The other writer. Read as text for the same reason the parser is:
+ *  these are checks on lists of strings, and a copy of either list kept
+ *  in this file is a copy that can drift. */
+const BRIDGE_SOURCE = path.resolve(HERE, '../../../services/ocr/embedded-report-ocr.ts');
 
 /** `toCamelCase` in services/ocr/embedded-report-ocr.ts, which is what
  *  turns a parser field name into the second spelling the bridge writes.
@@ -326,6 +365,63 @@ const LEGACY_SPELLINGS: Readonly<Record<string, string>> = {
   diagnosis_type: 'retired by CANONICAL_GENETIC_CELLS; still on disk',
 };
 
+// ────────────────────────────────────────────────────── reading the bridge
+
+/**
+ * Every key `buildFields` assigns onto `fields` — the object-literal
+ * seed and every later `fields.<name> =`.
+ *
+ * A FLOOR RATHER THAN AN EXACT SET, deliberately. It over-reads (a
+ * `fields.creatineKinase = fields.ck` quoted inside a comment counts) and
+ * it cannot see the two writes that go through `writeReading` with a
+ * computed key. Both are the safe direction for what it is used for
+ * below: 「this key is one the bridge really writes」.
+ */
+const bridgeWrittenKeys = (): ReadonlySet<string> => {
+  const source = fs.readFileSync(BRIDGE_SOURCE, 'utf8');
+  const keys = new Set<string>();
+  for (const match of source.matchAll(/\bfields\.([A-Za-z][A-Za-z0-9_]*)\s*=/g)) keys.add(match[1]);
+  const seed = /const fields: Record<string, string> = \{([\s\S]*?)\n {2}\};/.exec(source);
+  if (!seed) {
+    throw new Error(
+      `${BRIDGE_SOURCE}: could not find the 「const fields: Record<string, string> = {」 seed. This test's reader, not the app, is what broke.`,
+    );
+  }
+  for (const match of seed[1].matchAll(/^ {4}([A-Za-z][A-Za-z0-9_]*)\s*[:,]/gm)) keys.add(match[1]);
+  if (keys.size < 20) {
+    throw new Error(
+      `read only ${keys.size} keys out of ${BRIDGE_SOURCE}; expected well over 20. This test's reader, not the app, is what broke.`,
+    );
+  }
+  return keys;
+};
+
+/**
+ * `LEGACY_ANALYTE_TWINS` in the bridge, read out of its source. The
+ * allowlist's `OCR_ANALYTE_ALIASES` is the JOIN for exactly this table,
+ * and a join that names a pair the bridge stopped minting — or misses one
+ * it started — puts one report row back on the prompt as two analytes.
+ */
+const bridgeAnalyteTwins = (): Readonly<Record<string, string>> => {
+  const source = fs.readFileSync(BRIDGE_SOURCE, 'utf8');
+  const table = /LEGACY_ANALYTE_TWINS[^=]*=\s*\[([\s\S]*?)\n\];/.exec(source);
+  if (!table) {
+    throw new Error(
+      `${BRIDGE_SOURCE}: could not find 「LEGACY_ANALYTE_TWINS = [」. This test's reader, not the app, is what broke.`,
+    );
+  }
+  const twins: Record<string, string> = {};
+  for (const match of table[1].matchAll(/from:\s*'([^']+)'\s*,\s*to:\s*'([^']+)'/g)) {
+    twins[match[2]] = match[1];
+  }
+  if (Object.keys(twins).length === 0) {
+    throw new Error(
+      `${BRIDGE_SOURCE}: LEGACY_ANALYTE_TWINS parsed to nothing. This test's reader, not the app, is what broke.`,
+    );
+  }
+  return twins;
+};
+
 // ──────────────────────────────────────────────────────────── the checks
 
 const PARSER_NAMES = parserFieldNames();
@@ -362,9 +458,10 @@ describe('OCR allowlist ↔ report parser parity', () => {
     }
     expect(
       unaccounted.sort(),
-      'These cells reach `ocr_payload.fields` and are dropped by deny-by-default before anything counts, ' +
-        'so the model is shown a report with them silently missing. Give each one Chinese in the right table ' +
-        'of allowlist.ts, or a reason in DECLINED above.',
+      'These cells reach `ocr_payload.fields` and are dropped by deny-by-default, so the model is shown ' +
+        'a report with them missing — counted into `fieldsNotRecognised`, which is a statement that a ' +
+        'reading exists and not the reading. Give each one Chinese in the right table of allowlist.ts, ' +
+        'or a reason in DECLINED above.',
     ).toEqual([]);
   });
 
@@ -458,6 +555,73 @@ describe('OCR allowlist ↔ report parser parity', () => {
     expect(
       admittedAnyway.sort(),
       'These are on the allowlist AND on DECLINED. Whichever is right, the other has to go.',
+    ).toEqual([]);
+  });
+
+  /**
+   * ────────────────────────────────────────────────────────────────────
+   * THE JOIN, AGAINST THE TABLE IT JOINS.
+   * ────────────────────────────────────────────────────────────────────
+   *
+   * `OCR_ANALYTE_ALIASES` is a second hand-maintained list and it is
+   * exactly as capable of rotting as the first, so it is read against
+   * the bridge's own `LEGACY_ANALYTE_TWINS` rather than trusted. A twin
+   * the bridge mints and this table does not name is one report row
+   * reaching the model as two flagged analytes; a pair named here that
+   * the bridge no longer mints is a join that silently drops a cell.
+   */
+  it('the analyte join names exactly the twins the bridge mints', () => {
+    expect(OCR_ANALYTE_ALIASES).toEqual(bridgeAnalyteTwins());
+  });
+
+  it('both halves of every joined pair are named in Chinese', () => {
+    // The alias survives the join only when the two disagree, and that
+    // is the state in which the model most needs both rows named.
+    for (const [alias, canonical] of Object.entries(OCR_ANALYTE_ALIASES)) {
+      expect(ALLOW, `${alias} is joined away but nothing names it`).toContain(alias);
+      expect(ALLOW, `${canonical} is the survivor of the join`).toContain(canonical);
+      expect(
+        OCR_FIELD_LABELS_ZH[alias],
+        `${alias} and ${canonical} share a label, so a reader cannot tell them apart when they disagree`,
+      ).not.toBe(OCR_FIELD_LABELS_ZH[canonical]);
+    }
+  });
+
+  /**
+   * ────────────────────────────────────────────────────────────────────
+   * WHAT THE 「NOT RECOGNISED」 COUNT LEAVES OUT.
+   * ────────────────────────────────────────────────────────────────────
+   *
+   * `fieldsNotRecognised` is a number a model repeats to a patient, so
+   * `OCR_NON_RESULT_KEYS` decides what that number means. A gap in it
+   * fails LOUD — an unlisted bookkeeping key is counted, so the number
+   * reads one too high — and the failure it must not have is the other
+   * one: a real result quietly excluded from the count and from the
+   * prompt at the same time. These three checks are what stop that.
+   */
+  it('nothing excluded from the count is a cell the parser writes', () => {
+    const results = [...OCR_NON_RESULT_KEYS].filter((key) =>
+      [...PARSER_NAMES].some((fieldName) => spellings(fieldName).includes(key)),
+    );
+    expect(
+      results.sort(),
+      'These are results an extractor produced, and excluding one means a report can reach the model ' +
+        'missing it with the counter still reading zero — the exact silence fieldsNotRecognised exists to end.',
+    ).toEqual([]);
+  });
+
+  it('nothing excluded from the count is on the allowlist', () => {
+    const both = [...OCR_NON_RESULT_KEYS].filter((key) => ALLOW.has(key));
+    expect(both.sort(), 'A key cannot be both publishable and not worth counting').toEqual([]);
+  });
+
+  it('everything excluded from the count is a key the bridge really writes', () => {
+    const written = bridgeWrittenKeys();
+    const phantom = [...OCR_NON_RESULT_KEYS].filter((key) => !written.has(key));
+    expect(
+      phantom.sort(),
+      'These are excluded from a patient-facing count on the grounds that the bridge writes them as ' +
+        'bookkeeping, and the bridge writes no such key. Delete them, or say what does write them.',
     ).toEqual([]);
   });
 

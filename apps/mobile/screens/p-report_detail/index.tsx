@@ -122,6 +122,110 @@ type DebugPayload = OcrPayload & {
   extracted_text?: string;
 };
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * WHAT THE READ-PATH GUARD DID TO THIS PAYLOAD, WHICH THIS SCREEN WAS
+ * NOT ASKING.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `withholdUnsafeReadings` in the API's profile.service.ts asks two
+ * questions of every laboratory reading on a payload before it goes out
+ * — is this number the same number as another row's, and does it sit
+ * outside the interval this same report printed beside it — and files
+ * the answer at the TOP LEVEL of the payload as `unsafeReadings`, with
+ * a one-line summary under `unsafeReadingsNotice`. A WITHHELD reading
+ * has had its cell deleted from `fields` under every spelling it had; a
+ * FLAGGED one is still there and is not to be printed as an ordinary
+ * number.
+ *
+ * That file's own note names the surfaces that owe the reader the other
+ * half of the defence, and this screen is on the list — it is the FIRST
+ * one on it, because it is the screen a patient opens to look at one
+ * report. It read `fields` and nothing else. So a report whose LDH was
+ * withheld for being a row index rendered as a report that simply has
+ * one row fewer: no gap, no mark, no sentence, nothing anywhere on the
+ * page saying a number had been taken out or why. A patient comparing
+ * this screen against the paper in their hand would find a row on the
+ * paper and no row here, and the only available conclusion is that this
+ * platform failed to read it.
+ *
+ * THE VALUE IS NEVER IN THIS RECORD AND MUST NOT BE PUT BACK. A
+ * withheld cell was deleted; handing the number back under a second key
+ * would make the deletion theatre. The analyte, its spellings and the
+ * reason are all a surface gets, and all it needs.
+ *
+ * DECLARED HERE RATHER THAN ON THE DTO because this screen is the only
+ * reader in this bundle, exactly as `extracted_text` above is.
+ */
+interface UnsafeReading {
+  analyte: string;
+  keys: string[];
+  disposition: 'withheld' | 'flagged';
+  reason: string;
+  sharedWith?: string[];
+  corroboration?: string;
+}
+
+type GuardedPayload = OcrPayload & {
+  unsafeReadings?: UnsafeReading[];
+  unsafeReadingsNotice?: string;
+};
+
+const readUnsafeReadings = (payload: OcrPayload | null): UnsafeReading[] => {
+  const raw = (payload as GuardedPayload | null)?.unsafeReadings;
+  if (!Array.isArray(raw)) return [];
+  // A malformed entry is dropped rather than rendered: this list drives
+  // a sentence about a patient's own laboratory result, and a row with
+  // no analyte and no keys cannot be turned into a true one.
+  return raw.filter(
+    (item): item is UnsafeReading =>
+      Boolean(item) &&
+      typeof item.analyte === 'string' &&
+      Array.isArray(item.keys) &&
+      (item.disposition === 'withheld' || item.disposition === 'flagged'),
+  );
+};
+
+const readUnsafeNotice = (payload: OcrPayload | null): string | null => {
+  const raw = (payload as GuardedPayload | null)?.unsafeReadingsNotice;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+};
+
+/** Why this platform stopped showing a number, or marked one — the same
+ *  four cases `buildUnsafeReadingNotice` composes its sentence from,
+ *  said one cell at a time. The notice says THAT it happened; this says
+ *  to WHICH reading, which is the half a patient holding the paper
+ *  report needs.
+ *
+ *  Keyed on the pair, because the same reason means different things
+ *  under the two dispositions: a duplicate the page could not settle is
+ *  withheld, and one it could corroborate is only marked. */
+const UNSAFE_REASON_ZH: Record<string, string> = {
+  'withheld:duplicate_reading': '和这份报告上的另一个项目印着同一个数，报告原件核对不上',
+  'withheld:contradictory_aliases': '同一个项目读出了两个互相矛盾的数值',
+  'flagged:duplicate_reading': '和这份报告上的另一个项目印着同一个数，无法用报告原件核对',
+  'flagged:outside_reference_interval': '超出报告自己印的参考区间',
+};
+
+/** The fall-throughs say only what the disposition itself guarantees.
+ *  A reason this build has no wording for is still a reading the reader
+ *  must be told about — dropping the row would hide the very thing this
+ *  panel exists for. */
+const UNSAFE_REASON_FALLBACK_ZH: Record<UnsafeReading['disposition'], string> = {
+  withheld: '这一项没有通过本平台的核对',
+  flagged: '这一项需要你对着报告原件核对',
+};
+
+/** Why a duplicate was believed, in the guard's own closed vocabulary.
+ *  Printed so the judgement can be checked against the paper rather
+ *  than only trusted. */
+const UNSAFE_CORROBORATION_ZH: Record<string, string> = {
+  page_prints_it_once: '报告原文里这个数只出现过一次',
+  three_or_more_rows: '同一个数出现在三个以上的项目上',
+  known_pair: '这两个项目本来就容易被读串',
+  one_row_twice: '两行的单位和参考区间完全一样，像是同一行被读了两遍',
+};
+
 const getAnalysisStatus = (payload: OcrPayload | null) => {
   const status = payload?.fields?.analysisStatus ?? payload?.fields?.analysis_status;
   return typeof status === 'string' ? status : undefined;
@@ -573,12 +677,18 @@ const OCR_TEXT_LIMIT = 4000;
 
 /** One traceability row: what to call the cell, and what this platform
  *  read into it. `named` is false for a key with no Chinese name — the
- *  row still prints, under its own heading. */
+ *  row still prints, under its own heading.
+ *
+ *  `mark` is what the read-path guard said about THIS cell, where it
+ *  said anything. A flagged reading is still printed — that is what
+ *  separates it from a withheld one — and a defence that marks where
+ *  nothing shows the mark is a defence that does nothing. */
 interface TraceRow {
   key: string;
   label: string;
   value: string;
   named: boolean;
+  mark?: string;
 }
 
 const traceLabelFor = (key: string): string | undefined => {
@@ -616,11 +726,72 @@ const traceValueFor = (key: string, raw: string): string => {
   return raw;
 };
 
+/**
+ * WHAT TO CALL A READING THAT IS NO LONGER IN `fields`.
+ *
+ * A withheld entry's `keys` are the cells that are GONE, so the only
+ * names available are the spellings themselves and the canonical
+ * analyte. Every one of them is tried against the same table the cross-
+ * check panel uses, so a value this screen would have called 乳酸脱氢酶
+ * LDH is called that in the sentence saying it is not being shown.
+ *
+ * The raw analyte is the fall-through, for the same reason an unnamed
+ * cell still prints in 来源追溯: a reading this platform stopped showing
+ * and cannot name is the one it most owes the reader an admission
+ * about.
+ */
+const unsafeReadingLabel = (reading: UnsafeReading): string => {
+  for (const key of [...reading.keys, reading.analyte]) {
+    const named = traceLabelFor(key);
+    if (named) return named;
+  }
+  return reading.analyte;
+};
+
+/** The one-line 「why」 for a single reading: the reason, then — for a
+ *  duplicate — which other item on the page shares the number, and what
+ *  made this platform believe it was one row read twice.
+ *
+ *  A corroboration token this build has no wording for is dropped
+ *  rather than printed raw: it is an audit word, and the reason above
+ *  is already the true half of the sentence. */
+const unsafeReadingDetail = (reading: UnsafeReading): string => {
+  const reason =
+    UNSAFE_REASON_ZH[`${reading.disposition}:${reading.reason}`] ??
+    UNSAFE_REASON_FALLBACK_ZH[reading.disposition];
+  const shared = (reading.sharedWith ?? []).map((analyte) => traceLabelFor(analyte) ?? analyte);
+  const corroboration = reading.corroboration
+    ? UNSAFE_CORROBORATION_ZH[reading.corroboration]
+    : undefined;
+  const aside = [
+    shared.length > 0 ? `与${shared.join('、')}是同一个数` : undefined,
+    corroboration ? `依据：${corroboration}` : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return aside.length > 0 ? `${reason}（${aside.join('；')}）` : reason;
+};
+
+/** Every `fields` spelling the guard marked but did NOT delete, mapped
+ *  to the mark that belongs on it. Withheld entries are absent on
+ *  purpose: their cells are gone, so there is no row here to mark, and
+ *  they are named in the 数值核对 panel instead. */
+const buildUnsafeMarks = (readings: UnsafeReading[]): Map<string, string> => {
+  const marks = new Map<string, string>();
+  for (const reading of readings) {
+    if (reading.disposition !== 'flagged') continue;
+    const detail = unsafeReadingDetail(reading);
+    for (const key of reading.keys) marks.set(key, detail);
+  }
+  return marks;
+};
+
 /** Every cell the parse took off this report, named where this platform
  *  has a name for it. Bookkeeping keys are excluded by the same set the
  *  reparse gate uses, so 「what was read」 means the same thing here as
  *  it does there. */
-const buildTraceRows = (fields: Record<string, string> | undefined): TraceRow[] => {
+const buildTraceRows = (
+  fields: Record<string, string> | undefined,
+  marks: Map<string, string>,
+): TraceRow[] => {
   if (!fields) return [];
   const rows: TraceRow[] = [];
   for (const [key, rawValue] of Object.entries(fields)) {
@@ -628,15 +799,42 @@ const buildTraceRows = (fields: Record<string, string> | undefined): TraceRow[] 
     const value = String(rawValue ?? '').trim();
     if (!value) continue;
     const label = traceLabelFor(key);
+    const mark = marks.get(key);
     rows.push({
       key,
       label: label ?? key,
       value: traceValueFor(key, value),
       named: label !== undefined,
+      ...(mark ? { mark } : {}),
     });
   }
   return rows;
 };
+
+/**
+ * One row of 来源追溯.
+ *
+ * THE MARK IS UNDER THE VALUE AND NOT INSIDE IT. The value column is
+ * the cell as the report printed it, and a reader running down that
+ * column is comparing it against paper; splicing this platform's own
+ * sentence into the same string would make the two indistinguishable.
+ * It is prefixed 本平台标注 for the same reason and set in caption
+ * weight, so nothing about it can be read as something the laboratory
+ * wrote.
+ */
+const TraceRowView = ({ row }: { row: TraceRow }) => (
+  <View style={styles.fieldRow}>
+    <Text style={styles.fieldLabel}>{row.label}</Text>
+    {row.mark ? (
+      <View style={styles.fieldValueColumn}>
+        <Text style={styles.fieldValueStacked}>{row.value}</Text>
+        <Text style={styles.fieldMark}>{`本平台标注：${row.mark}`}</Text>
+      </View>
+    ) : (
+      <Text style={styles.fieldValue}>{row.value}</Text>
+    )}
+  </View>
+);
 
 const formatKindLabel = (kind: string) => {
   switch (kind) {
@@ -1112,9 +1310,24 @@ export default function ReportDetailScreen() {
     return structuredSections.flatMap((section) => section.items).slice(0, 4);
   }, [relevantSystemPanels, structuredSections]);
 
+  /** What the read-path guard did to this payload. See
+   *  `UnsafeReading` — the array is on the payload's TOP level, beside
+   *  `fields` and deliberately not inside it. */
+  const unsafeReadings = useMemo(() => readUnsafeReadings(payload), [payload]);
+  const unsafeNotice = useMemo(() => readUnsafeNotice(payload), [payload]);
+  const withheldReadings = useMemo(
+    () => unsafeReadings.filter((item) => item.disposition === 'withheld'),
+    [unsafeReadings],
+  );
+  const flaggedReadings = useMemo(
+    () => unsafeReadings.filter((item) => item.disposition === 'flagged'),
+    [unsafeReadings],
+  );
+  const unsafeMarks = useMemo(() => buildUnsafeMarks(unsafeReadings), [unsafeReadings]);
+
   /** Every cell the parse read, for the cross-check. See
    *  `TRACE_FIELD_LABELS`. */
-  const traceRows = useMemo(() => buildTraceRows(fields), [fields]);
+  const traceRows = useMemo(() => buildTraceRows(fields, unsafeMarks), [fields, unsafeMarks]);
   const namedTraceRows = useMemo(() => traceRows.filter((row) => row.named), [traceRows]);
   const unnamedTraceRows = useMemo(() => traceRows.filter((row) => !row.named), [traceRows]);
 
@@ -1348,6 +1561,64 @@ export default function ReportDetailScreen() {
           </View>
         </View>
 
+        {/* ══════════════════════════════════════════════════════════
+            数值核对 — DIRECTLY UNDER THE VALUES IT IS ABOUT.
+
+            Placed here and not further down because the grid above and
+            the panels below are where a withheld reading is INVISIBLE:
+            the cell was deleted, so those surfaces simply have one row
+            fewer and nothing about them says a row is missing. A
+            patient holding the paper report finds a line on the paper
+            with no line here, and the only conclusion available to
+            them is that this platform could not read it.
+
+            The notice is the server's own sentence, composed from the
+            dispositions actually present on THIS payload (see
+            `buildUnsafeReadingNotice`) — a payload that only marked
+            says only that it marked. The two lists say WHICH reading,
+            which is the half the sentence cannot carry. The numbers
+            are not here and must not be: a withheld cell was deleted,
+            and handing it back under a second key would make the
+            deletion theatre. ═══════════════════════════════════════ */}
+        {unsafeReadings.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>数值核对</Text>
+            {unsafeNotice ? <Text style={styles.smallText}>{unsafeNotice}</Text> : null}
+            {withheldReadings.length > 0 ? (
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldGroupTitle}>这些数值本平台已不再显示</Text>
+                <View style={styles.fieldTable}>
+                  {withheldReadings.map((reading) => (
+                    <View key={`withheld-${reading.analyte}`} style={styles.fieldRow}>
+                      <Text style={styles.fieldLabel}>{unsafeReadingLabel(reading)}</Text>
+                      <Text style={styles.fieldNote}>{unsafeReadingDetail(reading)}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+            {flaggedReadings.length > 0 ? (
+              <View style={styles.fieldGroup}>
+                {/* 仍按报告原样显示 is the load-bearing half: these
+                    values ARE on the screen above, unchanged. The
+                    heading has to say so, or the panel reads as a
+                    second withholding list. */}
+                <Text style={styles.fieldGroupTitle}>
+                  这些数值仍按报告原样显示，请对着报告原件留意
+                </Text>
+                <View style={styles.fieldTable}>
+                  {flaggedReadings.map((reading) => (
+                    <View key={`flagged-${reading.analyte}`} style={styles.fieldRow}>
+                      <Text style={styles.fieldLabel}>{unsafeReadingLabel(reading)}</Text>
+                      <Text style={styles.fieldNote}>{unsafeReadingDetail(reading)}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {reportKind === 'mri' &&
           (Object.keys(activeRegions).length > 0 || activeSummary.length > 0) && (
             <View style={styles.section}>
@@ -1529,10 +1800,7 @@ export default function ReportDetailScreen() {
                       <Text style={styles.fieldGroupTitle}>本平台读到的字段</Text>
                       <View style={styles.fieldTable}>
                         {namedTraceRows.map((row) => (
-                          <View key={row.key} style={styles.fieldRow}>
-                            <Text style={styles.fieldLabel}>{row.label}</Text>
-                            <Text style={styles.fieldValue}>{row.value}</Text>
-                          </View>
+                          <TraceRowView key={row.key} row={row} />
                         ))}
                       </View>
                     </View>
@@ -1548,10 +1816,7 @@ export default function ReportDetailScreen() {
                       </Text>
                       <View style={styles.fieldTable}>
                         {unnamedTraceRows.map((row) => (
-                          <View key={row.key} style={styles.fieldRow}>
-                            <Text style={styles.fieldLabel}>{row.label}</Text>
-                            <Text style={styles.fieldValue}>{row.value}</Text>
-                          </View>
+                          <TraceRowView key={row.key} row={row} />
                         ))}
                       </View>
                     </View>

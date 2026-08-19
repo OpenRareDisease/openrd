@@ -32,7 +32,11 @@ import {
   REPORT_IMPRESSION_KEYS,
 } from './allowlist.js';
 import type { RedactionStats } from './pii-redactor.js';
-import { redactFields } from './pii-redactor.js';
+import {
+  OCR_VS_REFERENCE_SUFFIX,
+  REFERENCE_COMPARISON_READINGS,
+  redactFields,
+} from './pii-redactor.js';
 import type { AppLogger } from '../../../config/logger.js';
 import type { RetrievedChunk } from '../retrievers/base.js';
 
@@ -288,6 +292,75 @@ const WIRE_READING_ZH: Record<string, string> = {
   // than one platform, and its docstring is explicit that the caller
   // treats it as 「we do not know」 rather than as a method.
   ambiguous: '报告里提到不止一种检测方法，本平台没有判定是哪一种',
+  // --- the interval comparison (`REFERENCE_COMPARISON_READINGS`)
+  //
+  // MINTED ONLY WHERE THE LABORATORY MARKED NOTHING, so the Chinese has
+  // to end by saying who made the comparison. 「高于参考区间」 alone is
+  // word for word what `ANALYTE_FLAG_ZH` prints for a row the laboratory
+  // ITSELF arrowed, and the model has no way to tell two identical
+  // sentences apart — 「报告标了异常」 and 「报告没标，本平台比出来的」 are
+  // different evidence and a clinician treats them differently.
+  [REFERENCE_COMPARISON_READINGS.above]:
+    '高于这份报告自己印的参考区间（报告本身没有标异常，这一句是本平台拿数值和区间比出来的）',
+  [REFERENCE_COMPARISON_READINGS.below]:
+    '低于这份报告自己印的参考区间（报告本身没有标异常，这一句是本平台拿数值和区间比出来的）',
+
+  // --- the muscle-MRI findings (`_extract_mri`)
+  //
+  // 左右不对称 is written by the parser as one of two snake_case tokens
+  // of its own minting, so it belongs on this table by the rule the
+  // paragraph above states: a token that could only have come from this
+  // platform is rewritten wherever it appears, unlike 「high」 / 「yes」,
+  // which are ordinary English words and are keyed to their own cells
+  // below.
+  //
+  // WHAT THE PARENTHESIS IS FOR. `_extract_mri` reads this per SENTENCE
+  // and holds the muscle and the side on the same structured field —
+  // and `buildFields` in services/ocr/embedded-report-ocr.ts writes only
+  // the value, so which muscle and which side never reach this payload
+  // at all. 「右侧比左侧重」 with nothing after it reads as a statement
+  // about the whole study; it is a statement about one muscle whose name
+  // this platform is not holding, and saying so is the difference
+  // between a limitation and a false generalisation.
+  left_gt_right: '左侧比右侧重（本平台没有保留是哪一块肌肉）',
+  right_gt_left: '右侧比左侧重（本平台没有保留是哪一块肌肉）',
+};
+
+/**
+ * THE MUSCLE-MRI FINDING CELLS, WHOSE VALUE IS AN ENGLISH WORD.
+ *
+ * `_extract_mri` writes 「yes」 into `fatty_infiltration`,
+ * `inflammatory_change` and `atrophy`, and the block those rows print in
+ * is otherwise entirely Chinese — so the muscle MRI this disease is
+ * FOLLOWED BY reached the model as 「脂肪浸润: yes」, three times, in both
+ * modes. That is the `d4z4Repeats_clinical` shape on the one imaging
+ * modality an FSHD clinic orders every year, and the answer guard
+ * downstream has no entry for a word as ordinary as 「yes」.
+ *
+ * KEYED TO THE CELLS AND NOT APPLIED TO EVERY VALUE, for exactly the
+ * reason `ANALYTE_FLAG_ZH` gives about 「high」: 「yes」 is an ordinary
+ * English word, a qualitative panel could print one in a cell of its
+ * own, and a vocabulary this small has to be told which key it belongs
+ * to before it is allowed to rewrite anything.
+ *
+ * AND THE VALUE SAYS WHAT THE CELL ACTUALLY SUPPORTS. The parser sets
+ * this per SENTENCE, with the muscle name and the side on the same
+ * field; the bridge writes the value alone. So 「脂肪浸润: 有」 would
+ * assert of the whole study what the payload only supports of one
+ * unnamed muscle. See the `left_gt_right` note above — same defect, same
+ * sentence, and the missing halves are a fix in `buildFields`, not here.
+ */
+const MRI_FINDING_KEYS: ReadonlySet<string> = new Set([
+  'fattyInfiltration',
+  'fatty_infiltration',
+  'inflammatoryChange',
+  'inflammatory_change',
+  'atrophy',
+]);
+
+const MRI_FINDING_VALUE_ZH: Record<string, string> = {
+  yes: '有（报告里至少有一处这样写；本平台没有保留是哪一块肌肉、哪一侧）',
+  no: '未见（报告里没有这样写）',
 };
 
 /**
@@ -325,6 +398,10 @@ const formatFieldValue = (key: string, value: unknown): string => {
     if (key.endsWith(OCR_FLAG_SUFFIX)) {
       const flag = ANALYTE_FLAG_ZH[value.trim().toLowerCase()];
       if (flag !== undefined) return flag;
+    }
+    if (MRI_FINDING_KEYS.has(key)) {
+      const finding = MRI_FINDING_VALUE_ZH[value.trim().toLowerCase()];
+      if (finding !== undefined) return finding;
     }
     const reading = WIRE_READING_ZH[value];
     if (reading !== undefined) return reading;
@@ -556,13 +633,24 @@ const OCR_DERIVED_SUFFIX_ZH: readonly (readonly [string, string])[] = [
   ['_clinical', '本平台判读'],
   ['_origin', '来源'],
   ['_withheld', '数值未共享'],
+  // Minted by `projectOcrFields` where the row printed an interval and
+  // no marker of its own. The parenthesis is the whole point of the
+  // row: the sibling one line up is 「… 异常标记」, which is the
+  // LABORATORY's verdict, and these two must not read as one thing.
+  [OCR_VS_REFERENCE_SUFFIX, '本平台与报告所印参考区间比对'],
 ];
 
-/** The projection's own two counters. Neither is a cell off a report,
- *  which is why neither is on the allowlist and both are named here. */
+/** The projection's own three counters. None is a cell off a report,
+ *  which is why none is on the allowlist and all are named here. */
 const OCR_BOOKKEEPING_LABELS_ZH: Readonly<Record<string, string>> = {
   numericValuesWithheld: '按当前授权扣下的测量值个数',
   fieldsDroppedAsUnsafe: '因为无法确认内容而没有发出的格子数',
+  // THE ONE THAT SAYS THE BLOCK IS INCOMPLETE. Without it a report whose
+  // every cell is off the naming table renders as its report type and
+  // nothing else, and 「未提取到具体检测数据」 is what the model then says
+  // about it. The wording names the reason, because 「没有发出」 with no
+  // reason invites the model to supply one.
+  fieldsNotRecognised: '本平台没有收录名称、因此没有发出的检查项个数',
 };
 
 /**

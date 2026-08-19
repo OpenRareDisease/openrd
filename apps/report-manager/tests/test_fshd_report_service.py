@@ -4574,5 +4574,451 @@ class TwoPanelsOnOnePageAreTwoPanelsTest(unittest.TestCase):
         self.assertNotIn("wbc", panel)
 
 
+
+class TheColumnOrderIsDeterminedOnceTest(unittest.TestCase):
+    """The page states its own column order, and it is read ONCE.
+
+    Every reader in this module used to answer 「which cell is the
+    result」 for itself, which is why the same defect has now been fixed
+    on five of them. Where the columns differ in SHAPE nothing is needed
+    — a two-sided interval is not a reading whatever column it sits in.
+    Where they do not, this is the one place the answer comes from.
+    """
+
+    def test_a_flattened_header_row_is_read(self):
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例市第一人民医院检验报告单",
+                "项目 参考区间 结果 单位",
+                "蛋白质(PRO) 阴性 阳性",
+            ]).roles,
+            ("name", "reference", "result", "unit"),
+        )
+
+    def test_a_cell_per_line_header_is_the_same_header(self):
+        """PaddleOCR emits one cell per line; the header arrives as a run."""
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例市第一人民医院检验报告单",
+                "项目",
+                "结果",
+                "参考区间",
+                "单位",
+                "蛋白质(PRO)",
+                "阴性",
+            ]).roles,
+            ("name", "result", "reference", "unit"),
+        )
+
+    def test_a_section_heading_is_not_a_column_order(self):
+        """「检测结果:」 heads a genetic report's DATA, not a column."""
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例基因检测中心 检测报告",
+                "检测结果:",
+                "D4Z4 重复单元数 3",
+            ]).roles,
+            (),
+        )
+
+    def test_a_line_that_merely_contains_a_heading_word_is_not_a_header(self):
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "检测结果: D4Z4 重复单元数 18 个",
+                "参考区间见附注",
+            ]).roles,
+            (),
+        )
+
+    def test_an_undetermined_order_answers_none_rather_than_a_default(self):
+        """None is not False. A reader given None must publish nothing."""
+        self.assertIsNone(
+            fshd_report_service._page_columns(["白细胞计数(WBC) 6.69"]).result_precedes(
+                "reference"
+            )
+        )
+
+
+class TheReferenceIsNotThePatientsVerdictTest(unittest.TestCase):
+    """ON 项目 / 参考区间 / 结果, EVERY QUALITATIVE ROW PUBLISHED 阴性.
+
+    The qualitative panels were the last ones still scanning for 「the
+    analyte's name, then the first 阴性/阳性」. That is an assumption
+    about the column order written as a gap class, and on the order this
+    module's own `_BOUND_CELL` note calls ordinary on Chinese laboratory
+    reports the first verdict after the name is the laboratory's
+    REFERENCE. A 尿常规 whose protein is 阳性(+) told the patient 阴性 —
+    and so did its glucose, its blood and every other qualitative row,
+    and so did a hepatitis or HIV screen printed the same way.
+    """
+
+    def test_the_header_says_which_column_is_the_patients(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 阳性(+)",
+            "葡萄糖(GLU) 阴性 阳性",
+            "潜血(OB) 阴性 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(+)")
+        self.assertEqual(panel["urine_glucose"], "阳性")
+        self.assertEqual(panel["urine_occult_blood"], "阴性")
+
+    def test_the_cell_per_line_layout_reads_the_same_column(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目",
+            "参考区间",
+            "结果",
+            "蛋白质(PRO)",
+            "阴性",
+            "阳性(+)",
+            "酮体(KET)",
+            "阴性",
+            "阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(+)")
+        self.assertEqual(panel["urine_ketone"], "阴性")
+
+    def test_a_reference_column_never_prints_阳性(self):
+        """With no header, the NORMAL cell is the reference.
+
+        A laboratory does not print 阳性 as the value a healthy result
+        should take, so a row showing exactly one positive among its
+        verdicts has said which cell is the patient's. That reads the
+        meaning the reference column has; it is not a preference for
+        positives.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 阳性(++)",
+            "潜血(OB) 阴性 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(++)")
+
+    def test_two_verdicts_that_agree_are_still_one_verdict(self):
+        """「阴性(-) 阴性」 is a negative screen read off either cell.
+
+        Withholding it would be refusing a distinction with no
+        consequence, so the reading stands exactly as it always did.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 乙肝两对半+HIV+梅毒",
+            "抗梅毒螺旋体抗体(TPPA)",
+            "阴性(-)",
+            "阴性",
+            "凝集法",
+        )), "other", "infection.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["tppa"], "阴性(-)")
+
+    def test_a_row_that_cannot_be_read_is_published_as_unread(self):
+        """Two different verdicts, neither positive, and no header.
+
+        Nothing on the page says which column is which. An unread cell
+        is visibly missing and a cell read out of the wrong column is
+        not, so the field is absent rather than guessed.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 ±",
+            "潜血(OB) 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("urine_protein", panel)
+        self.assertEqual(panel["urine_occult_blood"], "阴性")
+        self.assertIn(
+            "urine_protein", result["quality_control"]["missing_critical_fields"]
+        )
+
+    def test_one_verdict_on_the_row_is_unchanged(self):
+        """The ordinary printing has nothing to choose between."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿沉渣定量+尿常规",
+            "颜色 黄色",
+            "透明度 澄清",
+            "蛋白质(PRO) 阴性",
+            "潜血(OB) 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阴性")
+        self.assertEqual(panel["urine_color"], "黄色")
+        self.assertEqual(panel["urine_clarity"], "澄清")
+
+
+class TheOrdinaryChineseSpellingIsReadTest(unittest.TestCase):
+    """尿蛋白 AND 尿糖 YIELDED NOTHING, SILENTLY.
+
+    The readers matched 蛋白质|PRO and 葡萄糖|GLU — what a laboratory
+    prints when it prints the Latin abbreviation beside the name. A
+    尿常规 printing the ordinary Chinese spellings with no Latin
+    anywhere on the row produced neither field, on two of the rows a
+    尿常规 is ordered for.
+    """
+
+    ROWS = (
+        "示例市第一人民医院检验报告单",
+        "检验目的: 尿常规",
+        "尿蛋白 阳性(+)",
+        "尿糖 阴性",
+        "潜血(OB) 阴性",
+    )
+
+    def test_both_rows_are_read(self):
+        panel = analyze_fshd_report("\n".join(self.ROWS), "other", "urine.jpeg")[
+            "fshd"
+        ]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性")
+        self.assertEqual(panel["urine_glucose"], "阴性")
+
+    def test_the_latin_spelling_still_reads(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性",
+            "葡萄糖(GLU) 阴性",
+        )), "other", "urine.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阴性")
+        self.assertEqual(panel["urine_glucose"], "阴性")
+
+
+class ThePredictedValueIsNotTheMeasurementTest(unittest.TestCase):
+    """THE PFT TABLE PATTERNS TOOK GROUP 2, ALWAYS.
+
+    They were written 「name, then three figures」 with the second
+    hard-coded as the measurement — one printed order, 预计值 / 实测值 /
+    占预计值, asserted as if it were the only one. On the equally
+    ordinary 实测值 / 预计值 / 占预计值 the second figure is the
+    PREDICTED value, so a patient's FVC was published as the number
+    describing the lungs that patient does not have.
+
+    A predicted value is by construction a normal-looking one, and
+    pulmonary function is the surveillance this disease is monitored by.
+    """
+
+    def test_the_measured_column_first(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "项目 实测值 预计值 占预计值",
+            "FVC 2.31 3.72 62.1",
+            "FEV1 1.98 3.10 63.9",
+            "FEV1/FVC 85.7 83.2 103.0",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 2.31)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["fev1"], 1.98)
+        self.assertEqual(panel["fev1_pred_pct"], 63.9)
+        self.assertEqual(panel["fev1_fvc"], 85.7)
+
+    def test_the_measured_column_first_with_no_header_at_all(self):
+        """实测值 = 预计值 × 占预计值 ÷ 100 is an equation the row answers.
+
+        Exactly one of three figures is the product of the other two
+        over a hundred, whichever position the printer put it in — so a
+        headerless row still DETERMINES its measurement rather than
+        having one assumed for it.
+        """
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "FVC [L] 2.31 3.72 62.1",
+            "TLC-SB [L] 4.10 6.20 66.1",
+            "DLCO-SB [mmol/min/kPa] 8.20 11.90 68.9",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 2.31)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["tlc"], 4.10)
+        self.assertEqual(panel["dlco"], 8.20)
+
+    def test_the_predicted_column_first_is_read_the_same_way(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 通气弥散残气检查报告",
+            "FVC [L] 5.55 3.45 62.1",
+            "TLC-SB [L] 7.54 5.54 73.4",
+            "DLCO-SB [mmol/min/kPa] 12.65 10.27 81.2",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 3.45)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["tlc"], 5.54)
+        self.assertEqual(panel["dlco"], 10.27)
+
+    def test_the_predicted_value_is_not_published_as_a_second_fvc(self):
+        """It was, on the layout this reader already handled.
+
+        The name patterns ran first and took the FIRST figure on the row
+        — the predicted value — and the table patterns then published
+        the measurement under the same key. `structured_fields` carried
+        an FVC of 5.55 and an FVC of 3.45, and whichever a consumer read
+        first was the one it showed.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 通气弥散残气检查报告",
+            "FVC [L] 5.55 3.45 62.1",
+            "FEV1 [L] 4.65 3.03 65.0",
+        )), "other", "pft.jpeg")
+        readings = {}
+        for item in result["fshd"]["structured_fields"]:
+            readings.setdefault(item["field_name"], set()).add(item["field_value"])
+        self.assertEqual(readings["fvc"], {"3.45"})
+        self.assertEqual(readings["fev1"], {"3.03"})
+
+    def test_two_bare_figures_and_no_header_publish_nothing(self):
+        """占预计值 absent, no percent sign, no heading: undeterminable.
+
+        The row is there and this platform cannot say which figure is
+        the patient's. Publishing the first would be reinstating the
+        assumption; publishing nothing is what the missing-field block
+        is for.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "FVC [L] 5.55 3.45",
+            "FEV1 [L] 4.65 3.03",
+        )), "other", "pft.jpeg")
+        panel = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+        self.assertIsNone(panel.get("fvc"))
+        self.assertIn("fvc", result["quality_control"]["missing_critical_fields"])
+
+    def test_the_header_reads_the_row_the_identity_cannot(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "项目 预计值 实测值",
+            "FVC 5.55 3.45",
+            "FEV1 4.65 3.03",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 3.45)
+        self.assertEqual(panel["fev1"], 3.03)
+
+    def test_a_metric_quoted_in_a_sentence_still_reads(self):
+        """The name patterns remain the fallback for prose."""
+        panel = analyze_fshd_report("\n".join((
+            "示例医院 门诊病历",
+            "主诉: 活动后气促2年。",
+            "现病史: 外院查肺功能 FVC 62%,FEV1 下降。",
+        )), "other", "note.jpeg")["fshd"]["normalized_summary"].get(
+            "cardio_respiratory_panel", {}
+        )
+        self.assertEqual(panel["fvc_pred_pct"], 62.0)
+
+
+class ARowThatContradictsItselfIsNotPublishedTest(unittest.TestCase):
+    """THE FLAG AND THE INTERVAL ARE BOTH ON THE ROW AND NOTHING COMPARED THEM.
+
+    A reading BELOW its own printed reference floor carrying the
+    laboratory's own HIGH marker cannot be a correct reading of that
+    row: one of the two cells came out of the wrong column. It shipped
+    anyway, at the confidence of a row that was read correctly.
+    """
+
+    def test_a_high_flag_below_the_floor_withholds_the_reading(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "谷丙转氨酶(ALT) 5 ↑ 9-50 U/L",
+            "谷草转氨酶(AST) 23 15-40 U/L",
+        )), "other", "biochem.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("alt", panel)
+        self.assertEqual(panel["ast"], 23.0)
+        self.assertNotIn(
+            "alt", {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        )
+        self.assertIn("alt", result["quality_control"]["missing_critical_fields"])
+
+    def test_a_low_flag_above_the_ceiling_withholds_it_too(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 900 ↓ 50-310 U/L",
+        )), "other", "biochem.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("ck", panel)
+
+    def test_an_honest_abnormal_reading_is_untouched(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693 ↑ 50-310 U/L",
+        )), "other", "biochem.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ck"], 693.0)
+        field = next(
+            item
+            for item in result["fshd"]["structured_fields"]
+            if item["field_name"] == "ck"
+        )
+        self.assertEqual(field["abnormal_flag"], "high")
+
+    def test_a_flag_against_limits_the_report_did_not_print_is_not_a_contradiction(self):
+        """Laboratories flag against age- and sex-specific limits.
+
+        A value INSIDE its printed interval carrying a flag is an
+        ordinary sight; refusing it would withhold readings that are
+        correct. Only strictly outside, in the wrong direction, is
+        arithmetic.
+        """
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 200 ↑ 50-310 U/L",
+        )), "other", "biochem.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ck"], 200.0)
+
+
+class AProvidedFlagCellIsNotTheRowsUnitTest(unittest.TestCase):
+    """THE LAST READER STILL ASKING 「is this cell NOT a flag letter」.
+
+    `_is_unit_cell` was written because the exclusion list was never
+    going to be finished — a 提示 column prints 「HI」, 「LO」, 「N」,
+    「AB」 and a laboratory's own house spelling. The scan that glues a
+    unit to the number it just read never asked it, so on a flattened
+    row the 提示 cell became the unit and the laboratory's real 单位
+    column, one cell further right, was never reached.
+    """
+
+    def test_a_two_letter_flag_is_not_a_unit(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "谷丙转氨酶(ALT) 88 HI 9-50 U/L",
+            "谷草转氨酶(AST) 23 N 15-40 U/L",
+        )), "other", "biochem.jpeg")
+        units = {
+            item["field_name"]: item["unit"]
+            for item in result["fshd"]["structured_fields"]
+        }
+        self.assertEqual(units["alt"], "U/L")
+        self.assertEqual(units["ast"], "U/L")
+
+    def test_a_real_unit_glued_to_the_reading_still_reads(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693U/L 50-310",
+            "凝血酶原时间(PT) 13.7s 11.0-14.5",
+        )), "other", "biochem.jpeg")
+        units = {
+            item["field_name"]: item["unit"]
+            for item in result["fshd"]["structured_fields"]
+        }
+        self.assertEqual(units["ck"], "U/L")
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1547,3 +1547,340 @@ describe('what the model actually wrote when this round was driven against the s
     ).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------
+// THE THIRD ROUND OF SEAMS ON THIS FILE. Every one of them is a lexicon
+// or a window the language walked around, and every one was driven
+// against the running stack with the same synthetic patient.
+describe('a band written with the tilde this file uses for a band itself', () => {
+  const evidence = evidenceFor('precise');
+
+  // The emphasis stripper removed `~` as markdown, and `BAND_SOURCE`
+  // lists `~` as a band separator. Every check reads the normalised
+  // text, so 「1~3」 arrived as the four-digit string 13.
+  it('leaves an ASCII tilde standing so a band written 1~3 is still a band', () => {
+    expect(normaliseForMatch('落在 1~3 这一档')).toBe('落在 1~3 这一档');
+  });
+
+  it('catches the severity claim on a band written 1~3', () => {
+    expect(
+      inspectAnswer('你的重复数落在 1~3 这一档，病情通常比较重。', evidence).map((v) => v.kind),
+    ).toEqual(['severity_from_patient_number']);
+  });
+
+  it('reads a tilde band as an interval', () => {
+    expect(intervalsIn('参考范围 1~10')).toContain('1~10');
+  });
+
+  // `~~` is markdown strikethrough and only `~~`, so it still comes off.
+  it('still strips strikethrough', () => {
+    expect(normaliseForMatch('~~删掉的~~内容')).toBe('删掉的内容');
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('an open-ended interval joined to its boundary word by 及', () => {
+  const evidence = evidenceFor('precise');
+
+  // 「11 个及以上」 is the ordinary Chinese form; the pattern required
+  // 以上 to sit against the measure tail, so it produced no interval at
+  // all and `fabricated_reference_range` had nothing to compare.
+  it('reads 「11 个及以上」 and 「10 个及以下」', () => {
+    expect(intervalsIn('正常参考：11 个及以上')).toContain('>11');
+    expect(intervalsIn('10 个及以下')).toContain('<10');
+    expect(intervalsIn('11 个或以上')).toContain('>11');
+  });
+
+  it('catches a 参考范围 column written in the 及以上 form', () => {
+    const answer = [
+      '| 项目 | 你的结果 | 参考范围 |',
+      '| --- | --- | --- |',
+      '| D4Z4 重复数 | 3 | 正常参考：11 个及以上 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toEqual([
+      'fabricated_reference_range',
+    ]);
+  });
+
+  // Symmetric: the same widening reads the RECORD's own intervals, so an
+  // interval the record printed in this form is admissible rather than
+  // fabricated.
+  it('still admits an interval the record itself printed', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '11 个及以上' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('>11')).toBe(true);
+    expect(
+      inspectAnswer('报告上印的参考范围是 11 个及以上，你的结果是 3 个。', withRange),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('the consent wording placed between the report and the absence', () => {
+  const strict = evidenceFor('strict');
+
+  // The absence resolves to the LAST holder before the marker, and 授权
+  // was in the self-holder list — so consent wording written as a reason
+  // clause, which is where Chinese puts one, made the platform the
+  // subject of a sentence whose subject is the document.
+  it('catches 「你的报告里的甲基化，按当前授权，没有结果。」', () => {
+    expect(
+      inspectAnswer('你的报告里的甲基化，按当前授权，没有结果。', strict).map((v) => v.kind),
+    ).toEqual(['retest_of_a_value_on_file']);
+  });
+
+  it('catches the same claim with the consent clause in front', () => {
+    expect(
+      inspectAnswer('按当前授权，你的报告里没有甲基化的结果。', strict).map((v) => v.kind),
+    ).toEqual(['retest_of_a_value_on_file']);
+  });
+
+  // ...and the one wording that IS correct here still survives. What
+  // hands the absence back to this assistant is the delivery verb, not
+  // the word 授权.
+  it('leaves the assistant-side absence alone', () => {
+    expect(inspectAnswer('你的报告里的甲基化数值，按当前授权没有发给我。', strict)).toHaveLength(0);
+    expect(
+      inspectAnswer('我这边没有拿到甲基化的数值，你的报告里的那一格按当前授权没有发给我。', strict),
+    ).toHaveLength(0);
+  });
+
+  // This platform's own projection says 「按当前授权没有发出」. The model
+  // quoting that back must not be read as denying the finding.
+  it('leaves the projection own wording 「没有发出」 alone', () => {
+    expect(
+      inspectAnswer('你的报告里那一格写的是「有结果在案，按当前授权没有发出」。', strict),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('the ordinary ways Chinese says a report lacks a field', () => {
+  const strict = evidenceFor('strict');
+
+  it.each([
+    '你的报告里未提及甲基化这一项。',
+    '你的报告里找不到甲基化的结果。',
+    '你的报告里甲基化这一项是缺失的。',
+    '你的报告里甲基化那一格是空的。',
+    '你的报告里甲基化那一栏是空白的。',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, strict).map((v) => v.kind)).toContain(
+      'retest_of_a_value_on_file',
+    );
+  });
+
+  // 缺失 is also the clinical word for a DELETION, which is a finding the
+  // report STATES. The field-state words only count when they are
+  // predicated of a field, so this true sentence survives.
+  it('does not read 「D4Z4 片段缺失」 as a missing field', () => {
+    expect(
+      inspectAnswer('你的报告里写的是 D4Z4 片段缺失，这是 FSHD1 的常见形式。', strict),
+    ).toHaveLength(0);
+  });
+
+  // The gate is still `withheldCells`: a cell the record does not hold
+  // at all can honestly be reported as absent.
+  it('leaves an absence of a cell the record really does not hold', () => {
+    expect(inspectAnswer('你的报告里未提及 EcoRI 片段长度这一项。', strict)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('a band that reaches a TABLE through the same prose lead-in', () => {
+  const evidence = evidenceFor('precise');
+
+  // The label stack was cleared by any segment that is not a list item,
+  // and a table row is not a list item — so the header row threw the
+  // lead-in away before a single data row was judged.
+  it('judges the rows under a bolded band lead-in', () => {
+    const answer = [
+      '**你落在 1–3 个重复单元这一档**：',
+      '',
+      '| 项目 | 说明 |',
+      '| --- | --- |',
+      '| 发病年龄 | 通常比较早 |',
+      '| 病情 | 相对较重，进展也快一些 |',
+    ].join('\n');
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual([
+      'severity_from_patient_number',
+      'severity_from_patient_number',
+    ]);
+    expect(violations[0].sentence).toContain('通常比较早');
+  });
+
+  // The band gate is unchanged, and it is what keeps this honest: a
+  // lead-in naming a VALUE propagates nothing, so a table of follow-up
+  // advice under it is judged on its own words.
+  it('does not delete a follow-up plan tabulated under a value lead-in', () => {
+    const answer = [
+      '你的重复数是 3，下面是随访建议：',
+      '',
+      '| 项目 | 建议 |',
+      '| --- | --- |',
+      '| 复查 | 每年复查一次，注意病程变化 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  // ...and this platform's own readings, tabulated, still reach the
+  // patient.
+  it('leaves a table of this platform own readings alone', () => {
+    const answer = [
+      '你的报告我读到了，下面是本平台的判读：',
+      '',
+      '| 项目 | 结果 | 本平台判读 |',
+      '| --- | --- | --- |',
+      '| D4Z4 重复数 | 3 | 这个重复数落在 FSHD1 的范围里 |',
+      '| 单倍型 | 4qA | 允许型单倍型 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  // The scope still ends: the first ordinary sentence after the table
+  // clears the stack.
+  it('stops inheriting after the table ends', () => {
+    const answer = [
+      '**你落在 1–3 个重复单元这一档**：',
+      '',
+      '| 项目 | 说明 |',
+      '| --- | --- |',
+      '| 发病年龄 | 通常比较早 |',
+      '',
+      '不同的人差别很大，具体还得看病程随访。',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('a follow-up that points back at the number with a bare classifier', () => {
+  const conversationOnly = (texts: readonly string[]) =>
+    buildGuardEvidence({
+      patientPayloads: [{ documentType: 'followup', note: '随访记录：下次复查待定' }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['随访记录：下次复查待定'],
+      conversationTexts: texts,
+    });
+
+  // The cell is in one sentence and the number in the next, and the
+  // question refers back with a bare classifier that names neither. Every
+  // segment failed the per-segment gate and the number set came out
+  // empty.
+  const followUp = conversationOnly([
+    '那 3 个是不是意味着我病情比较重？',
+    '你的 D4Z4 重复数这一格我读到了。报告上写的是 3。',
+  ]);
+
+  it('recovers the number the bare classifier points at', () => {
+    expect(followUp.numbers.map((number) => number.value)).toContain(3);
+    expect(followUp.numbers.every((number) => number.origin === 'conversation')).toBe(true);
+  });
+
+  it('catches the severity claim the empty number set was letting through', () => {
+    expect(
+      inspectAnswer('是的，3 个单元这一档的患者病情通常比较重。', followUp).map((v) => v.kind),
+    ).toContain('severity_from_patient_number');
+  });
+
+  it('carries the unit when the anaphor does', () => {
+    const methylation = conversationOnly(['那 95% 是不是偏高？', '你的甲基化这一格我读到了。']);
+    expect(methylation.numbers).toContainEqual({
+      value: 95,
+      cell: 'methylation',
+      unit: '%',
+      origin: 'conversation',
+    });
+  });
+
+  // THE NARROW DIRECTION, which is the one this list has to fail in: a
+  // number wrongly admitted here gets TRUE sentences deleted. A
+  // classifier with a head noun after it is not an anaphor.
+  it('does not read a demonstrative with a head noun as a reference to his value', () => {
+    expect(
+      conversationOnly(['我家那 2 个孩子要不要也查一下？', '你的 D4Z4 重复数这一格我读到了。'])
+        .numbers,
+    ).toHaveLength(0);
+    expect(
+      conversationOnly(['那 3 家医院都能做吗？', '你的 D4Z4 重复数这一格我读到了。']).numbers,
+    ).toHaveLength(0);
+  });
+
+  it('does not read a demonstrative over a span of years', () => {
+    expect(
+      conversationOnly(['我这 5 年一直在复查。', '你的 D4Z4 重复数这一格我读到了。']).numbers,
+    ).toHaveLength(0);
+  });
+
+  // The fact half is still required: no cell named anywhere in the
+  // conversation, no antecedent, nothing recovered.
+  it('recovers nothing when the conversation names no cell at all', () => {
+    expect(conversationOnly(['那 3 个是不是意味着我病情比较重？']).numbers).toHaveLength(0);
+  });
+
+  // ...and the per-cell bound still holds: a cell this turn's own record
+  // carries is authoritative and the conversation is not read for it.
+  it('still stands down for a cell this turn own record carries', () => {
+    const withRecord = evidenceFor(
+      'precise',
+      [REPORT_PAYLOAD, PROFILE_PAYLOAD],
+      [],
+      ['那 8 个是不是就安全了？'],
+    );
+    expect(withRecord.numbers.map((number) => number.value)).not.toContain(8);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Shapes the RUNNING STACK produced while the fixes above were being
+// verified, in this round, with the same synthetic patient. Both are the
+// prose lead-in seam: once the table under the lead-in could be judged,
+// the model wrote the lead-in in a form the label test could not see.
+describe('a bolded band sentence sitting directly on top of a table', () => {
+  const evidence = evidenceFor('precise');
+
+  // Seventeen content characters, one over LABEL_CONTENT_MAX, ending in
+  // 「。」 rather than 「：」 — and what makes it a lead-in is not its
+  // length, it is that a table starts on the next line.
+  it('judges the rows under a full-sentence band lead-in with no colon', () => {
+    const answer = [
+      '**你的重复数落在 1-3 个重复单元这一档。**',
+      '',
+      '| 发病年龄 | 在群体中往往发病较早，研究显示中位数约 5 岁 |',
+      '|---------|--------------------------------------|',
+      '| 病情特点 | 在群体中往往病情较重，与最严重表型相关联 |',
+      '| 进展速度 | 在群体中进展往往较快，严重程度评分下降幅度更大 |',
+    ].join('\n');
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations).toHaveLength(3);
+    expect(violations.every((v) => v.kind === 'severity_from_patient_number')).toBe(true);
+  });
+
+  // The closing 「**」 lands AFTER the 。, so the sentence split left a
+  // two-character span of pure markdown standing between the lead-in and
+  // the table. It can never be a violation, and it was hiding one.
+  it('does not make a segment out of a stray asterisk pair', () => {
+    const answer = ['**你落在 1–3 这一档。**', '- 病情相对较重'].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toEqual([
+      'severity_from_patient_number',
+    ]);
+  });
+
+  // The band gate is still the whole safety of this: a lead-in naming a
+  // VALUE introduces a list too, and propagates nothing.
+  it('still does not propagate from a lead-in that names no band', () => {
+    const answer = [
+      '你的 D4Z4 重复数是 3 个，单倍型是 4qA。',
+      '| 项目 | 建议 |',
+      '| --- | --- |',
+      '| 复查 | 每年复查一次，注意病程变化 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+});

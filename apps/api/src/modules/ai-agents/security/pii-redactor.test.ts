@@ -2812,3 +2812,310 @@ describe('gate 2 keeps the clinical vocabulary', () => {
     expect(out?.text).toContain('[数值未共享]');
   });
 });
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ONE ROW ON ONE REPORT IS ONE ANALYTE ON ONE PROMPT.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `LEGACY_ANALYTE_TWINS` in services/ocr/embedded-report-ocr.ts mints
+ * `creatineKinase` off `ck` and `myoglobin` off `mb`, with their flag and
+ * interval siblings, because every reader's alias list on this platform
+ * is headed by the readable name. Both spellings are camel, so the
+ * snake/camel join could not see the pair: a 心肌酶谱 with two flagged
+ * rows reached the model as four flagged analytes.
+ */
+describe('the two spellings of one analyte are joined', () => {
+  const CK_ROW = {
+    classifiedType: 'muscle_enzyme',
+    ck: '693U/L',
+    ckFlag: 'high',
+    ckReference: '50-310',
+    creatineKinase: '693U/L',
+    creatineKinaseFlag: 'high',
+    creatineKinaseReference: '50-310',
+    mb: '210ng/mL',
+    mbFlag: 'high',
+    mbReference: '0-110',
+    myoglobin: '210ng/mL',
+    myoglobinFlag: 'high',
+    myoglobinReference: '0-110',
+  };
+
+  const project = (fields: Record<string, unknown>, mode: RedactionMode) => {
+    const { fields: out } = redactFields({ fields }, { scope: 'reports', mode });
+    return (out.fields ?? out.fields_clinical) as Record<string, unknown>;
+  };
+
+  it('publishes the canonical spelling and drops the bridge alias — precise', () => {
+    const inner = project(CK_ROW, 'precise');
+    expect(inner.ck).toBe('693U/L');
+    expect(inner.ckFlag).toBe('high');
+    expect(inner.ckReference).toBe('50-310');
+    expect(inner.mb).toBe('210ng/mL');
+    for (const alias of [
+      'creatineKinase',
+      'creatineKinaseFlag',
+      'creatineKinaseReference',
+      'myoglobin',
+      'myoglobinFlag',
+      'myoglobinReference',
+    ]) {
+      expect(
+        inner,
+        `${alias} is the bridge's alias for a cell already published`,
+      ).not.toHaveProperty(alias);
+    }
+  });
+
+  it('the strict block carries one abnormal marker per report row', () => {
+    const inner = project(CK_ROW, 'strict');
+    const markers = Object.keys(inner).filter((key) => key.endsWith('Flag'));
+    expect(markers.sort()).toEqual(['ckFlag', 'mbFlag']);
+    // Two rows, two numbers and two intervals — not four of each.
+    expect(inner.numericValuesWithheld).toBe(4);
+  });
+
+  it('the count the model sees is the number of rows the laboratory ran', () => {
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: { fields: { fields: CK_ROW } },
+      } as unknown as RetrievedChunk,
+      { mode: 'precise' },
+    );
+    expect(content.match(/肌酸激酶/g) ?? []).toHaveLength(3); // value, flag, interval
+    expect(content).not.toContain('另一种拼写');
+  });
+
+  it('two spellings that DISAGREE both stay, and the alias says which it is', () => {
+    // A silent pick between two different values would be the redactor
+    // editing clinical data. The same refusal the snake/camel join makes.
+    const inner = project({ ...CK_ROW, creatineKinase: '712U/L' }, 'precise');
+    expect(inner.ck).toBe('693U/L');
+    expect(inner.creatineKinase).toBe('712U/L');
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: { fields: { fields: { ...CK_ROW, creatineKinase: '712U/L' } } },
+      } as unknown as RetrievedChunk,
+      { mode: 'precise' },
+    );
+    expect(content).toContain('肌酸激酶 CK（另一种拼写）: 712U/L');
+  });
+
+  it('an archived payload carrying only the alias still publishes it', () => {
+    const inner = project({ classifiedType: 'muscle_enzyme', creatineKinase: '693U/L' }, 'precise');
+    expect(inner.creatineKinase).toBe('693U/L');
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * DENY-BY-DEFAULT SAYS SO.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * A cell whose key is on no table used to fall out of `projectOcrFields`
+ * without being published, withheld or refused — so both existing
+ * counters read zero and the blob was indistinguishable from an empty
+ * parse. The model, handed a report type and nothing else, tells the
+ * patient the report holds no results.
+ */
+describe('a cell nothing can name is counted rather than dropped in silence', () => {
+  const DIAPHRAGM = {
+    classifiedType: 'diaphragm_ultrasound',
+    // Twelve numbers whose column headers this repository expands
+    // nowhere — declined by name in allowlist.parity.test.ts.
+    left_qb: '12.4',
+    leftQb: '12.4',
+    right_qb: '11.8',
+    rightQb: '11.8',
+    diaphragm_motion_summary: '双侧膈肌活动度减低',
+    diaphragmMotionSummary: '双侧膈肌活动度减低',
+  };
+
+  const project = (fields: Record<string, unknown>, mode: RedactionMode) => {
+    const { fields: out } = redactFields({ fields }, { scope: 'reports', mode });
+    return (out.fields ?? out.fields_clinical) as Record<string, unknown>;
+  };
+
+  it.each(['strict', 'precise'] as const)('counts the cells it has no name for — %s', (mode) => {
+    const inner = project(DIAPHRAGM, mode);
+    // Three cells, each written under both spellings by the bridge; the
+    // snake/camel join makes them three, not six.
+    expect(inner.fieldsNotRecognised).toBe(3);
+  });
+
+  it('the model is no longer shown an empty report', () => {
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: { fields: { fields: DIAPHRAGM } },
+      } as unknown as RetrievedChunk,
+      { mode: 'strict' },
+    );
+    expect(content).toContain('本平台没有收录名称、因此没有发出的检查项个数: 3');
+  });
+
+  it('does not count this pipeline’s bookkeeping or the encounter', () => {
+    // These would make the number a lie in the other direction: a count
+    // of 「results you were not shown」 that includes `fieldCount`.
+    const inner = project(
+      {
+        classifiedType: 'coagulation',
+        pt: '13.7',
+        analysisStatus: 'completed',
+        ocrStatus: 'text_extracted',
+        extractedTextLength: '1840',
+        classifiedTypeConfidence: '0.91',
+        reportTypeLabel: '凝血功能',
+        fieldCount: '6',
+        reviewRecommendedCount: '0',
+        ocrIssue: 'No text was extracted from the uploaded file',
+        facility: '示例市第一人民医院',
+        department: '神经内科',
+        specimen: '静脉血',
+        bedNo: '011',
+        orderingDoctor: '赵医生',
+        reportTime: '2024-03-02 09:11',
+        patientSex: '女',
+        patientAge: '31',
+      },
+      'precise',
+    );
+    expect(inner).not.toHaveProperty('fieldsNotRecognised');
+  });
+
+  it('an empty cell is not a result anybody was denied', () => {
+    const inner = project(
+      { classifiedType: 'coagulation', someUnknownCell: '', anotherOne: null },
+      'precise',
+    );
+    expect(inner).not.toHaveProperty('fieldsNotRecognised');
+  });
+
+  it('a printed analyte name nobody has reviewed is counted too', () => {
+    // `table_<slug>` is refused because the name is the printer's rather
+    // than a reviewed one — and it is still a row the laboratory ran.
+    const inner = project(
+      { classifiedType: 'biochemistry', table_xue_qing_dian_fen_mei: '82 U/L' },
+      'precise',
+    );
+    expect(inner.fieldsNotRecognised).toBe(1);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE INTERVAL THE REPORT PRINTED, COMPARED.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The only abnormal statement that reached a prompt was the laboratory's
+ * own arrow column. On the many Chinese layouts that print an interval
+ * and no marker, strict mode swept the value into
+ * `numericValuesWithheld` and the interval in after it, and what the
+ * model received about a potassium below its stated floor was a counter.
+ */
+describe('a value outside the interval the report printed', () => {
+  const project = (fields: Record<string, unknown>, mode: RedactionMode) => {
+    const { fields: out } = redactFields(
+      { fields: { classifiedType: 'biochemistry', ...fields } },
+      { scope: 'reports', mode },
+    );
+    return (out.fields ?? out.fields_clinical) as Record<string, unknown>;
+  };
+
+  it.each(['strict', 'precise'] as const)('is visible in %s mode', (mode) => {
+    const inner = project({ ldh: '319U/L', ldhReference: '120-250' }, mode);
+    expect(inner.ldh_vs_reference).toBe('above_the_interval_this_report_printed');
+  });
+
+  it('reads a one-sided ceiling, which is the whole of what a CK-MB row states', () => {
+    expect(project({ ckmb: '31U/L', ckmbReference: '<25' }, 'strict').ckmb_vs_reference).toBe(
+      'above_the_interval_this_report_printed',
+    );
+    expect(project({ ckmb: '19U/L', ckmbReference: '<25' }, 'strict')).not.toHaveProperty(
+      'ckmb_vs_reference',
+    );
+  });
+
+  it('reads a one-sided floor', () => {
+    expect(
+      project({ fibrinogen: '1.4g/L', fibrinogenReference: '>2.0' }, 'strict')
+        .fibrinogen_vs_reference,
+    ).toBe('below_the_interval_this_report_printed');
+  });
+
+  it.each([
+    ['a value inside the interval', { alt: '18U/L', altReference: '9-50' }],
+    ['a value ON the boundary', { alt: '50U/L', altReference: '9-50' }],
+    ['no interval on the row', { alt: '180U/L' }],
+    ['an interval this reader cannot parse', { alt: '180U/L', altReference: '阴性' }],
+    ['a value that is not a number', { alt: '未做', altReference: '9-50' }],
+    ['a value that is itself a range', { alt: '120-250', altReference: '9-50' }],
+  ])('says nothing about %s', (_label, fields) => {
+    const inner = project(fields, 'strict');
+    expect(Object.keys(inner).filter((k) => k.endsWith('_vs_reference'))).toEqual([]);
+  });
+
+  it('says nothing where the laboratory already marked the row', () => {
+    // The laboratory's own verdict outranks this one, and two statements
+    // about one row read as two findings.
+    const inner = project({ ldh: '319U/L', ldhFlag: 'high', ldhReference: '120-250' }, 'strict');
+    expect(inner).not.toHaveProperty('ldh_vs_reference');
+    expect(inner.ldhFlag).toBe('high');
+  });
+
+  it('is not minted off a qualitative cell or a genetics cell', () => {
+    const inner = project(
+      {
+        urineProtein: '阴性',
+        urineProteinReference: '阴性',
+        d4z4Repeats: '3',
+        d4z4RepeatsReference: '11-100',
+      },
+      'precise',
+    );
+    expect(Object.keys(inner).filter((k) => k.endsWith('_vs_reference'))).toEqual([]);
+  });
+
+  it('an interval this platform would not SHOW cannot gate anything', () => {
+    // The rule the haplotype gate states in full: a cell refused for its
+    // content may not decide another cell's reading.
+    const inner = project(
+      { ldh: '319U/L', ldhReference: '120-250 姓名:张三 住院号:R000000' },
+      'strict',
+    );
+    expect(inner).not.toHaveProperty('ldh_vs_reference');
+  });
+
+  it('reaches the prompt saying who made the comparison', () => {
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: {
+          fields: {
+            fields: {
+              classifiedType: 'biochemistry',
+              potassium: '3.1mmol/L',
+              potassiumReference: '3.5-5.3',
+            },
+          },
+        },
+      } as unknown as RetrievedChunk,
+      { mode: 'strict' },
+    );
+    expect(content).toContain('钾（本平台与报告所印参考区间比对）');
+    expect(content).toContain('报告本身没有标异常');
+    // ...and the laboratory's own marker still says the other thing.
+    expect(content).not.toContain('报告标了异常');
+  });
+});

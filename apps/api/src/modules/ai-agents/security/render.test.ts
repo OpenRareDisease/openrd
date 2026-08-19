@@ -14,7 +14,11 @@ import type { Pool, QueryResult } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import { REPORT_IMPRESSION_CHANNEL_ENABLED } from './allowlist.js';
-import { GENETIC_READING_REFUSALS, gateReportImpression } from './pii-redactor.js';
+import {
+  GENETIC_READING_REFUSALS,
+  REFERENCE_COMPARISON_READINGS,
+  gateReportImpression,
+} from './pii-redactor.js';
 import { readRenderedRows, renderChunkForPrompt, SCOPE_LABELS } from './render.js';
 import type { RetrieveContext, RetrievedChunk } from '../retrievers/base.js';
 import { PatientFollowupRetriever } from '../retrievers/patient-followups.js';
@@ -1360,5 +1364,200 @@ describe('the laboratory panels a prompt is built from', () => {
       );
       expect(rendered.content, `${printed} survived`).not.toContain(printed);
     }
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE IMAGING THIS DISEASE IS FOLLOWED BY, IN THE LANGUAGE OF THE
+ * CONVERSATION.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `_extract_mri` writes 「yes」 into `fatty_infiltration`,
+ * `inflammatory_change` and `atrophy`, and one of two snake_case tokens
+ * of its own into `asymmetry`. The block those rows print in is
+ * otherwise entirely Chinese, so a muscle MRI reached the model as
+ *「脂肪浸润: yes」 three times over, in both modes — the
+ * `d4z4Repeats_clinical` shape on the one imaging study an FSHD clinic
+ * orders every year.
+ *
+ * EVERY PAYLOAD BELOW IS SYNTHETIC.
+ */
+describe('a muscle MRI reaches the model in Chinese', () => {
+  const mriChunk = (cells: Record<string, unknown>): RetrievedChunk => ({
+    id: 'mri-1',
+    source: 'patient_reports',
+    content: '',
+    metadata: {
+      fields: {
+        classifiedType: 'muscle_mri',
+        documentType: 'muscle_mri',
+        fields: { classifiedType: 'muscle_mri', ...cells },
+      },
+    },
+    distance: null,
+    sourceFile: 'patient_reports',
+    chunkIndex: 0,
+  });
+
+  const FINDINGS = {
+    fattyInfiltration: 'yes',
+    inflammatoryChange: 'yes',
+    atrophy: 'yes',
+    asymmetry: 'left_gt_right',
+  };
+
+  it.each(['strict', 'precise'] as const)('prints no English token in %s mode', (mode) => {
+    const rendered = renderChunkForPrompt(mriChunk(FINDINGS), { mode }).content;
+    expect(rendered).not.toContain('yes');
+    expect(rendered).not.toContain('left_gt_right');
+    expect(rendered).toContain('  - 脂肪浸润: 有');
+    expect(rendered).toContain('  - 炎性改变: 有');
+    expect(rendered).toContain('  - 肌肉萎缩: 有');
+    expect(rendered).toContain('  - 左右不对称: 左侧比右侧重');
+  });
+
+  it('says what the payload actually supports, not what it does not', () => {
+    // The parser reads these per SENTENCE and holds the muscle and the
+    // side on the same structured field; the bridge writes the value
+    // alone. 「脂肪浸润: 有」 with nothing after it is a claim about the
+    // whole study, and the payload supports a claim about one muscle
+    // this platform is not holding the name of.
+    const rendered = renderChunkForPrompt(mriChunk(FINDINGS), { mode: 'precise' }).content;
+    expect(rendered).toContain('本平台没有保留是哪一块肌肉');
+  });
+
+  it('reads the other side of the asymmetry too', () => {
+    const rendered = renderChunkForPrompt(mriChunk({ asymmetry: 'right_gt_left' }), {
+      mode: 'strict',
+    }).content;
+    expect(rendered).toContain('右侧比左侧重');
+  });
+
+  it('rewrites 「yes」 only on the cells it belongs to', () => {
+    // `yes` is an ordinary English word, unlike a snake_case token, so
+    // the table is keyed to its cells. A qualitative panel that prints
+    // one in a cell of its own is not a muscle MRI finding.
+    const rendered = renderChunkForPrompt(mriChunk({ hpResult: 'yes', fattyInfiltration: 'yes' }), {
+      mode: 'precise',
+    }).content;
+    expect(rendered).toContain('  - 幽门螺杆菌检测结果: yes');
+    expect(rendered).toContain('  - 脂肪浸润: 有');
+  });
+
+  it('reads its own Chinese back as the payload key', () => {
+    const rows = readRenderedRows(
+      renderChunkForPrompt(mriChunk(FINDINGS), { mode: 'precise' }).content,
+    );
+    for (const key of Object.keys(FINDINGS)) {
+      expect([...rows.ocrKeys], `${key} did not survive the round trip`).toContain(key);
+    }
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE COMPARISON ROW, AND WHY ITS CHINESE MAY NOT BE THE FLAG'S.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `REFERENCE_COMPARISON_READINGS` is imported as a VALUE from the
+ * redactor, the same fence `GENETIC_READING_REFUSALS` gets: a token
+ * minted over there with no Chinese here reaches a Chinese-reading
+ * patient as a snake_case identifier.
+ */
+describe('the interval comparison names who made it', () => {
+  const bioChunk = (cells: Record<string, unknown>, mode: 'strict' | 'precise') =>
+    renderChunkForPrompt(
+      {
+        id: 'cmp-1',
+        source: 'patient_reports',
+        content: '',
+        metadata: {
+          fields: {
+            classifiedType: 'biochemistry',
+            documentType: 'biochemistry',
+            fields: { classifiedType: 'biochemistry', ...cells },
+          },
+        },
+        distance: null,
+        sourceFile: 'patient_reports',
+        chunkIndex: 0,
+      },
+      { mode },
+    ).content;
+
+  it('has Chinese for every token the redactor can mint', () => {
+    for (const token of Object.values(REFERENCE_COMPARISON_READINGS)) {
+      const rendered = renderChunkForPrompt(
+        {
+          id: 'cmp-2',
+          source: 'patient_profile',
+          content: '',
+          metadata: { fields: { gender: '女', d4z4_clinical: token } },
+          distance: null,
+          sourceFile: 'patient_profile',
+          chunkIndex: 0,
+        },
+        { mode: 'strict' },
+      ).content;
+      expect(rendered, `no Chinese for ${token}`).not.toContain(token);
+    }
+  });
+
+  it.each(['strict', 'precise'] as const)(
+    'is told apart from the laboratory’s own marker in %s mode',
+    (mode) => {
+      const rendered = bioChunk(
+        { ldh: '319U/L', ldhReference: '120-250', ck: '693U/L', ckFlag: 'high' },
+        mode,
+      );
+      // The laboratory arrowed the CK row and said nothing about the LDH.
+      expect(rendered).toContain('乳酸脱氢酶 LDH（本平台与报告所印参考区间比对）');
+      expect(rendered).toContain('报告本身没有标异常，这一句是本平台拿数值和区间比出来的');
+      expect(rendered).toContain('肌酸激酶 CK 异常标记: 高于参考区间（报告标了异常）');
+      // Two different sentences for two different kinds of evidence.
+      expect(rendered).not.toContain('乳酸脱氢酶 LDH 异常标记');
+    },
+  );
+
+  it('reads its own Chinese back as the payload key', () => {
+    const rows = readRenderedRows(bioChunk({ ldh: '319U/L', ldhReference: '120-250' }, 'strict'));
+    expect([...rows.ocrKeys]).toContain('ldh_vs_reference');
+  });
+
+  it('prints no snake_case token of its own', () => {
+    const rendered = bioChunk({ ldh: '319U/L', ldhReference: '120-250' }, 'strict');
+    expect([...rendered.matchAll(/(?:^|[\s:：])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/gm)]).toEqual([]);
+  });
+});
+
+/**
+ * THE THIRD COUNTER, RENDERED. `projectOcrFields` publishes
+ * `fieldsNotRecognised` where a cell's key is on no table; without a
+ * label here it would print as a bare English identifier, which is the
+ * defect the row exists inside.
+ */
+describe('the count of cells this platform cannot name', () => {
+  it('prints in Chinese and inverts back to its key', () => {
+    const rendered = renderChunkForPrompt(
+      {
+        id: 'nr-1',
+        source: 'patient_reports',
+        content: '',
+        metadata: {
+          fields: {
+            classifiedType: 'diaphragm_ultrasound',
+            fields: { classifiedType: 'diaphragm_ultrasound', leftQb: '12.4', rightQb: '11.8' },
+          },
+        },
+        distance: null,
+        sourceFile: 'patient_reports',
+        chunkIndex: 0,
+      },
+      { mode: 'strict' },
+    ).content;
+    expect(rendered).toContain('本平台没有收录名称、因此没有发出的检查项个数: 2');
+    expect(rendered).not.toContain('fieldsNotRecognised');
+    expect([...readRenderedRows(rendered).ocrKeys]).toContain('fieldsNotRecognised');
   });
 });
