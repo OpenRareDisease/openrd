@@ -10,6 +10,7 @@ import type { ITool, ToolContext, ToolExecutionResult } from './base.js';
 import { ToolValidationError, isPlainObject, safeParseJson } from './base.js';
 import type { ConsentLevel } from '../retrievers/base.js';
 import type { PatientReportsRetriever } from '../retrievers/patient-reports.js';
+import { REPORT_IMPRESSION_CHANNEL_ENABLED } from '../security/allowlist.js';
 
 /** What the patient picks at upload — DOCUMENT_TYPES in
  *  profile.constants.ts. */
@@ -151,6 +152,34 @@ const validate = (raw: unknown): GetMyReportsArgs => {
   return out;
 };
 
+/**
+ * THE DESCRIPTION, IN TWO HALVES, BECAUSE THE SECOND ONE IS SWITCHED.
+ *
+ * A tool description is an instruction, so it may not name a field the
+ * result cannot carry — `tool-descriptions.test.ts` checks exactly that
+ * against the allowlist, clause by clause. The report's own impression
+ * is behind `REPORT_IMPRESSION_CHANNEL_ENABLED` (declared and argued in
+ * security/allowlist.ts), so the clauses describing it are behind the
+ * same constant. With the switch off the sentence describes the
+ * structured cells and stops, which is the truth about what the model
+ * will get.
+ */
+const DESCRIPTION_STRUCTURED =
+  "Retrieve the authenticated user's recent uploaded medical reports (most recent first). Each report carries a classified type, document type, the report year when the report itself states one — otherwise the year it was uploaded, which is not the same thing — and structured OCR fields.";
+
+/** What the impression channel adds, when it is switched on. Each
+ *  semicolon-separated clause names a key the handler emits; the test
+ *  above matches them verbatim. */
+const DESCRIPTION_IMPRESSION =
+  " From a result report only (an imaging, genetics, laboratory, pulmonary-function or cardiac report — never a 病历摘要, 门诊病历, 出院小结 or 入院记录), it also carries the report's own impression exactly as the report printed it, which is the report's wording and not this platform's reading of it or a summary of it; identifiers are removed from that text and the count of removals is reported; without precise-value consent every measurement in it is masked as [数值未共享] and the count of masked values is reported; if the text was too long the number of characters cut is reported. When any of those steps refuses, the impression is not sent and a reason is given in its place — that reason never means the report had no impression.";
+
+const DESCRIPTION_USAGE =
+  ' Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
+
+const DESCRIPTION = REPORT_IMPRESSION_CHANNEL_ENABLED
+  ? DESCRIPTION_STRUCTURED + DESCRIPTION_IMPRESSION + DESCRIPTION_USAGE
+  : DESCRIPTION_STRUCTURED + DESCRIPTION_USAGE;
+
 export class GetMyReportsTool implements ITool {
   readonly name = 'get_my_reports';
   /**
@@ -171,9 +200,17 @@ export class GetMyReportsTool implements ITool {
    * re-tests. The two are separate keys now (`reportDate_year` and
    * `uploadYear`, see `resolveReportDate` in patient-reports.ts), so
    * the sentence names them separately and says which is which.
+   *
+   * AND THE REPORT'S OWN WORDS ARE NAMED ONLY WHILE THEY TRAVEL. What
+   * used to reach the model under 影像/报告印象 was a summary this
+   * PLATFORM composed out of a fixed vocabulary, and the description
+   * named none of that — so the model asserted a platform artefact as
+   * the radiologist's conclusion. The impression channel that replaced
+   * it is switched off by default, and the sentence follows the switch
+   * rather than describing a field the result cannot carry. See
+   * `DESCRIPTION` above.
    */
-  readonly description =
-    'Retrieve the authenticated user\'s recent uploaded medical reports (most recent first). Each report carries a classified type, document type, the report year when the report itself states one — otherwise the year it was uploaded, which is not the same thing — and structured OCR fields. Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
+  readonly description = DESCRIPTION;
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

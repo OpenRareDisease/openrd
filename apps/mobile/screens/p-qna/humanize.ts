@@ -58,7 +58,11 @@ export const humanizeToolName = (name: string): string => TOOL_LABELS[name] ?? n
  *
  *  No 年龄段 and no 症状类型: both are off the API's allowlists, so
  *  neither key can arrive and a label here is one this screen can
- *  never use. See PROMPT_ALLOWLIST. */
+ *  never use. See PROMPT_ALLOWLIST. THAT SENTENCE IS NOW CHECKED
+ *  RATHER THAN REMEMBERED — `labelledFieldKeys` below exists so
+ *  humanize-allowlist-parity.test.ts can read this table back against
+ *  the API's lists in the other direction, and adding 年龄段 here fails
+ *  it. */
 const FIELD_LABELS: Record<string, string> = {
   // profile scope
   gender: '性别',
@@ -84,7 +88,47 @@ const FIELD_LABELS: Record<string, string> = {
   uploadYear: '上传年份',
   status: '报告状态',
   fields: '报告识别指标',
-  findings_summary: '报告要点',
+  // THE REPORT'S OWN CONCLUSION, AND THE FOUR CELLS THAT SAY WHAT WAS
+  // DONE TO IT. FIVE KEYS, FIVE LABELS, AND THAT IS THE POINT.
+  //
+  // The followup pairs below share one label because each pair is one
+  // datum spelled two ways. These five are not that. One of them is the
+  // report's sentence; the other four are statements ABOUT that
+  // sentence — and in `reportImpressionWithheld`'s case, a statement
+  // that the sentence never travelled at all.
+  //
+  // Giving all five the single label 报告原文结论 printed
+  // 「本次引用了你的：检查报告（…、报告原文结论）」 for a 病历摘要 whose
+  // impression Gate 0 refused: a citation line claiming the patient's
+  // own conclusion had been read, in the one case where nothing of it
+  // was. The frame is 「本次引用了你的」, so every label inside it is a
+  // claim that the thing was read, and a label may not be true of one
+  // key and false of the next.
+  //
+  // WHAT THIS SCREEN CANNOT SAY, stated rather than left to be found.
+  // The four refusals — narrative document, kind not established,
+  // identifiers not removable, a number not classifiable — are four
+  // VALUES of one key, and `fieldsUsed` is `Object.keys(fields)`
+  // (security/render.ts). Only the key crosses the wire, so all four
+  // render the line below. It is worded to be true of every one of them
+  // rather than to guess which one happened.
+  //
+  // The three counters are only ever emitted BESIDE a published
+  // sentence — `put()` in pii-redactor.ts drops a zero, and a refusal
+  // zeroes all three — so 结论 in the last three labels always has
+  // 报告原文结论 standing beside it in the same group.
+  //
+  // 报告原文结论 replaces 报告要点, the label this file carried over
+  // `findings_summary`; 要点 was the wrong word even for that key,
+  // because what travelled then was a summary the PLATFORM composed out
+  // of a fixed vocabulary rather than anything the report had said.
+  // What travels now is the report's own wording, so the label says
+  // 原文.
+  reportImpression: '报告原文结论',
+  reportImpressionWithheld: '报告原文结论未共享的原因',
+  reportImpressionValuesMasked: '结论中已隐去的数值个数',
+  reportImpressionIdentifiersRemoved: '结论中已去除的身份信息处数',
+  reportImpressionCharactersCut: '结论因过长被截去的字数',
   // followups scope — everything `get_my_records` contributes.
   //
   // SEVERAL KEYS SHARE A LABEL ON PURPOSE, the same way `d4z4` and
@@ -110,6 +154,30 @@ const FIELD_LABELS: Record<string, string> = {
   eventSummary: '随访事件',
   eventCount: '随访事件',
 };
+
+/**
+ * THE OTHER DIRECTION OF THE PARITY CHECK, WHICH HAD NO READER.
+ *
+ * `humanize-allowlist-parity.test.ts` reads PROMPT_ALLOWLIST and fails
+ * when a key on it has no label here. Nothing asked the reverse
+ * question — whether a label here names a key the API can actually send
+ * — and the answer was kept by hand, in the 年龄段 / 症状类型 note on
+ * FIELD_LABELS above. A hand-kept claim about the API's lists is
+ * exactly what let the whole `followups` scope arrive unlabelled, and a
+ * label for an unreachable key is the same defect pointing the other
+ * way: a line this screen can never print, and a maintainer reading it
+ * as evidence that the key still exists.
+ *
+ * KEYS RATHER THAN THE TABLE, AND A FUNCTION RATHER THAN THE OBJECT, so
+ * the only thing this export can do is answer that question. Nothing
+ * outside this module can reach a label without going through
+ * `humanizeFieldKeys`, which is where the suffix collapsing and the
+ * dedupe live.
+ */
+export const labelledFieldKeys = (): readonly string[] => Object.keys(FIELD_LABELS);
+
+/** Same question, asked of the tool chips. See `labelledFieldKeys`. */
+export const labelledToolIds = (): readonly string[] => Object.keys(TOOL_LABELS);
 
 /** The three scopes, as the allowlist declares them. Membership decides
  *  which group a label is printed under, so these are checked against
@@ -137,7 +205,11 @@ const REPORT_KEYS = new Set([
   'uploadYear',
   'status',
   'fields',
-  'findings_summary',
+  'reportImpression',
+  'reportImpressionWithheld',
+  'reportImpressionValuesMasked',
+  'reportImpressionIdentifiersRemoved',
+  'reportImpressionCharactersCut',
 ]);
 
 const FOLLOWUP_KEYS = new Set([
@@ -204,7 +276,7 @@ export interface CitationSummaryInput {
  * The headline transparency line for an assistant answer.
  *
  * - Personal data used → 「本次引用了你的：健康档案（诊断分型、甲基化
- *   结果）、检查报告（报告要点）」 grouped by asset, in plain labels.
+ *   结果）、检查报告（报告原文结论）」 grouped by asset, in plain labels.
  * - Tools ran but nothing personal was read →「本次回答仅基于公共
  *   FSHD 知识资料，未读取你的个人数据。」— the negative case is
  *   transparency too, and today it renders as nothing at all.

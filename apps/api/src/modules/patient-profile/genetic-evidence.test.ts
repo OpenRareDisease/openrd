@@ -4,6 +4,7 @@ import {
   isLaboratoryGeneticReport,
   pickGeneticEvidenceDocument,
   readGeneticEvidence,
+  showsClinicalNarrative,
   type GeneticEvidenceDocumentLike,
 } from './genetic-evidence.js';
 
@@ -418,6 +419,157 @@ describe('分类标签本身不再是通行证 —— 库里存着的行也要�
         ocrPayload: null,
       }),
     ).toBe(true);
+  });
+});
+
+/**
+ * 「这一页上的行文，写的是一个人的故事，还是一次检查对结果的判断」。
+ *
+ * 这个判定同时被两个门用：实验室门（能不能按实验室口径判读）和助手
+ * 侧的资格门（这份报告自己写的结论能不能发给模型）。它以前是「整页
+ * 做子串匹配，命中十七个词里任意一个就算病历」，两个方向都错：
+ *
+ *   - 影像/肌电图/肌肉 MRI 报告顶上印着申请单，申请单把 主诉 / 现病史
+ *     当表单列印出来；
+ *   - 结合临床及查体 / 请结合临床查体 / 与主诉相符 / 结合既往史 是中文
+ *     影像与肌电图结论的标准收尾 —— 是放射科医师在「参考病史」，恰好
+ *     是这份文件不是病历的证据；
+ *   - 而资格门在提问前会把结论文本拼进页面，于是放射科医师自己的签
+ *     署把放射科医师自己的发现删掉了。
+ *
+ * 现在按位置读：标题不是提及，表单列不是章节，句子里的名词不是标题。
+ * 判不出来的一律仍然算病历。
+ */
+describe('叙述判定读的是版式，不是词表', () => {
+  const page = (extractedText: string, fields: Record<string, unknown> = {}) => ({
+    id: 'doc',
+    documentType: 'other',
+    status: 'parsed',
+    uploadedAt: '2026-03-01T00:00:00.000Z',
+    ocrPayload: { fields: { classifiedType: 'muscle_mri', ...fields }, extractedText },
+  });
+
+  it('申请单把 主诉/现病史 排成表单列时，那是申请单，不是病历章节', () => {
+    expect(
+      showsClinicalNarrative(
+        page(
+          '示例医院 医学影像科 检查报告单\n' +
+            '申请科室：神经内科        申请医师：李某某\n' +
+            '主诉：双下肢无力5年        现病史：进行性加重\n' +
+            '检查项目：双大腿MRI平扫\n' +
+            '影像所见：双侧臀大肌脂肪浸润。\n' +
+            '影像诊断：双大腿肌群脂肪浸润，符合肌病改变。',
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it('结论里「请结合临床及查体 / 与主诉相符 / 结合既往史」是引用病史，不是病历', () => {
+    for (const conclusion of [
+      '影像诊断：双大腿肌群不对称脂肪浸润，请结合临床及查体。',
+      '检查结论：肌源性损害电生理表现，与主诉相符，请结合临床。',
+      '影像诊断：双小腿肌群脂肪浸润，请结合既往史综合判断。',
+      '检测结论：甲状腺功能未见异常；建议结合个人史及用药史解读。',
+      '影像诊断：双大腿肌群脂肪浸润，请结合临床查体。',
+    ]) {
+      expect(showsClinicalNarrative(page(conclusion))).toBe(false);
+    }
+  });
+
+  it('章节标题仍然算，一行一段的病历一个都跑不掉', () => {
+    expect(
+      showsClinicalNarrative(
+        page('主诉：双上肢抬举无力8年。\n现病史：缓慢进展。\n既往史：无特殊。'),
+      ),
+    ).toBe(true);
+  });
+
+  it('OCR 把整页压成一行时，句号分隔的章节还是章节 —— 不是表单列', () => {
+    // The gate 0 call site splices the impression into the page before
+    // asking, and this is the shape that arrives when the page itself
+    // was never stored: 「主诉：…。现病史：…」 on one line.
+    expect(
+      showsClinicalNarrative(page('主诉：双下肢无力4年。现病史：缓慢进展。查体：翼状肩胛阳性。')),
+    ).toBe(true);
+  });
+
+  it('页面自称病历时，一处标题就够，不跟任何实验室结构相权衡', () => {
+    for (const title of [
+      '示例医院 病历摘要',
+      '示例医院神经内科 出院小结',
+      '示例医院 门诊病历摘要',
+      '病程记录',
+      '出院小结：患者于今日出院',
+    ]) {
+      expect(showsClinicalNarrative(page(`${title}\n检测项目：D4Z4\n检测结论：符合 FSHD1`))).toBe(
+        true,
+      );
+    }
+  });
+
+  it('句子里提到别的文件不算自称 —— 「参见出院小结中的记载」', () => {
+    expect(showsClinicalNarrative(page('影像诊断：双大腿脂肪浸润，余参见出院小结中的记载。'))).toBe(
+      false,
+    );
+  });
+
+  it('只有一列的 主诉 判不出来是谁写的，仍然算病历', () => {
+    // The direction of doubt: a requisition that prints 主诉 alone on
+    // its line is indistinguishable from a narrative that does, and the
+    // answer where this cannot tell is to withhold.
+    expect(
+      showsClinicalNarrative(page('检查报告单\n主诉：双下肢无力5年\n影像诊断：脂肪浸润。')),
+    ).toBe(true);
+  });
+
+  it('实验室门跟着一起修好：带申请单抬头、结论收尾写「请结合临床及查体」的真基因报告不再降级', () => {
+    const southernBlot: GeneticEvidenceDocumentLike = {
+      id: 'southern',
+      documentType: 'genetic_report',
+      status: 'parsed',
+      uploadedAt: '2026-02-01T00:00:00.000Z',
+      ocrPayload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          geneticTestMethod: 'Southern blot',
+          d4z4RepeatPathogenic: '4',
+        },
+        extractedText:
+          '示例医学检验实验室 遗传病检测报告\n' +
+          '送检单位：神经内科        送检医师：李某某\n' +
+          '主诉：双上肢无力8年        现病史：进行性加重\n' +
+          '检测项目：FSHD1 D4Z4 重复数检测\n' +
+          '检测方法：Southern blot\n' +
+          '检测结论：检出致病性 D4Z4 重复数收缩，请结合临床及查体。',
+      },
+    };
+    expect(showsClinicalNarrative(southernBlot)).toBe(false);
+    expect(isLaboratoryGeneticReport(southernBlot)).toBe(true);
+  });
+
+  it('实验室门的标定没有松：抄了整份报告的病历摘要照旧拦住', () => {
+    const summary: GeneticEvidenceDocumentLike = {
+      id: 'summary',
+      documentType: 'genetic_report',
+      status: 'parsed',
+      uploadedAt: '2026-02-01T00:00:00.000Z',
+      ocrPayload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          geneticTestMethod: 'Southern blot',
+          d4z4RepeatPathogenic: '4',
+        },
+        extractedText:
+          '示例医院 门诊病历摘要\n' +
+          '主诉：双肩无力7年。\n' +
+          '现病史：2024年于外院行基因检测。\n' +
+          '附：检测项目：D4Z4  检测方法：Southern blot  检测结论：符合 FSHD1',
+      },
+    };
+    expect(showsClinicalNarrative(summary)).toBe(true);
+    expect(isLaboratoryGeneticReport(summary)).toBe(false);
   });
 });
 

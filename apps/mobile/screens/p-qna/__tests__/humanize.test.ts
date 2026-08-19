@@ -27,10 +27,10 @@ describe('humanizeToolName', () => {
 
 describe('humanizeFieldKeys', () => {
   it('maps allowlist keys to plain labels', () => {
-    expect(humanizeFieldKeys(['gender', 'diagnosisType', 'findings_summary'])).toEqual([
+    expect(humanizeFieldKeys(['gender', 'diagnosisType', 'reportImpression'])).toEqual([
       '性别',
       '诊断分型',
-      '报告要点',
+      '报告原文结论',
     ]);
   });
 
@@ -69,6 +69,72 @@ describe('humanizeFieldKeys', () => {
     expect(humanizeFieldKeys(['eventSummary', 'eventCount'])).toEqual(['随访事件']);
   });
 
+  // THE IMPRESSION CHANNEL. Every key set below was read off
+  // `renderChunkForPrompt(...).fieldsUsed` for a real report chunk
+  // driven through the redactor, not composed by hand — the report
+  // cells that travel beside the impression are dropped here because
+  // this describe is about the impression labels.
+  it('a withheld impression does not claim the conclusion was read', () => {
+    // The whole reason these five keys stopped sharing one label. With
+    // 报告原文结论 on `reportImpressionWithheld`, a 病历摘要 refused by
+    // Gate 0 printed 「本次引用了你的：检查报告（…、报告原文结论）」 — the
+    // conclusion named as cited in the one case where nothing of it was.
+    expect(humanizeFieldKeys(['reportImpressionWithheld'])).toEqual(['报告原文结论未共享的原因']);
+    expect(humanizeFieldKeys(['reportImpressionWithheld'])).not.toContain('报告原文结论');
+  });
+
+  it('all four refusals are one key, so all four print the one line', () => {
+    // narrative / kind-not-established / identifiers-not-removable /
+    // number-not-classifiable are four VALUES of
+    // `reportImpressionWithheld`; `fieldsUsed` is `Object.keys(fields)`,
+    // so only the key crosses the wire. The label has to be true of all
+    // four rather than describe one of them.
+    const line = buildCitationSummary({
+      usedPersonalData: true,
+      fieldsUsed: [
+        'classifiedType',
+        'documentType',
+        'status',
+        'fields',
+        'reportImpressionWithheld',
+      ],
+    });
+    expect(line).toBe(
+      '本次引用了你的：检查报告（报告类型、文档类型、报告状态、报告识别指标、报告原文结论未共享的原因）',
+    );
+  });
+
+  it('what was removed from a published conclusion is said, not folded away', () => {
+    // Each counter is emitted only beside a published sentence — a
+    // refusal zeroes all three and `put()` drops a zero — so the label
+    // may say 结论 and rely on 报告原文结论 standing next to it.
+    expect(humanizeFieldKeys(['reportImpression', 'reportImpressionValuesMasked'])).toEqual([
+      '报告原文结论',
+      '结论中已隐去的数值个数',
+    ]);
+    expect(humanizeFieldKeys(['reportImpression', 'reportImpressionIdentifiersRemoved'])).toEqual([
+      '报告原文结论',
+      '结论中已去除的身份信息处数',
+    ]);
+    expect(humanizeFieldKeys(['reportImpression', 'reportImpressionCharactersCut'])).toEqual([
+      '报告原文结论',
+      '结论因过长被截去的字数',
+    ]);
+  });
+
+  it('the five impression keys are five labels, not one', () => {
+    const labels = humanizeFieldKeys([
+      'reportImpression',
+      'reportImpressionWithheld',
+      'reportImpressionValuesMasked',
+      'reportImpressionIdentifiersRemoved',
+      'reportImpressionCharactersCut',
+    ]);
+    // `humanizeFieldKeys` dedupes by label, so five surviving entries
+    // IS the assertion that no two of them share one.
+    expect(labels).toHaveLength(5);
+  });
+
   it('上传年份 and 报告年份 stay two labels, because they are two cells', () => {
     // The API conflated them once and dated a 2019 report to 2026.
     expect(humanizeFieldKeys(['reportDate_year', 'uploadYear'])).toEqual(['报告年份', '上传年份']);
@@ -79,10 +145,31 @@ describe('buildCitationSummary', () => {
   it('groups personal fields by asset in plain language', () => {
     const line = buildCitationSummary({
       usedPersonalData: true,
-      fieldsUsed: ['gender', 'd4z4_clinical', 'classifiedType', 'findings_summary'],
+      fieldsUsed: ['gender', 'd4z4_clinical', 'classifiedType', 'reportImpression'],
     });
     expect(line).toBe(
-      '本次引用了你的：健康档案（性别、D4Z4 基因结果）、检查报告（报告类型、报告要点）',
+      '本次引用了你的：健康档案（性别、D4Z4 基因结果）、检查报告（报告类型、报告原文结论）',
+    );
+  });
+
+  it('a published impression and what was cut out of it read as two things', () => {
+    // Exactly the key list `renderChunkForPrompt` returned in strict
+    // mode for a muscle MRI whose impression read
+    // 「双侧大腿脂肪浸润约 35%，肩胛带肌未见异常。」 — one measurement
+    // masked, the sentence published.
+    const line = buildCitationSummary({
+      usedPersonalData: true,
+      fieldsUsed: [
+        'classifiedType',
+        'documentType',
+        'status',
+        'fields_clinical',
+        'reportImpression',
+        'reportImpressionValuesMasked',
+      ],
+    });
+    expect(line).toBe(
+      '本次引用了你的：检查报告（报告类型、文档类型、报告状态、报告识别指标、报告原文结论、结论中已隐去的数值个数）',
     );
   });
 

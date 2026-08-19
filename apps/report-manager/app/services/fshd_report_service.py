@@ -278,10 +278,23 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
 #:
 #: A report is identified by the sections it HAS. A clinical narrative
 #: has 主诉 / 现病史 / 既往史 / 查体 because of what it is, and no
-#: genetics laboratory prints any of them — which makes their presence
-#: decisive on its own rather than something to weigh against the
-#: 检测项目 / 检测方法 / 送检单位 / 报告医师 a report shows. This is not a
-#: vocabulary: adding an FSHD term to it would put the old bug back.
+#: genetics laboratory prints any of them AS A SECTION OF ITS OWN —
+#: which makes their presence decisive rather than something to weigh
+#: against the 检测项目 / 检测方法 / 送检单位 / 报告医师 a report shows.
+#: This is not a vocabulary: adding an FSHD term to it would put the old
+#: bug back.
+#:
+#: BUT 「HAS THE SECTION」 IS NOT 「CONTAINS THE WORD」, and reading it as
+#: the second cost genuine result reports their own label. A radiology,
+#: EMG or muscle-MRI report prints the referring clinician's requisition
+#: across the top of itself, and that block carries 主诉 and 现病史 as
+#: form COLUMNS; and 请结合临床及查体 / 与主诉相符 / 结合既往史 is the
+#: standard closing of a Chinese radiology conclusion — the radiologist
+#: REFERRING to the clinical history, which is the opposite of the
+#: document being one. So the tuples below are split by the role their
+#: entries play and read in their position by `_narrative_structure`:
+#: a section HEADING is not a mention, a requisition COLUMN is not a
+#: section, and a document TITLE is neither.
 #:
 #: AND NOT A SIGNATURE, A TIMESTAMP OR AN IDENTIFIER. 医师签名 was added
 #: here and had to come out: every genetics report is signed, so one
@@ -296,12 +309,17 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
 #: Southern blot, a methylation report and a WES report, on which the
 #: seventeen entries below score zero and 医师签名 scored three.
 #:
-#: The API mirrors this list as CLINICAL_NARRATIVE_MARKERS in
+#: The API mirrors these two tuples as NARRATIVE_DOCUMENT_KIND_MARKERS
+#: and CLINICAL_STORY_SECTION_MARKERS in
 #: apps/api/src/modules/patient-profile/genetic-evidence.ts, and the
 #: mobile bundle carries a third copy, because a classifier change does
 #: not reclassify a stored row and both of those have to hold the same
 #: line against the ones already on disk. IF THIS MOVES THEY MOVE.
-MEDICAL_SUMMARY_STRUCTURE_MARKERS: Tuple[str, ...] = (
+
+#: WHAT THE PAGE CALLS ITSELF. A title, not a topic — no result report
+#: is titled 病历摘要 or 出院小结, which is why a title recognised
+#: anywhere on the page is decisive with nothing weighed against it.
+NARRATIVE_DOCUMENT_KIND_MARKERS: Tuple[str, ...] = (
     "病历摘要",
     "门诊病历",
     "住院病历",
@@ -310,6 +328,12 @@ MEDICAL_SUMMARY_STRUCTURE_MARKERS: Tuple[str, ...] = (
     "出院记录",
     "入院记录",
     "病程记录",
+)
+
+#: THE SECTIONS A PERSON'S STORY IS TOLD IN. Names of sections rather
+#: than of documents, which is why these are counted only where the page
+#: prints them AS sections — see `_narrative_structure`.
+CLINICAL_STORY_SECTION_MARKERS: Tuple[str, ...] = (
     "主诉",
     "现病史",
     "既往史",
@@ -319,6 +343,12 @@ MEDICAL_SUMMARY_STRUCTURE_MARKERS: Tuple[str, ...] = (
     "体格检查",
     "专科检查",
     "诊疗经过",
+)
+
+#: Both halves, for the audit that keeps 「no genetics laboratory prints
+#: this」 executable over every entry at once.
+MEDICAL_SUMMARY_STRUCTURE_MARKERS: Tuple[str, ...] = (
+    NARRATIVE_DOCUMENT_KIND_MARKERS + CLINICAL_STORY_SECTION_MARKERS
 )
 
 CRITICAL_FIELDS: Dict[str, List[str]] = {
@@ -1720,25 +1750,127 @@ def _muscle_from_sentence(sentence: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _structure_markers(normalized: str, markers: Iterable[str]) -> List[str]:
-    """Which of `markers` this document's own layout shows.
+#: WHERE A HEADING MAY START. The head of its line, a space, an opening
+#: bracket, or the end of the previous sentence — never welded to
+#: another Chinese character, because a marker that follows one is a
+#: word inside a phrase: the 查体 of 「请结合临床及查体」 follows 及, the
+#: 主诉 of 「与主诉相符」 follows 与. `_normalize_text` has already folded
+#: 。；（【 to . ; ( [ by the time this is asked.
+_HEADING_STARTS = set(" \t\n([\"'.;!?")
 
-    `normalized` is `_normalized_search_text` output — already
-    lowercased and punctuation-folded, so the Chinese markers match as
-    written and the English ones match case-insensitively.
+#: WHERE A HEADING MAY END. Its separator, or the line. Running text
+#: after the marker makes it a mention — the 查体 of 「结合临床查体.」 is
+#: followed by ., the 个人史 of 「结合个人史及用药史」 by 及.
+_HEADING_ENDS = set(" \t\n:)]")
+
+#: A label the way a printed form prints one.
+_FORM_FIELD_LABEL = _cjk_safe_compile(r"[一-龥A-Za-z][一-龥A-Za-z0-9]{0,7}:")
+
+
+def _is_form_row(line: str) -> bool:
+    """Is this line a row of form fields rather than a section of prose.
+
+    THE REQUISITION IS WHY THIS EXISTS. A radiology, EMG or muscle-MRI
+    report is printed with the referring clinician's requisition across
+    the top of it, and that block carries 主诉 and 现病史 as columns
+    beside 申请科室 and 申请医师::
+
+        主诉:双下肢无力5年 现病史:进行性加重
+
+    Those are the referrer's QUESTION, not the patient's story, and the
+    document under them is a genuine imaging report.
+
+    COLUMNS ARE THE DIFFERENCE, and it is the one the page itself draws.
+    A form row lays fields side by side, so two or more labels are
+    separated by nothing but whitespace. A narrative section owns its
+    line, and two narrative sections that share one are separated by the
+    end of a sentence rather than by a column gap — 「主诉:无力3年.现病
+    史:进行性加重.」 is prose a wrap happened to join, and it stays prose
+    because . is not whitespace.
+
+    ONE COLUMN IS NOT A FORM ROW, deliberately: a requisition that
+    prints 主诉 alone on its line is indistinguishable from a narrative
+    that does, and where this cannot tell, the document stays a
+    narrative.
     """
-    return [marker for marker in markers if marker.lower() in normalized]
+    return sum(1 for column in line.split() if _FORM_FIELD_LABEL.search(column)) >= 2
+
+
+def _shows_heading(line: str, marker: str) -> bool:
+    """Does `marker` sit on `line` as a section label rather than a word."""
+    at = line.find(marker)
+    while at >= 0:
+        before = line[at - 1] if at else "\n"
+        after = line[at + len(marker)] if at + len(marker) < len(line) else "\n"
+        if before in _HEADING_STARTS and after in _HEADING_ENDS:
+            return True
+        at = line.find(marker, at + 1)
+    return False
+
+
+def _names_itself_a_narrative(line: str, marker: str) -> bool:
+    """Does `line` carry `marker` as the document's own title.
+
+    The name ENDS the line — 「xx医院 病历摘要」 — or carries its own
+    separator, 「出院小结:」. What precedes it is not asked, because a
+    longer name is still a name: the 病历摘要 inside 门诊病历摘要 is the
+    page naming itself, while 「参见出院小结中的记载」 puts 中 after it and
+    is a mention.
+    """
+    at = line.find(marker)
+    while at >= 0:
+        rest = line[at + len(marker) :]
+        if not rest.strip() or rest[0] in _HEADING_ENDS:
+            return True
+        at = line.find(marker, at + 1)
+    return False
+
+
+def _narrative_structure(normalized: str) -> List[str]:
+    """The narrative structure this document's own layout shows.
+
+    `normalized` is `_normalized_search_text` output, whose line breaks
+    survive — the layout IS the evidence, so it has to.
+
+    Reads the two marker tuples in their POSITION rather than as
+    substrings. See MEDICAL_SUMMARY_STRUCTURE_MARKERS for why: a word a
+    result report prints as ordinary professional language is not a
+    witness that the document is a narrative about a person.
+    """
+    witnesses: List[str] = []
+    lines = normalized.split("\n")
+    for marker in NARRATIVE_DOCUMENT_KIND_MARKERS:
+        if any(_names_itself_a_narrative(line, marker) for line in lines):
+            witnesses.append(marker)
+    prose = [line for line in lines if not _is_form_row(line)]
+    for marker in CLINICAL_STORY_SECTION_MARKERS:
+        if any(_shows_heading(line, marker) for line in prose):
+            witnesses.append(marker)
+    return witnesses
 
 
 def _classify_report(
     text: str,
     document_type_hint: Optional[str] = None,
     report_name: Optional[str] = None,
+    *,
+    demote_narrative: bool = True,
 ) -> Tuple[str, float, List[str]]:
+    """What kind of document this is.
+
+    `demote_narrative=False` returns the VOCABULARY winner with the
+    structural demotion switched off. Its one caller is
+    `analyze_fshd_report`, asking 「what does this narrative quote」 so it
+    can run that extractor as well — see the note there. Nothing that
+    decides a LABEL may pass it: the demotion is the label.
+    """
     classification_text = text
     if report_name:
         classification_text = f"{report_name}\n{text}"
     normalized = _normalized_search_text(classification_text)
+    # Read once and used twice — to SCORE `medical_summary` and, below,
+    # to demote a result label the quoted values won.
+    narrative = _narrative_structure(normalized)
     scores: Dict[str, int] = {}
     reasons: Dict[str, List[str]] = {}
 
@@ -1754,6 +1886,26 @@ def _classify_report(
         score = 0
         matched: List[str] = []
         for keyword, weight in rules:
+            # `medical_summary` IS SCORED ON STRUCTURE, NOT ON THE WORD.
+            #
+            # Every one of its seven keywords is a document-kind name or
+            # a story-section name, so `_narrative_structure` has
+            # already decided which of them this page prints AS one.
+            # Scoring them as substrings made an EMG report whose only
+            # conclusion is 「肌源性损害电生理表现，与主诉相符」 score
+            # `medical_summary` 2 against nothing — this file has no EMG
+            # template — so the report came out labelled 病历摘要, and
+            # the assistant's eligibility gate refuses to send a
+            # narrative's text. The report is now `other`, which is the
+            # honest answer for a document this parser has no template
+            # for, and the gate refuses it as 「cannot tell」 rather than
+            # as somebody's medical record.
+            #
+            # The weights stay: they are what keeps a real 病历摘要
+            # ahead of the vocabulary its quoted result scores. It is
+            # the MEMBERSHIP that structure decides.
+            if report_type == "medical_summary" and keyword not in narrative:
+                continue
             if keyword.lower() in normalized:
                 score += weight
                 matched.append(keyword)
@@ -1771,16 +1923,38 @@ def _classify_report(
     best_score = scores[best_type]
     confidence = min(0.99, 0.45 + best_score / 18.0)
 
-    # `genetic_report` IS DECIDED ON STRUCTURE, NOT ON VOCABULARY.
+    # WHAT A DOCUMENT IS, IS DECIDED ON STRUCTURE, NOT ON VOCABULARY.
     #
-    # This is the only label in this function that downstream code
-    # treats as permission — `isLaboratoryGeneticReport` on the API side
-    # asks it before anything may GRADE a genetics cell — so it is the
-    # only one where 「contains the words」 is not good enough. A 门诊病历
-    # 摘要 that quotes a full genetic result outscores medical_summary on
-    # keywords alone (measured: 18 to 16), and the uploader's declared
-    # `other` does not outrank the classifier. See
-    # MEDICAL_SUMMARY_STRUCTURE_MARKERS.
+    # Two labels out of this function are read downstream as permission
+    # — `isLaboratoryGeneticReport` on the API side asks for
+    # `genetic_report` before anything may GRADE a genetics cell, and
+    # the assistant's eligibility gate (`RESULT_DOCUMENT_TYPES` in
+    # apps/api/src/modules/ai-agents/security/pii-redactor.ts) asks for
+    # ANY of the fifteen result labels before a document's own
+    # impression may be sent to a model at all. For both of them
+    # 「contains the words」 is not good enough. A 门诊病历摘要 that quotes
+    # a full genetic result outscores medical_summary on keywords alone
+    # (measured: 18 to 16), and the uploader's declared `other` does not
+    # outrank the classifier. See MEDICAL_SUMMARY_STRUCTURE_MARKERS.
+    #
+    # THE GUARD USED TO COVER `genetic_report` AND NOTHING ELSE, and a
+    # narrative wins the other labels just as easily, on the same
+    # mechanism: it is the quoted result that scores. Measured through
+    # this function, one 出院小结 / 门诊病历 / 入院记录 / 病程记录 /
+    # 住院病历 / 病历摘要 per label came back as `muscle_mri`,
+    # `pulmonary_function`, `echocardiography`, `muscle_enzyme`,
+    # `diaphragm_ultrasound`, `blood_routine`, `abdominal_ultrasound`
+    # and `coagulation` — eight result labels, every one of them a
+    # licence for the assistant to send that document's own impression
+    # verbatim. So the demotion is asked of every label.
+    #
+    # EXCEPT `physical_exam`, WHICH IS DEFINED BY THESE SECTIONS. 肌力 /
+    # 体格检查 / 查体 IS what a physical-exam document is, and three of
+    # them are entries on CLINICAL_STORY_SECTION_MARKERS; demoting it
+    # would relabel every one and lose `_extract_physical_exam`. It
+    # needs no demotion either — the API's eligibility gate already
+    # counts `physical_exam` as a non-result document, beside
+    # `medical_summary` and `other`.
     #
     # A NARRATIVE SECTION IS DISQUALIFYING ON ITS OWN, rather than being
     # weighed against the laboratory sections. A 病历摘要 with the whole
@@ -1792,28 +1966,33 @@ def _classify_report(
     # attached; being wrong the other way costs a laboratory's sentence
     # with no laboratory behind it.
     #
-    # A GENETICS REPORT WITH NO RECOGNISABLE STRUCTURE IS STILL
-    # PROMOTED. Where neither list hits — an OCR that recovered the
+    # A REPORT WITH NO RECOGNISABLE STRUCTURE IS STILL PROMOTED. Where
+    # the narrative structure does not show — an OCR that recovered the
     # result lines and none of the headings — this changes nothing, and
-    # deliberately: demoting there would stop `_extract_genetic` running
-    # and lose the patient's numbers entirely, and for some patients
-    # that is the only copy of the count that exists. The API-side gate
-    # is what refuses to grade an unconfirmed document; this one only
-    # refuses to CALL it the laboratory's.
-    if best_type == "genetic_report":
-        narrative = _structure_markers(normalized, MEDICAL_SUMMARY_STRUCTURE_MARKERS)
+    # deliberately: demoting there would lose the patient's numbers
+    # entirely, and for some patients the quoted count is the only copy
+    # that exists. The API-side gates are what refuse to grade or to
+    # send an unconfirmed document; this one only refuses to CALL it a
+    # result.
+    #
+    # AND THE DEMOTION COSTS NO VALUES. `analyze_fshd_report` runs the
+    # demoted document's OWN extractor as well as the narrative one, so
+    # the 出院小结 that quotes an MRI still yields its muscle rows — it
+    # yields them labelled 病历摘要, which is what it is.
+    if demote_narrative and best_type not in ("medical_summary", "physical_exam"):
         if narrative:
             # Always `medical_summary`, never `other`: the structural
             # markers ARE the evidence for the label even when the
             # keyword rules scored nothing, and `medical_summary` is the
-            # one branch that still reads the quoted genetic values —
-            # see the dispatch in `analyze_fshd_report`. Landing on
-            # `other` would drop them.
+            # branch that also reads the quoted values — see the
+            # dispatch in `analyze_fshd_report`. Landing on `other`
+            # would drop them.
+            demoted_from = best_type
             best_type = "medical_summary"
             best_score = max(scores.get("medical_summary", 0), 2 * len(narrative))
             confidence = min(0.99, 0.45 + best_score / 18.0)
             reasons["medical_summary"] = reasons.get("medical_summary", []) + [
-                f"structure:文档带病历结构{'/'.join(narrative)}，不按基因报告判读"
+                f"structure:文档带病历结构{'/'.join(narrative)}，不按{REPORT_TYPE_LABELS.get(demoted_from, demoted_from)}判读"
             ]
 
     # Muscle enzyme should outrank generic biochemistry when CK/LDH-like markers dominate.
@@ -4996,56 +5175,81 @@ def analyze_fshd_report(
     findings: List[Dict[str, Any]] = []
     normalized_summary: Dict[str, Any] = {}
 
-    if report_type == "genetic_report":
-        _extract_genetic(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "medical_summary":
-        _extract_medical_summary(lines, structured_fields, normalized_summary)
-        # A TRANSCRIPTION IS STILL READ. For some patients the 病历摘要 is
-        # the only page in the account that carries the D4Z4 count, and
-        # the platform's answer to that has always been 「display it with
-        # its origin, never grade it」 — the origin being this
-        # classification, which now says 病历摘要 rather than
-        # genetic_report. Skipping the genetics extractor here would not
-        # make the value ungradeable, it would make it invisible: the
-        # API's `pickGeneticEvidenceDocument` only reaches a non-report
-        # document THROUGH the genetic result keys, and the redactor can
-        # only stamp `not_read_off_a_laboratory_report` onto a cell that
-        # exists. The refusal is the API's job; producing the cell to
-        # refuse is this one's.
-        _extract_genetic(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "physical_exam":
-        _extract_physical_exam(lines, structured_fields, normalized_summary)
-    elif report_type == "muscle_mri":
-        _extract_mri(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "pulmonary_function":
-        _extract_pulmonary(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "diaphragm_ultrasound":
-        _extract_diaphragm_ultrasound(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "ecg":
-        _extract_ecg(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "echocardiography":
-        _extract_echo(lines, structured_fields, findings, normalized_summary)
-    elif report_type == "blood_routine":
-        _extract_blood_routine(lines, structured_fields, normalized_summary)
-    elif report_type == "thyroid_function":
-        _extract_thyroid_function(lines, structured_fields, normalized_summary)
-    elif report_type == "coagulation":
-        _extract_coagulation(lines, structured_fields, normalized_summary)
-    elif report_type == "urinalysis":
-        _extract_urinalysis(lines, structured_fields, normalized_summary)
-    elif report_type == "infection_screening":
-        _extract_infection_screening(lines, structured_fields, normalized_summary)
-    elif report_type == "stool_test":
-        _extract_stool_test(lines, structured_fields, normalized_summary)
-    elif report_type == "abdominal_ultrasound":
-        _extract_abdominal_ultrasound(lines, structured_fields, findings, normalized_summary)
+    def _run_extractor(kind: str) -> None:
+        if kind == "genetic_report":
+            _extract_genetic(lines, structured_fields, findings, normalized_summary)
+        elif kind == "medical_summary":
+            _extract_medical_summary(lines, structured_fields, normalized_summary)
+            # A TRANSCRIPTION IS STILL READ. For some patients the 病历
+            # 摘要 is the only page in the account that carries the D4Z4
+            # count, and the platform's answer to that has always been
+            # 「display it with its origin, never grade it」 — the origin
+            # being this classification, which now says 病历摘要 rather
+            # than genetic_report. Skipping the genetics extractor here
+            # would not make the value ungradeable, it would make it
+            # invisible: the API's `pickGeneticEvidenceDocument` only
+            # reaches a non-report document THROUGH the genetic result
+            # keys, and the redactor can only stamp
+            # `not_read_off_a_laboratory_report` onto a cell that
+            # exists. The refusal is the API's job; producing the cell
+            # to refuse is this one's.
+            _extract_genetic(lines, structured_fields, findings, normalized_summary)
+        elif kind == "physical_exam":
+            _extract_physical_exam(lines, structured_fields, normalized_summary)
+        elif kind == "muscle_mri":
+            _extract_mri(lines, structured_fields, findings, normalized_summary)
+        elif kind == "pulmonary_function":
+            _extract_pulmonary(lines, structured_fields, findings, normalized_summary)
+        elif kind == "diaphragm_ultrasound":
+            _extract_diaphragm_ultrasound(lines, structured_fields, findings, normalized_summary)
+        elif kind == "ecg":
+            _extract_ecg(lines, structured_fields, findings, normalized_summary)
+        elif kind == "echocardiography":
+            _extract_echo(lines, structured_fields, findings, normalized_summary)
+        elif kind == "blood_routine":
+            _extract_blood_routine(lines, structured_fields, normalized_summary)
+        elif kind == "thyroid_function":
+            _extract_thyroid_function(lines, structured_fields, normalized_summary)
+        elif kind == "coagulation":
+            _extract_coagulation(lines, structured_fields, normalized_summary)
+        elif kind == "urinalysis":
+            _extract_urinalysis(lines, structured_fields, normalized_summary)
+        elif kind == "infection_screening":
+            _extract_infection_screening(lines, structured_fields, normalized_summary)
+        elif kind == "stool_test":
+            _extract_stool_test(lines, structured_fields, normalized_summary)
+        elif kind == "abdominal_ultrasound":
+            _extract_abdominal_ultrasound(lines, structured_fields, findings, normalized_summary)
 
-    if report_type in {
-        "muscle_enzyme",
-        "biochemistry",
-        "other",
-    }:
-        _extract_labs(lines, structured_fields, normalized_summary)
+        if kind in {"muscle_enzyme", "biochemistry", "other"}:
+            _extract_labs(lines, structured_fields, normalized_summary)
+
+    _run_extractor(report_type)
+
+    # A DEMOTED DOCUMENT KEEPS ITS VALUES.
+    #
+    # `_classify_report` relabels any document whose own layout shows a
+    # clinical narrative as `medical_summary`, whatever vocabulary won —
+    # a 出院小结 that quotes the patient's muscle MRI scores `muscle_mri`
+    # on keywords and is still an 出院小结. THE LABEL is what the API's
+    # gates read as permission, and it has to say 病历摘要. THE VALUES
+    # are a different question: the MRI rows that 出院小结 quotes are the
+    # patient's only copy as often as the D4Z4 count is, and dropping
+    # them would trade one silent erasure for another.
+    #
+    # So the quoted document's own extractor runs too, and the values it
+    # produces carry the narrative label — which is precisely the
+    # arrangement 病历摘要 + `_extract_genetic` above has always had,
+    # generalised to the label that was actually demoted.
+    if report_type == "medical_summary":
+        quoted_type, _, _ = _classify_report(
+            normalized_text,
+            document_type_hint,
+            report_name,
+            demote_narrative=False,
+        )
+        if quoted_type != "medical_summary":
+            _run_extractor(quoted_type)
 
     # Whatever the hand-written extractors missed, read off the table
     # itself. Runs last and only *adds*: a type-specific extractor knows

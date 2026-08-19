@@ -22,11 +22,25 @@
  *
  * WHAT IT PINS
  *
- * Three things, all of them about the boundary rather than the wording:
+ * Five things, all of them about the boundary rather than the wording,
+ * and the boundary is checked in BOTH directions:
  *   1. every key on PROMPT_ALLOWLIST resolves to a label;
  *   2. every key lands in the group its scope names, so no scope can be
  *      swallowed by 其他数据 again;
- *   3. every tool the live route registers resolves to a label.
+ *   3. every tool the live route registers resolves to a label;
+ *   4. every label in humanize.ts names a key the API can actually
+ *      send, and every tool label names a registered tool;
+ *   5. every labelled key sits in exactly one scope bucket, so the
+ *      buckets cannot drift out of step with the label table.
+ *
+ * 4 AND 5 ARE NEW, AND THE OTHER DIRECTION WAS KEPT BY HAND UNTIL NOW.
+ * humanize.ts carries a note that it has no 年龄段 and no 症状类型 label
+ * because both are off the API's allowlists — a true claim about
+ * somebody else's file, maintained by remembering to. That is the same
+ * arrangement that let the whole `followups` scope arrive unlabelled;
+ * it just fails the other way round, as a label for a key that can
+ * never arrive, read by the next maintainer as evidence the key is
+ * still live.
  *
  * The labels themselves are not asserted here — humanize.test.ts owns
  * those. This file only fails when the mobile side falls behind the API.
@@ -44,7 +58,13 @@
 import fs from 'fs';
 import path from 'path';
 
-import { buildCitationSummary, humanizeFieldKeys, humanizeToolName } from '../humanize';
+import {
+  buildCitationSummary,
+  humanizeFieldKeys,
+  humanizeToolName,
+  labelledFieldKeys,
+  labelledToolIds,
+} from '../humanize';
 
 const API_SRC = path.resolve(__dirname, '../../../../api/src');
 const ALLOWLIST_SOURCE = path.join(API_SRC, 'modules/ai-agents/security/allowlist.ts');
@@ -58,6 +78,53 @@ const stripComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
 const quoted = (block: string): string[] => [...block.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+/**
+ * THE REPORT-IMPRESSION CHANNEL IS SHIPPED BEHIND A SWITCH, AND THAT
+ * MAKES ITS KEYS A THIRD STATE THIS FILE DID NOT HAVE A WORD FOR.
+ *
+ * Direction 4 asks whether a label names a key the API can send, and it
+ * exists because a label for a key that can never arrive reads to the
+ * next maintainer as evidence the key is still live. A switched-off
+ * channel is the opposite case: the keys are STAGED, not stale. The
+ * channel is built, its tests run on every CI run, and the constant is
+ * the one thing standing between it and the prompt — so deleting the
+ * labels would mean a mobile release is required before the API may
+ * flip a boolean, and re-adding them later is exactly the hand-kept
+ * arrangement this file was written to end.
+ *
+ * So direction 4 exempts them WHILE THE SWITCH READS FALSE, and a new
+ * assertion below holds the exemption honest: the moment the switch
+ * reads true, every staged key must be on the allowlist for real. The
+ * exemption can therefore never hide the drift it looks like.
+ *
+ * Both are read out of the API source, and both throw rather than
+ * returning nothing, for the same reason every other parser here does.
+ */
+const reportImpressionChannelEnabled = (): boolean => {
+  const source = fs.readFileSync(ALLOWLIST_SOURCE, 'utf8');
+  const match = /REPORT_IMPRESSION_CHANNEL_ENABLED:\s*boolean\s*=\s*(true|false)\b/.exec(source);
+  if (!match) {
+    throw new Error(
+      `REPORT_IMPRESSION_CHANNEL_ENABLED is gone from ${ALLOWLIST_SOURCE} — this test's parser, not the app, is what broke.`,
+    );
+  }
+  return match[1] === 'true';
+};
+
+const stagedImpressionKeys = (): string[] => {
+  const source = stripComments(fs.readFileSync(ALLOWLIST_SOURCE, 'utf8'));
+  const start = source.indexOf('export const REPORT_IMPRESSION_KEYS');
+  if (start < 0) {
+    throw new Error(
+      `REPORT_IMPRESSION_KEYS is gone from ${ALLOWLIST_SOURCE} — this test's parser, not the app, is what broke.`,
+    );
+  }
+  const end = source.indexOf('}', start);
+  const keys = quoted(source.slice(start, end));
+  if (keys.length === 0) throw new Error('read no keys off REPORT_IMPRESSION_KEYS');
+  return keys;
+};
 
 /**
  * PROMPT_ALLOWLIST as `{ scope: keys }`, both modes merged — this
@@ -92,6 +159,15 @@ const serverAllowlist = (): Record<string, string[]> => {
   }
   for (const [scope, keys] of Object.entries(scopes)) {
     if (keys.length === 0) throw new Error(`read no keys for scope ${scope}`);
+  }
+  // The report-impression keys reach the reports scope through a spread
+  // of REPORT_IMPRESSION_ALLOWLIST rather than as quoted literals, so
+  // the array parser above cannot see them. Read them from their own
+  // export instead, and only when the switch says they are live —
+  // otherwise this file would assert a label for keys the API is not
+  // sending, which is the defect direction 4 exists to catch.
+  if (reportImpressionChannelEnabled()) {
+    scopes.reports = [...new Set([...scopes.reports, ...stagedImpressionKeys()])];
   }
   return scopes;
 };
@@ -170,6 +246,58 @@ describe('字段标签：后端 allowlist 上的每一个 key，这里都得有�
     expect(line).not.toContain('其他数据');
   });
 
+  // --- the other direction ------------------------------------------
+  //
+  // A label here has to name a key the API can send. Suffixed forms
+  // count: `fields` is reached as `fields_clinical`, `methylation` as
+  // `methylation_withheld` / `methylation_origin`. The suffix list is
+  // NOT copied here — the match is 「some allowlist key starts with this
+  // key plus an underscore AND humanize.ts collapses the two onto one
+  // label」, which asks the module itself which suffixes it honours.
+  const allKeys = Object.values(allowlist).flat();
+  const reaches = (key: string): boolean =>
+    allKeys.some(
+      (candidate) =>
+        candidate === key ||
+        (candidate.startsWith(`${key}_`) &&
+          humanizeFieldKeys([candidate])[0] === humanizeFieldKeys([key])[0]),
+    );
+
+  const staged = new Set(stagedImpressionKeys());
+  const channelOn = reportImpressionChannelEnabled();
+
+  it.each(labelledFieldKeys().map((key) => [key]))(
+    '%s 是 API 真能发过来的 key，不是一条永远印不出来的标签',
+    (key) => {
+      // Staged, not stale — see the note above `stagedImpressionKeys`.
+      if (!channelOn && staged.has(key)) return;
+      expect(reaches(key)).toBe(true);
+    },
+  );
+
+  it('开关一旦打开，被豁免的那几个 key 必须真的在 allowlist 上', () => {
+    // The exemption above is only honest while it cannot hide drift.
+    if (!channelOn) {
+      expect(staged.size).toBeGreaterThan(0);
+      return;
+    }
+    for (const key of staged) expect(reaches(key)).toBe(true);
+  });
+
+  it('被豁免的每一个 key 在 humanize.ts 里都有标签，开关打开时不用改 App', () => {
+    // The point of staging rather than deleting: flipping the API
+    // constant must not require a mobile release.
+    const labelled = new Set(labelledFieldKeys());
+    for (const key of staged) expect(labelled.has(key)).toBe(true);
+  });
+
+  it.each(labelledFieldKeys().map((key) => [key]))('%s 落在某一个 scope 分组里', (key) => {
+    const line = buildCitationSummary({ usedPersonalData: true, fieldsUsed: [key] });
+    const groups = Object.values(GROUP_FOR_SCOPE).filter((group) => line?.includes(group));
+    expect(groups).toHaveLength(1);
+    expect(line).not.toContain('其他数据');
+  });
+
   it('真正认不出来的 key 仍然原样保留，并且归到「其他数据」', () => {
     // The fallback is not what broke; swallowing a whole scope into it
     // was. It has to keep working.
@@ -197,6 +325,13 @@ describe('工具标签：线上路由注册的每一个工具，这里都得有�
   it.each(ids.map((id) => [id]))('%s 有中文名，不会把工具 id 印到界面上', (id) => {
     expect(humanizeToolName(id)).not.toBe(id);
   });
+
+  it.each(labelledToolIds().map((id) => [id]))(
+    '%s 是路由真注册了的工具，不是一条永远印不出来的标签',
+    (id) => {
+      expect(ids).toContain(id);
+    },
+  );
 
   it('没见过的工具 id 仍然原样显示，不会消失', () => {
     expect(humanizeToolName('future_tool')).toBe('future_tool');

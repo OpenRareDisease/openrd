@@ -34,6 +34,154 @@
 export type RedactionScope = 'profile' | 'reports' | 'followups';
 export type RedactionMode = 'strict' | 'precise';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE SWITCH ON THE REPORT-IMPRESSION CHANNEL. DEFAULT OFF.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * WHAT IT SWITCHES. Whether the report's own impression — the sentence
+ * the radiologist, geneticist or pulmonologist wrote — travels to the
+ * model at all, together with the four markers that say what was done
+ * to it. OFF, a report reaches the prompt as its structured cells and
+ * nothing else, which is where every number in an answer already comes
+ * from and what ten rounds of work have hardened. ON, the channel
+ * behaves exactly as built: eligibility, identifier scrub, measurement
+ * mask, in that order, all three failing closed. See the layer 4 block
+ * in `pii-redactor.ts`.
+ *
+ * WHY IT IS OFF, AND WHY THAT IS A DECISION RATHER THAN A DEFAULT
+ * NOBODY GOT ROUND TO CHANGING.
+ *
+ * The channel replaced a keyword extractor over the same text. That
+ * extractor took six rounds of patches and never stopped asserting
+ * findings the report had RULED OUT; it is deleted and it is not coming
+ * back. The replacement was then red-teamed twice. The second round ran
+ * AFTER a full repair pass and still produced 46 findings, 35 of them
+ * clinical. The reviewers' summary of the residue was that it is
+ *「the same shape of answer the deleted keyword extractor gave, and it
+ * fails the same way」.
+ *
+ * Two of those findings are structural rather than incremental:
+ *
+ *   - THE IDENTIFIER SCRUB DOES NOT FAIL CLOSED ON A NAME. It
+ *     enumerates label suffixes, name lengths, separators and scripts,
+ *     and after all of it an unlabelled Chinese personal name in prose
+ *     still publishes. All seven residual classes PUBLISH. A guardrail
+ *     whose residue is 「it goes out」 is not one.
+ *   - THE MEASUREMENT MASK DESTROYS THE VOCABULARY THIS DISEASE IS
+ *     DEFINED ON. HGVS notation, a locus with a sub-band, an
+ *     abbreviated vertebral level and a graded fat-infiltration stage
+ *     were all read as measurements. Those specific defects are fixed
+ *     (see `WHOLE_TOKEN_NAME_SHAPES` and `enumeratedOrdinalSpans` in
+ *     `pii-redactor.ts`) — they were fixed BECAUSE they decide whether
+ *     this switch can ever be turned on, not because fixing them turns
+ *     it on.
+ *
+ * NOTHING IS DELETED. The channel stays in the codebase, its tests
+ * stay running — they drive `gateReportImpression` directly, so the
+ * gates are exercised on every CI run whether or not their answer
+ * reaches a prompt — and turning it on is this one line. The point of
+ * the switch is that the decision is now explicit and reversible
+ * instead of implicit: what ships by default is the safe state, and
+ * changing that is a reviewed diff with this comment attached to it.
+ *
+ * WHY A CONSTANT AND NOT AN ENVIRONMENT VARIABLE. `config/env.ts` is
+ * this repo's convention for configuration, and every boolean on it is
+ * a fact about a DEPLOYMENT — is there a container, does the database
+ * speak SSL, was an insecure connection acknowledged. This is not one
+ * of those. Three reasons it must be fixed at build time:
+ *
+ *   1. The patient-facing app has to agree with it. `humanize.ts` in
+ *      apps/mobile labels these keys for the 「本次引用了你的」 citation
+ *      line, and its parity test checks that label table against THIS
+ *      file's source. A mobile bundle cannot read the API's
+ *      environment, so a per-deployment value would put the two sides
+ *      permanently out of step with no way to check them.
+ *   2. `tool-descriptions.test.ts` checks that what `get_my_reports`
+ *      TELLS the model is exactly what the allowlist can carry. That
+ *      check is only meaningful if both are decided at build time; an
+ *      environment variable makes 「the description is honest」
+ *      unprovable in CI and true or false per deployment.
+ *   3. It is a product decision taken on evidence, not an operational
+ *      knob. An operator flipping it at 3am is precisely the event
+ *      this shape is meant to prevent.
+ *
+ * TYPED `boolean` RATHER THAN LET TYPESCRIPT INFER `false`, so both
+ * branches everywhere downstream keep type-checking and neither rots
+ * into unreachable code that the compiler stops reading.
+ */
+export const REPORT_IMPRESSION_CHANNEL_ENABLED: boolean = false;
+
+/**
+ * THE FIVE KEYS THE CHANNEL PUBLISHES UNDER, NAMED ONCE.
+ *
+ * The redactor's channel table, the renderer's label table and the
+ * allowlist slice below are all keyed off this object, so the three
+ * cannot drift apart the way `findings_summary` and its label did.
+ */
+export const REPORT_IMPRESSION_KEYS = {
+  text: 'reportImpression',
+  withheld: 'reportImpressionWithheld',
+  valuesMasked: 'reportImpressionValuesMasked',
+  identifiersRemoved: 'reportImpressionIdentifiersRemoved',
+  charactersCut: 'reportImpressionCharactersCut',
+} as const;
+
+/**
+ * THE ALLOWLIST'S OWN VIEW OF THE SWITCH, AND THE REASON THE SWITCH
+ * LIVES IN THIS FILE.
+ *
+ * The allowlist is the inventory a tool description is written from and
+ * the inventory the patient-facing citation line is labelled from. A
+ * key sitting on it while the switch is off would advertise a field the
+ * result can never carry — the exact defect `tool-descriptions.test.ts`
+ * exists to catch, and the exact defect the 年龄段 note in mobile's
+ * `humanize.ts` describes from the other side. So with the switch off
+ * these lists are EMPTY, not present-and-unused.
+ *
+ * `valuesMasked` is strict-only when the switch is on, and that is not
+ * an oversight: precise consent masks nothing, so the count is always
+ * zero there and a key that can only ever hold zero says something
+ * false about the mode it sits in. The other three markers are on both,
+ * because a refusal and a removal are not redactions — they are this
+ * platform stating what it did, and that is true whatever the patient
+ * shared.
+ *
+ * NOTE FOR THE READER THAT IS NOT A COMPILER. `humanize-allowlist-
+ * parity.test.ts` in apps/mobile reads THIS FILE AS TEXT — it cannot
+ * import from the API — and pulls key names out of the two arrays below
+ * with a regular expression. It therefore cannot see through the spread
+ * of this constant, in either position of the switch, and a spelling
+ * that let it see the names in both positions would be worse: it would
+ * tell the mobile side five keys are reachable when the shipped API
+ * cannot send one of them.
+ *
+ * So a text reader that wants the truth has to read two things, and
+ * both are written here to be read: the single line
+ * `export const REPORT_IMPRESSION_CHANNEL_ENABLED: boolean = <value>;`
+ * above, and the quoted key names on `REPORT_IMPRESSION_KEYS` above
+ * that. Those two are the contract for anything outside this workspace;
+ * the arrays below are the contract for anything inside it.
+ */
+const REPORT_IMPRESSION_ALLOWLIST: Readonly<Record<RedactionMode, readonly string[]>> =
+  REPORT_IMPRESSION_CHANNEL_ENABLED
+    ? {
+        strict: [
+          REPORT_IMPRESSION_KEYS.text,
+          REPORT_IMPRESSION_KEYS.withheld,
+          REPORT_IMPRESSION_KEYS.valuesMasked,
+          REPORT_IMPRESSION_KEYS.identifiersRemoved,
+          REPORT_IMPRESSION_KEYS.charactersCut,
+        ],
+        precise: [
+          REPORT_IMPRESSION_KEYS.text,
+          REPORT_IMPRESSION_KEYS.withheld,
+          REPORT_IMPRESSION_KEYS.identifiersRemoved,
+          REPORT_IMPRESSION_KEYS.charactersCut,
+        ],
+      }
+    : { strict: [], precise: [] };
+
 export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, readonly string[]>> = {
   profile: {
     // A KEY LISTED HERE READS AS AN INVENTORY OF WHAT THE RESULT
@@ -189,6 +337,38 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
     // turn dated 2019-03. See `resolveReportDate` in
     // patient-reports.ts. Both are years and neither carries a day, so
     // both are on both lists.
+    // THE REPORT'S OWN IMPRESSION, AND THE FOUR CELLS THAT SAY WHAT WAS
+    // DONE TO IT.
+    //
+    // `findings_summary` used to sit here. It held a summary this
+    // PLATFORM wrote out of a fixed vocabulary — the report's sentence
+    // never travelled — and six rounds of review found the same family
+    // of defects in it and never ran out: a ruled-out finding emitted
+    // as present, a hedge rendered as definite, a relative's diagnosis
+    // rendered as the patient's own, a real finding dropped. It is
+    // deleted, extractor and all.
+    //
+    // What replaces it is the report's OWN text, and it is a narrower
+    // thing than the key it replaces in one way and a wider thing in
+    // another, so both are stated:
+    //
+    //   - NARROWER: it travels only off a RESULT document. A 病历摘要,
+    //     门诊病历, 出院小结 or 入院记录 sends nothing at all — see
+    //     `documentEligibility` in pii-redactor.ts. `findings_summary`
+    //     was computed off every document kind.
+    //   - WIDER: what travels is prose the report printed, not tokens
+    //     from a list. Identifiers are removed from it in BOTH modes,
+    //     and in strict mode every measurement in it is masked, because
+    //     the consent step the patient did not take is 「精确数值」 and a
+    //     free-text path that carried numbers would be a hole straight
+    //     through the consent model.
+    //
+    // AND ALL FIVE ARE BEHIND ONE SWITCH, DEFAULT OFF. The lists below
+    // carry them only when `REPORT_IMPRESSION_CHANNEL_ENABLED` is true;
+    // `REPORT_IMPRESSION_ALLOWLIST` at the top of this file is where
+    // that is decided and why. With the switch off the six lines above
+    // describe a channel that is built and not wired, and the reports
+    // scope is the six structured cells it was before any of this.
     strict: [
       'classifiedType',
       'documentType',
@@ -196,7 +376,7 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'uploadYear',
       'status',
       'fields_clinical',
-      'findings_summary',
+      ...REPORT_IMPRESSION_ALLOWLIST.strict,
     ],
     precise: [
       'classifiedType',
@@ -205,7 +385,7 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'uploadYear',
       'status',
       'fields',
-      'findings_summary',
+      ...REPORT_IMPRESSION_ALLOWLIST.precise,
     ],
   },
 } as const;
@@ -357,6 +537,16 @@ export const HARD_DELETE_KEYS_LOWER: ReadonlySet<string> = new Set(
  * is what lets it: the constant cannot live in the redactor without
  * profile.schema.ts → pii-redactor.ts → profile.passport.ts →
  * profile.schema.ts closing a cycle that leaves it in the TDZ.
+ *
+ * THE ONE PLACE A PUBLISHED VALUE MAY EXCEED IT is the gated impression,
+ * and only by this platform's own words. `gateFreeText` cuts the
+ * identifier-scrubbed text at this length and THEN masks measurements
+ * inside what survived, so a strict-consent impression can come out
+ * longer than a precise one by seven characters per marker. Cutting
+ * after the mask was the alternative and it cost the strict reader the
+ * tail of the sentence — which in a Chinese impression is where 结论
+ * lives. What this number bounds is how much of the REPORT'S prose
+ * travels, and that bound still holds exactly.
  */
 export const SAFE_VALUE_MAX_LENGTH = 200;
 
@@ -371,11 +561,26 @@ export const SAFE_VALUE_MAX_LENGTH = 200;
  * is structured / clinical rather than free-form.
  *
  * Free-form narrative keys (`findings`, `impression`) are
- * intentionally absent: OCR-extracted prose routinely embeds the
- * patient's name or other identifiers and we cannot statically prove
- * a value is safe. Curated structured equivalents (e.g.
- * `findings_summary` produced by a reviewed pipeline) can be added
- * when that path lands.
+ * intentionally absent FROM THIS LIST, and that is no longer the same
+ * statement as 「the impression does not travel」. It travels, off a
+ * result document only and through the three gates in
+ * `pii-redactor.ts`, under `reportImpression` — a key this projection
+ * never sees, because the retriever offers the text top-level and the
+ * gates run last.
+ *
+ * AND THE PREMISE THIS LIST USED TO CARRY — 「a key on it is published
+ * as a CELL, verbatim, with nothing done to it beyond the value check」
+ * — WAS ALREADY FALSE OF THREE OF ITS OWN ENTRIES. `ecgSummary`,
+ * `conductionAbnormality` and `fattyInfiltration` hold prose, and prose
+ * published verbatim off a 病历摘要 is precisely what the eligibility
+ * gate exists to stop: one chunk refused that document's impression as
+ * a narrative about a person and printed the same document's narrative
+ * prose in the row below. So the gates are no longer wired to one key.
+ * A value on this list that READS as free text — see `looksLikeFreeText`
+ * in pii-redactor.ts — goes through gate 0 and gate 2 like any other
+ * prose, and a key holding a short structured enum is published as the
+ * cell it is. The list stays a list of keys whose NAME is safe to show;
+ * what happens to the value is decided by the value.
  */
 export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // --- Report identity -------------------------------------------
@@ -416,9 +621,11 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // reportId, reportName — are deliberately NOT here and stay denied,
   // as do the free-text narrative keys (impressionText,
   // findingText, interpretationSummary, hint, aiSummary): prose cannot
-  // be vouched for, which is the same rule that keeps report titles
-  // off the allowlist. `findings_summary` remains the one narrative
-  // channel, and it is vocabulary-matched rather than copied.
+  // be vouched for AS A CELL, which is the same rule that keeps report
+  // titles off the allowlist. The report's own impression reaches the
+  // prompt through `reportImpression` instead — a channel with an
+  // eligibility gate, an identifier scrub and a measurement mask in
+  // front of it, none of which this projection has or should have.
 
   // Genetics
   'd4z4Repeats',

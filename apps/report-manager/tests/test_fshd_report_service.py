@@ -1184,6 +1184,220 @@ class AGeneticReportIsIdentifiedByItsStructureTest(unittest.TestCase):
         self.assertEqual(result["fshd"]["report_type"], "genetic_report")
 
 
+class ANarrativeIsDemotedWhateverVocabularyItQuotesTest(unittest.TestCase):
+    """THE GUARD COVERED `genetic_report` AND NOTHING ELSE.
+
+    `REPORT_TYPE_RULES` scores vocabulary, and it is the QUOTED RESULT
+    that scores — so a 出院小结 describing the patient's muscle MRI wins
+    `muscle_mri` on exactly the mechanism a 病历摘要 quoting a D4Z4 count
+    wins `genetic_report`. The demotion only asked the question of the
+    one label.
+
+    That is not cosmetic. The assistant's eligibility gate
+    (`RESULT_DOCUMENT_TYPES` in
+    apps/api/src/modules/ai-agents/security/pii-redactor.ts) reads any
+    of the fifteen result labels as permission to send that document's
+    own impression to a model VERBATIM. A discharge summary labelled
+    `muscle_mri` is such a licence, and what identifies a person inside
+    one is not a pattern — 「其兄 2019 年因同病去世」 identifies a family
+    and cannot be scrubbed without deleting the sentence.
+
+    Measured through this function, eight result labels escaped.
+    """
+
+    CASES = {
+        "muscle_mri": (
+            "示例医院神经内科 出院小结",
+            "主诉: 进行性四肢无力10年。",
+            "现病史: 外院查双大腿磁共振示臀大肌、腓肠肌脂肪浸润,胫骨前肌相对保留。",
+            "诊疗经过: 入院后完善检查。",
+        ),
+        "pulmonary_function": (
+            "示例医院 门诊病历",
+            "主诉: 活动后气促2年。",
+            "现病史: 外院查肺功能 FVC 62%,FEV1 下降。",
+        ),
+        "echocardiography": (
+            "示例医院 入院记录",
+            "主诉: 心悸1月。",
+            "现病史: 外院心电图示窦性心律,心脏超声 LVEF 58%。",
+        ),
+        "muscle_enzyme": (
+            "示例医院 出院小结",
+            "主诉: 乏力3年。",
+            "现病史: 查生化示 ALT 43 U/L,肌酸激酶 CK 860 U/L,肌红蛋白升高。",
+        ),
+        "diaphragm_ultrasound": (
+            "病程记录",
+            "主诉: 夜间平卧憋气。",
+            "现病史: 膈肌超声示膈肌活动度下降。",
+        ),
+        "blood_routine": (
+            "示例医院 住院病历",
+            "主诉: 发热3天。",
+            "现病史: 血常规示白细胞 WBC 11.2,血红蛋白 HGB 132,血小板 PLT 210。",
+        ),
+        "abdominal_ultrasound": (
+            "示例医院 出院小结",
+            "主诉: 腹胀。",
+            "现病史: 腹部超声示肝脏回声均匀,胆囊未见结石,脾脏不大。",
+        ),
+        "coagulation": (
+            "示例医院 入院记录",
+            "主诉: 怕冷。",
+            "现病史: 甲功示 TSH 正常;凝血示 PT/INR 正常,纤维蛋白原正常。",
+        ),
+    }
+
+    @staticmethod
+    def _analyze(body):
+        return analyze_fshd_report("\n".join(body))["fshd"]
+
+    def test_every_quoted_vocabulary_is_demoted_to_the_narrative_it_is_written_in(self):
+        for escaped_label, body in self.CASES.items():
+            with self.subTest(label=escaped_label):
+                self.assertEqual(self._analyze(body)["report_type"], "medical_summary")
+
+    def test_the_demotion_keeps_the_values_the_narrative_quotes(self):
+        """The label is refused; the numbers are not.
+
+        The MRI rows an 出院小结 quotes are the patient's only copy as
+        often as a D4Z4 count is, so `analyze_fshd_report` runs the
+        quoted document's own extractor as well as the narrative one.
+        Trading one silent erasure for another is not a fix.
+        """
+        names = {
+            f["field_name"] for f in self._analyze(self.CASES["muscle_enzyme"])["structured_fields"]
+        }
+        self.assertIn("ck", names)
+        names = {
+            f["field_name"] for f in self._analyze(self.CASES["blood_routine"])["structured_fields"]
+        }
+        self.assertIn("wbc", names)
+
+    def test_a_physical_exam_is_not_demoted_by_the_sections_that_define_it(self):
+        """肌力 / 体格检查 / 查体 IS what a physical-exam document is.
+
+        Three of those strings are entries on
+        CLINICAL_STORY_SECTION_MARKERS, so a blanket demotion would
+        relabel every physical exam and lose `_extract_physical_exam`.
+        It needs none: the API's eligibility gate already counts
+        `physical_exam` as a non-result document.
+        """
+        result = self._analyze(
+            (
+                "神经科专科查体记录",
+                "体格检查: MRC 分级 上肢近端 3 级,翼状肩胛阳性,面肌无力,Beevor 征阳性。",
+            )
+        )
+        self.assertEqual(result["report_type"], "physical_exam")
+        self.assertIn("mrc_score", {f["field_name"] for f in result["structured_fields"]})
+
+
+class AResultReportKeepsItsLabelTest(unittest.TestCase):
+    """THE OTHER DIRECTION, AND IT IS THE SAME ROOT CAUSE.
+
+    A structure test that is a bare substring search reads a word a
+    result report prints as ordinary professional language as a witness
+    that the document is a narrative about a person. Two shapes, both
+    routine:
+
+      - the referring clinician's REQUISITION, printed across the top of
+        a radiology or EMG report, which carries 主诉 and 现病史 as form
+        COLUMNS beside 申请科室 and 申请医师;
+      - 请结合临床及查体 / 与主诉相符 / 结合既往史, the standard closing
+        of a Chinese radiology, EMG or muscle-MRI conclusion — the
+        radiologist REFERRING to the clinical history, which is the
+        opposite of the document being one.
+
+    Being wrong this way is not free either: the label decides whether
+    the report's own impression may be sent at all, and whether its
+    values are read by its own extractor.
+    """
+
+    @staticmethod
+    def _analyze(body):
+        return analyze_fshd_report("\n".join(body))["fshd"]
+
+    def test_a_requisition_header_does_not_relabel_the_report_under_it(self):
+        result = self._analyze(
+            (
+                "示例医院 医学影像科 检查报告单",
+                "申请科室: 神经内科 申请医师: 李某某",
+                "主诉: 双下肢无力5年 现病史: 进行性加重",
+                "检查项目: 双大腿MRI平扫",
+                "影像所见: 双侧臀大肌、股二头肌长头脂肪浸润,磁共振信号增高。",
+                "影像诊断: 双大腿肌群脂肪浸润,考虑肌营养不良。",
+            )
+        )
+        self.assertEqual(result["report_type"], "muscle_mri")
+
+    def test_a_conclusion_referring_to_the_clinical_history_is_not_one(self):
+        for closing in (
+            "影像诊断: 双大腿肌群脂肪浸润,请结合临床及查体。",
+            "影像诊断: 双大腿肌群脂肪浸润,请结合临床查体。",
+            "影像诊断: 双大腿肌群脂肪浸润,请结合既往史综合判断。",
+        ):
+            with self.subTest(closing=closing):
+                result = self._analyze(
+                    (
+                        "示例医院 医学影像科 检查报告单",
+                        "检查项目: 双大腿MRI平扫",
+                        "影像所见: 双侧臀大肌脂肪浸润,胫骨前肌相对保留,磁共振信号增高。",
+                        closing,
+                    )
+                )
+                self.assertEqual(result["report_type"], "muscle_mri")
+
+    def test_a_genetics_report_with_a_requisition_and_a_sign_off_keeps_its_label(self):
+        result = self._analyze(
+            (
+                "示例医学检验实验室 遗传病检测报告",
+                "送检单位: 神经内科 送检医师: 李某某",
+                "主诉: 双上肢无力8年 现病史: 进行性加重",
+                "检测项目: FSHD1 D4Z4 重复数检测",
+                "检测方法: Southern blot p13E-11 探针",
+                "检测结果: 4q35 D4Z4 重复单元 4 个,单倍型 4qA。",
+                "检测结论: 检出致病性 D4Z4 重复数收缩,请结合临床及查体。",
+            )
+        )
+        self.assertEqual(result["report_type"], "genetic_report")
+
+    def test_medical_summary_is_scored_on_structure_not_on_the_word(self):
+        """An EMG report was labelled 病历摘要 by one word in its conclusion.
+
+        This file has no EMG template, so 「与主诉相符」 scoring
+        `medical_summary` 2 was the only score on the page and won.
+        `other` is the honest answer for a document this parser cannot
+        name, and the assistant's gate refuses it as 「cannot tell」
+        rather than as somebody's medical record.
+        """
+        result = self._analyze(
+            (
+                "神经电生理室 肌电图检查报告",
+                "检查项目: 四肢肌电图",
+                "检查结论: 肌源性损害电生理表现,与主诉相符,请结合临床。",
+            )
+        )
+        self.assertNotEqual(result["report_type"], "medical_summary")
+
+    def test_a_narrative_section_alone_on_its_line_is_still_a_narrative(self):
+        """The direction of doubt.
+
+        A requisition that prints 主诉 alone on its line is
+        indistinguishable from a narrative that does, and where the
+        page's own layout cannot tell, the document stays a narrative.
+        """
+        result = self._analyze(
+            (
+                "示例医院 医学影像科 检查报告单",
+                "主诉: 双下肢无力5年",
+                "影像诊断: 双大腿肌群脂肪浸润,磁共振信号增高,胫骨前肌相对保留。",
+            )
+        )
+        self.assertEqual(result["report_type"], "medical_summary")
+
+
 class TheRowTheNumberSitsOnTest(unittest.TestCase):
     """A NUMBER BELONGS TO THE ROW THAT PRINTED IT.
 

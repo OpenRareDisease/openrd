@@ -369,26 +369,21 @@ const documentEvidenceText = (document: GeneticEvidenceDocumentLike): string => 
 };
 
 /**
- * SECTIONS ONLY A CLINICAL NARRATIVE HAS.
+ * THE WORDS THAT NAME A DOCUMENT A CLINICAL NARRATIVE.
  *
- * The mirror of MEDICAL_SUMMARY_STRUCTURE_MARKERS in
+ * A TITLE, not a topic. Each of these is what the page calls ITSELF —
+ * 病历摘要, 出院小结, 入院记录 — and no result report is titled any of
+ * them. That is why this half needs no second witness: a page whose
+ * own heading says 出院小结 is an 出院小结.
+ *
+ * The mirror of NARRATIVE_DOCUMENT_KIND_MARKERS in
  * apps/report-manager/app/services/fshd_report_service.py, and it has
  * to move with it — the parser holds the line for documents parsed from
  * now on, this holds it for the ones already stored. Not a vocabulary:
  * no disease word belongs on this list, because scoring a document on
  * the words it contains is the defect it exists to end.
- *
- * AND NOT A SIGNATURE, A TIMESTAMP OR AN IDENTIFIER. 医师签名 was added
- * here and had to come out: every genetics report is signed, so one
- * 「医师签名：王医师」 on an otherwise unchanged Southern blot took it out
- * of `isLaboratoryGeneticReport` — 基因确诊 to self_reported, and 病历摘要
- * on the citation chip. A hit here is disqualifying on its own and
- * outranks every laboratory marker, so the test for an entry is 「no
- * genetics laboratory prints this」. Checked by execution against a real
- * Southern blot, a methylation report and a WES report: the seventeen
- * below score zero on all three.
  */
-const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
+const NARRATIVE_DOCUMENT_KIND_MARKERS: readonly string[] = [
   '病历摘要',
   '门诊病历',
   '住院病历',
@@ -397,6 +392,33 @@ const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
   '出院记录',
   '入院记录',
   '病程记录',
+];
+
+/**
+ * THE SECTIONS A PERSON'S STORY IS TOLD IN.
+ *
+ * Unlike the titles above these are not names of documents, they are
+ * names of SECTIONS — and that difference is the whole of the rework
+ * below. A result report does not have a 现病史 section; it does,
+ * routinely, print the word 现病史 in two places that are not one:
+ *
+ *   - AS A REQUISITION FIELD. The referring clinician's form is printed
+ *     across the top of a radiology or EMG report, and it carries 主诉
+ *     and 现病史 as columns beside 申请科室 and 申请医师.
+ *   - AS THE OBJECT OF A SENTENCE. 请结合临床及查体, 与主诉相符,
+ *     结合既往史 is the standard closing of a Chinese radiology, EMG or
+ *     muscle-MRI conclusion. The radiologist is referring to the
+ *     clinical history, which is the opposite of the document BEING one.
+ *
+ * AND NOT A SIGNATURE, A TIMESTAMP OR AN IDENTIFIER. 医师签名 was added
+ * here and had to come out: every genetics report is signed, so one
+ * 「医师签名：王医师」 on an otherwise unchanged Southern blot took it out
+ * of `isLaboratoryGeneticReport` — 基因确诊 to self_reported, and 病历摘要
+ * on the citation chip. A hit here is disqualifying on its own and
+ * outranks every laboratory marker, so the test for an entry is 「no
+ * genetics laboratory prints this AS A SECTION OF ITS OWN」.
+ */
+const CLINICAL_STORY_SECTION_MARKERS: readonly string[] = [
   '主诉',
   '现病史',
   '既往史',
@@ -456,15 +478,171 @@ const LABORATORY_REPORT_MARKERS: readonly string[] = [
   'southern',
 ];
 
-/** Does this document read as a clinical narrative — the section labels
- *  its page shows, or the narrative-only cells the parser wrote off it. */
-const showsClinicalNarrative = (document: GeneticEvidenceDocumentLike): boolean => {
+/**
+ * WHERE A HEADING MAY START.
+ *
+ * A section label is the first thing on its line, or it follows a
+ * space, an opening bracket, or the end of the previous sentence. What
+ * it may NOT follow is another Chinese character, because a marker
+ * welded to the character before it is a word inside a phrase and not a
+ * heading: the 查体 in 「请结合临床及查体」 follows 及, the 主诉 in
+ * 「与主诉相符」 follows 与, the 既往史 in 「结合既往史」 follows 合.
+ */
+const startsAHeading = (before: string): boolean =>
+  /\s/.test(before) || '【[（(「《〔〖'.includes(before) || '。！？；;.!?'.includes(before);
+
+/**
+ * WHERE A HEADING MAY END.
+ *
+ * A section label is followed by its separator, or it is the whole
+ * line. What may NOT follow it is running text: the 查体 in 「结合临床
+ * 查体。」 is followed by 。, the 主诉 in 「与主诉相符」 by 相, the 个人史
+ * in 「结合个人史及用药史」 by 及 — in each case the marker is a noun
+ * inside a sentence, and the sentence is the radiologist REFERRING to
+ * the clinical history rather than the document being one.
+ */
+const endsAHeading = (after: string): boolean =>
+  /\s/.test(after) || '：:】]）)」》〕〗'.includes(after);
+
+/** A label the way a printed form prints one: a short run of
+ *  characters and then its separator. */
+const FIELD_LABEL = /[一-龥A-Za-z][一-龥A-Za-z0-9]{0,7}[：:]/;
+
+/**
+ * IS THIS LINE A ROW OF FORM FIELDS RATHER THAN A SECTION OF PROSE.
+ *
+ * THE REQUISITION IS THE REASON THIS EXISTS. A radiology, EMG or
+ * muscle-MRI report is printed with the referring clinician's
+ * requisition across the top of it, and that block carries 主诉 and
+ * 现病史 as columns, beside 申请科室 and 申请医师:
+ *
+ *     主诉：双下肢无力5年        现病史：进行性加重
+ *
+ * Those are the referrer's QUESTION, not the patient's story, and the
+ * document under them is a genuine imaging report. Reading them as
+ * narrative sections silenced the report's own impression entirely.
+ *
+ * COLUMNS ARE THE DIFFERENCE, and it is the difference the page itself
+ * draws. A form row is fields laid out side by side, so it carries two
+ * or more labels separated by nothing but whitespace. A narrative
+ * section owns its line: 「主诉：双上肢抬举无力8年。」 is one label and
+ * then a sentence, and where two narrative sections do share a line
+ * they are separated by the end of a sentence rather than by a column
+ * gap — 「主诉：双下肢无力3年。现病史：进行性加重。」 is prose that a wrap
+ * happened to join, and it stays prose here because 。 is not
+ * whitespace.
+ *
+ * ONE COLUMN IS NOT A FORM ROW, deliberately. A requisition that prints
+ * 主诉 alone on its line is indistinguishable from a narrative that
+ * does, and the answer where this cannot tell is the answer everywhere
+ * else in this file: withhold, and let the report lose its impression
+ * rather than let a person's story reach a model.
+ */
+const isFormRow = (line: string): boolean =>
+  line.split(/\s+/).filter((column) => FIELD_LABEL.test(column)).length >= 2;
+
+/** Does `marker` appear on `line` in heading position — bounded on both
+ *  sides by the page's own layout rather than welded into a phrase. */
+const showsHeading = (line: string, marker: string): boolean => {
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    const before = at === 0 ? '\n' : line[at - 1];
+    const after = line[at + marker.length] ?? '\n';
+    if (startsAHeading(before ?? '\n') && endsAHeading(after)) return true;
+  }
+  return false;
+};
+
+/**
+ * DOES THIS LINE CALL THE DOCUMENT A NARRATIVE.
+ *
+ * The document-kind words name the page, so the test is that the name
+ * ENDS the line — 「XX医院 病历摘要」, 「XX医院神经内科 出院小结」 — or is
+ * followed by its own separator, 「出院小结：」. What precedes it is not
+ * asked, because a longer name is still a name: the 病历摘要 in
+ * 门诊病历摘要 is the document naming itself.
+ *
+ * A mention inside a sentence is not a title and does not count —
+ * 「参见出院小结中的记载」 puts 中 after the name, so a result report may
+ * refer to a discharge summary without becoming one.
+ */
+const namesItselfANarrative = (line: string): boolean =>
+  NARRATIVE_DOCUMENT_KIND_MARKERS.some((marker) => {
+    for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+      const rest = line.slice(at + marker.length);
+      if (rest.trim() === '' || endsAHeading(rest[0] ?? '\n')) return true;
+    }
+    return false;
+  });
+
+/** Does this line open a section of a person's story — a story-section
+ *  label in heading position, on a line that is prose rather than a row
+ *  of requisition columns. */
+const isNarrativeSectionLine = (line: string): boolean =>
+  !isFormRow(line) && CLINICAL_STORY_SECTION_MARKERS.some((marker) => showsHeading(line, marker));
+
+/**
+ * IS THE PROSE ON THIS PAGE A STORY ABOUT A HUMAN BEING, rather than a
+ * test's conclusion about a result — what the page calls itself, the
+ * sections it is built out of, or the narrative-only cells the parser
+ * wrote off it.
+ *
+ * IT IS NOT 「DOES THIS PAGE CONTAIN ANY OF SEVENTEEN WORDS」, AND THAT
+ * IS THE FIX. It was, and the substring test cost genuine result
+ * reports their impression in three shapes, all measured through the
+ * real retriever:
+ *
+ *   - the REQUISITION BLOCK printed across the top of a radiology or
+ *     EMG report, which carries 主诉 / 现病史 as form columns;
+ *   - 结合临床及查体 / 请结合临床查体 / 与主诉相符 / 结合既往史, which is
+ *     the standard closing of a Chinese radiology, EMG or muscle-MRI
+ *     conclusion — the radiologist referring to the clinical history,
+ *     which is the opposite of the document being one;
+ *   - and, because `documentEligibility` in security/pii-redactor.ts
+ *     splices the impression into the page before asking, a
+ *     radiologist's own sign-off deleting the radiologist's own
+ *     finding.
+ *
+ * A word that appears inside a result report as ordinary professional
+ * language is not a witness that the document is a narrative about a
+ * person. So the markers are read in their POSITION: a section HEADING
+ * (`showsHeading`) is not a mention, a requisition column (`isFormRow`)
+ * is not a narrative section, and a document TITLE
+ * (`namesItselfANarrative`) is neither.
+ *
+ * THE DOUBT STILL RESOLVES TOWARD WITHHOLDING. Every relaxation here is
+ * bounded by a structure the page itself prints, and every case the
+ * structure cannot settle stays a narrative: a story section alone on
+ * its line is a narrative section whether a form or a person put it
+ * there, a marker between two spaces counts, and a title recognised
+ * anywhere on the page is decisive on its own with nothing weighed
+ * against it.
+ *
+ * EXPORTED, AND SHARED WITH THE ASSISTANT'S FREE-TEXT GATE. It is the
+ * eligibility gate in security/pii-redactor.ts: a document that shows a
+ * clinical narrative may send NO free text to the model, and the
+ * report's own impression travels only off a result document.
+ *
+ * It is the same question, not a similar one, which is why it is shared
+ * rather than copied. Both callers are asking 「is the prose on this
+ * page a laboratory's statement about a specimen, or a story about a
+ * human being」 — the laboratory gate below asks it to refuse GRADING a
+ * transcription, the free-text gate asks it to refuse SENDING one. What
+ * identifies a person inside a 病历摘要 / 门诊病历 / 出院小结 / 入院记录
+ * is not a pattern: 主诉, 现病史, 既往史, occupation, address, who in the
+ * family had what, the names of the treating doctors. 「其兄 2019 年因同
+ * 病去世」 identifies a family and cannot be scrubbed without deleting
+ * the sentence. Five rounds of work went into this predicate for
+ * exactly that distinction, and a second copy of it would drift from
+ * this one the first time either was fixed.
+ */
+export const showsClinicalNarrative = (document: GeneticEvidenceDocumentLike): boolean => {
   const fields = payloadFields(document);
   if (fields && CLINICAL_NARRATIVE_FIELD_KEYS.some((key) => pickReading(fields, [key]))) {
     return true;
   }
-  const text = documentEvidenceText(document);
-  return CLINICAL_NARRATIVE_MARKERS.some((marker) => text.includes(marker));
+  const lines = documentEvidenceText(document).split(/\r?\n/);
+  if (lines.some(namesItselfANarrative)) return true;
+  return lines.some(isNarrativeSectionLine);
 };
 
 /** Does it read as a laboratory's report. The 检测方法 the parser read

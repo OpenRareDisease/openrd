@@ -42,7 +42,7 @@ import { PatientFollowupRetriever } from '../retrievers/patient-followups.js';
 import { PatientProfileRetriever } from '../retrievers/patient-profile.js';
 import { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 import type { RedactionMode, RedactionScope } from '../security/allowlist.js';
-import { PROMPT_ALLOWLIST } from '../security/allowlist.js';
+import { PROMPT_ALLOWLIST, REPORT_IMPRESSION_CHANNEL_ENABLED } from '../security/allowlist.js';
 import { GENETIC_READING_REFUSALS, redactFields } from '../security/pii-redactor.js';
 import { SCOPE_LABELS, renderChunkForPrompt } from '../security/render.js';
 
@@ -238,6 +238,50 @@ const REPORT_ROW_WITH_REPORT_DATE = {
   },
 };
 
+/**
+ * A result report whose impression carries a name, a measurement and
+ * more characters than the cap allows.
+ *
+ * Three of the free-text channel's five keys can only be demonstrated
+ * by a report that actually tripped them: an impression with no name in
+ * it removes no identifiers, one with no number masks no values, and
+ * one that fits cuts nothing. 「reachable for some real input」 is the
+ * claim this file checks, so the input has to be one.
+ */
+const REPORT_ROW_GATED_IMPRESSION = {
+  ...REPORT_ROW,
+  id: 'doc-3',
+  ocr_payload: {
+    fields: {
+      classifiedType: 'muscle_mri',
+      documentType: 'mri',
+      reportImpression:
+        '受检者张三，双侧大腿后群肌肉脂肪浸润约 60%，肩胛带肌未见异常。' +
+        '双侧大腿后群肌肉脂肪浸润伴轻度水肿，请结合临床。'.repeat(8),
+    },
+  },
+  classified_type: 'muscle_mri',
+};
+
+/**
+ * A narrative document, which is the only way `reportImpressionWithheld`
+ * is reachable at all: the marker exists to say an impression was found
+ * and not shared, and a result report never produces one.
+ */
+const REPORT_ROW_NARRATIVE = {
+  ...REPORT_ROW,
+  id: 'doc-4',
+  ocr_payload: {
+    fields: {
+      classifiedType: 'medical_summary',
+      documentType: 'other',
+      reportImpression: '双侧大腿肌肉脂肪浸润。',
+    },
+    extractedText: '病历摘要\n主诉：双下肢无力3年\n现病史：患者3年前起病',
+  },
+  classified_type: 'medical_summary',
+};
+
 /** One series with readings, one metric whose only rows are 「做不到」,
  *  and a fall — between them every followup field the retriever can
  *  write. */
@@ -283,6 +327,8 @@ const chunksByScope = async (): Promise<Record<RedactionScope, RetrieveResult['c
     reports: [
       ...(await reportChunks(REPORT_ROW)),
       ...(await reportChunks(REPORT_ROW_WITH_REPORT_DATE)),
+      ...(await reportChunks(REPORT_ROW_GATED_IMPRESSION)),
+      ...(await reportChunks(REPORT_ROW_NARRATIVE)),
     ],
     followups: (
       await new PatientFollowupRetriever(
@@ -466,6 +512,47 @@ const PROMISES: readonly { tool: ITool; scope: RedactionScope; promises: Promise
         carriedBy: ['reportDate_year', 'uploadYear'],
       },
       { says: 'structured OCR fields', carriedBy: ['fields', 'fields_clinical'] },
+      // THE FREE-TEXT CHANNEL, CLAUSE BY CLAUSE — AND ONLY WHILE IT IS
+      // SWITCHED ON. Each of these names a key the handler emits, and
+      // the consent clause is checked against the mode it names rather
+      // than against a union — see `Promised.inModes`.
+      //
+      // The channel is behind `REPORT_IMPRESSION_CHANNEL_ENABLED`
+      // (security/allowlist.ts), and so is the half of the description
+      // that describes it. Listing these clauses unconditionally would
+      // make this file demand a sentence that names five fields the
+      // result cannot carry — the exact defect it exists to catch,
+      // asserted as a requirement. The other direction — that the
+      // sentence does not name them while the switch is off — is what
+      // 「the description names nothing the channel is not sending」
+      // below checks.
+      ...(REPORT_IMPRESSION_CHANNEL_ENABLED
+        ? ([
+            {
+              says: "the report's own impression exactly as the report printed it",
+              carriedBy: ['reportImpression'],
+            },
+            {
+              says: 'identifiers are removed from that text and the count of removals is reported',
+              carriedBy: ['reportImpressionIdentifiersRemoved'],
+            },
+            {
+              says:
+                'without precise-value consent every measurement in it is masked as [数值未共享] ' +
+                'and the count of masked values is reported',
+              carriedBy: ['reportImpressionValuesMasked'],
+              inModes: ['strict'],
+            },
+            {
+              says: 'if the text was too long the number of characters cut is reported',
+              carriedBy: ['reportImpressionCharactersCut'],
+            },
+            {
+              says: 'the impression is not sent and a reason is given in its place',
+              carriedBy: ['reportImpressionWithheld'],
+            },
+          ] as Promised[])
+        : []),
     ],
   },
 ];
@@ -507,6 +594,34 @@ describe('tool descriptions name only fields the result can carry', () => {
    * assumed, so the exemption cannot outlive the rendering it describes.
    */
   const RENDERED_AS_THEIR_OWN_BLOCK: ReadonlySet<string> = new Set(['fields', 'fields_clinical']);
+
+  /**
+   * THE DESCRIPTION FOLLOWS THE SWITCH, IN BOTH DIRECTIONS.
+   *
+   * The check above asks that every clause names a reachable key; with
+   * the impression clauses removed from `PROMISES` while the channel is
+   * off, nothing was left asking whether the SENTENCE had been removed
+   * too. A description that still promised the report's own words over
+   * an allowlist that cannot carry them would be an instruction to
+   * answer 「你的报告结论是…」 out of a field that is not there — which
+   * is the failure this file was written for, arriving through the one
+   * door the parameterisation opened.
+   */
+  it('the description names nothing the channel is not sending', () => {
+    const { description } = reportsTool;
+    const namesTheImpression = description.includes(
+      "the report's own impression exactly as the report printed it",
+    );
+    expect(namesTheImpression).toBe(REPORT_IMPRESSION_CHANNEL_ENABLED);
+    if (!REPORT_IMPRESSION_CHANNEL_ENABLED) {
+      // Not one clause of it, not the marker, not the mask.
+      expect(description).not.toContain('数值未共享');
+      expect(description).not.toContain('impression');
+      expect(description).not.toContain('病历摘要');
+    }
+    // ...and the half that is true in both positions is still there.
+    expect(description).toContain('structured OCR fields');
+  });
 
   it('SCOPE_LABELS labels every field a result can carry', async () => {
     const reachable = await reachableFields();

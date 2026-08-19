@@ -92,12 +92,18 @@ import {
   HARD_DELETE_KEYS_LOWER,
   OCR_FIELDS_SAFE_KEYS_PRECISE,
   PROMPT_ALLOWLIST,
+  REPORT_IMPRESSION_CHANNEL_ENABLED,
+  REPORT_IMPRESSION_KEYS,
   SAFE_VALUE_MAX_LENGTH,
 } from './allowlist.js';
+import { scrubPiiText } from './text-scrub.js';
 import type { AppLogger } from '../../../config/logger.js';
+import type { GeneticEvidenceDocumentLike } from '../../patient-profile/genetic-evidence.js';
 import {
   GENETIC_FIELD_KEYS,
+  documentClassifiedType,
   isLaboratoryGeneticReport,
+  showsClinicalNarrative,
 } from '../../patient-profile/genetic-evidence.js';
 import {
   FSHD1_MAX_REPEAT_UNITS,
@@ -119,6 +125,20 @@ export interface RedactionStats {
   hardDeleted: string[];
   clinicalised: string[];
   notAllowed: string[];
+  /** Layer 4. Paths whose string value had an identifier taken out of
+   *  it, and — suffixed `(withheld)` — the ones the scrub could not
+   *  make safe and dropped whole. Named rather than counted, because a
+   *  key disappearing between the allowlist and the prompt is exactly
+   *  the thing an audit row has to be able to explain. */
+  identifiersScrubbed: string[];
+  /** Layer 4 again, and the other two gates. Paths whose value was
+   *  recognised as FREE TEXT rather than a cell and therefore had gate 0
+   *  and gate 2 applied to it — suffixed with the reason where the gate
+   *  refused. Named for the same reason `identifiersScrubbed` is: a
+   *  measurement disappearing out of a sentence, or a whole prose cell
+   *  disappearing because the document turned out to be a narrative, is
+   *  a thing an audit row has to be able to explain. */
+  freeTextGated: string[];
 }
 
 export interface RedactionOutcome {
@@ -939,22 +959,491 @@ const toCamel = (key: string): string =>
  * So the value is checked as well as the key. This is the same
  * deny-by-default stance the rest of this module takes.
  */
+/**
+ * THE IDENTIFIER VOCABULARY, WRITTEN ONCE AND ASKED BY BOTH CALLERS.
+ *
+ * There are two readers of this vocabulary and they must never be two
+ * vocabularies:
+ *
+ *   - `isUntrustworthyText`, which REFUSES a cell whose value carries
+ *     any of these, and
+ *   - `scrubIdentifiers` (layer 4), which REMOVES them from free text
+ *     and then refuses the whole field if anything is left.
+ *
+ * The second one is new, and the temptation was to give it a scrubber
+ * of its own — a shorter, friendlier list, because a scrub that refuses
+ * too much costs a sentence while a cell refusal costs one cell. That
+ * is exactly how the two would drift, and the drift is one-directional:
+ * the free-text path is the one carrying a whole radiology sentence, so
+ * a weaker copy there would be the weaker copy on the wider channel.
+ * So the labels and the value shapes are declared once, below, and each
+ * reader is built from them.
+ *
+ * WHAT A LABEL LIST CAN AND CANNOT DO. A record number announces itself
+ * (住院号, 门诊号) and can be removed with its value. A Chinese personal
+ * name announces nothing: 张三 and 高明 are two characters that are also
+ * two ordinary characters, and no pattern tells them apart. So names are
+ * reached two ways — a label in front of one, and the payload's own
+ * `patientName` / `doctorName` cells — and an UNLABELLED name this
+ * document never filed under a key is NOT reachable by either. That
+ * limitation is real, it is stated in `scrubIdentifiers`, and it is why
+ * the eligibility gate exists: a narrative document, where unlabelled
+ * names of relatives and physicians are the norm, sends no free text at
+ * all.
+ */
+
+/**
+ * ONE NORMALISATION, AT THE ENTRY TO EVERY GATE, SO THAT EVERY PATTERN
+ * BELOW MAY ASSUME ASCII.
+ *
+ * JavaScript's `\d` and `[A-Za-z0-9]` are ASCII-only. Chinese hospital
+ * PDFs and the OCR bridge routinely emit the FULL-WIDTH forms —
+ * U+FF10..U+FF19 for the digits, U+FF21..U+FF5A for the letters,
+ * U+FF01..U+FF5E for the punctuation — and every identifier pattern,
+ * the labelled-value scrub, the token scan of gate 2 and the residual
+ * check were all written in ASCII classes. So an 18-digit ID card, a
+ * mobile number, a full date and every measurement typeset full-width
+ * walked through all three gates, in BOTH modes, and left the
+ * unclassified flag clear as well — because the second reading
+ * re-scanned with the same ASCII regex. It failed open and it failed
+ * silently, which is the worst pair.
+ *
+ * The answer is not full-width alternatives bolted onto thirty
+ * patterns; that is the enumeration this whole change exists to stop
+ * writing. The text is folded ONCE, here, at the entry to the gates and
+ * to the cell examination, and everything downstream is entitled to
+ * assume ASCII. WHAT IS FOLDED, exhaustively:
+ *
+ *   - U+FF01..U+FF5E, the full-width ASCII block, onto U+0021..U+007E by
+ *     the fixed 0xFEE0 offset — MINUS the grouping and sentence
+ *     punctuation named in `FULL_WIDTH_KEPT`. What is folded is what can
+ *     hide INSIDE an identifier or a measurement: the digits, the Latin
+ *     letters, and 「％」「／」「－」「．」「＝」「＋」「＠」「～」. What is
+ *     left alone is `FULL_WIDTH_KEPT` — 「，」「；」「：」「！」「？」「（）」
+ *     「＂」「＇」 — because folding those rewrites the report's own prose
+ *     into half-width punctuation for no gain: no identifier hides
+ *     behind a Chinese comma. The handful of patterns that need 「：」 or
+ *     a bracket as a DELIMITER name both spellings, which is six places
+ *     rather than thirty.
+ *   - NOTHING is done to U+3000 or the other Unicode spaces, and that is
+ *     a decision rather than an omission: JavaScript's `\s` ALREADY
+ *     matches every one of them (U+00A0, U+1680, U+2000..U+200A, U+202F,
+ *     U+205F, U+3000), so every `\s` below already reads an ideographic
+ *     space as a separator. Folding them would rewrite the
+ *     report's own typography for no gain — 「炎性改变　未见水肿」 is
+ *     printed with an ideographic space on purpose.
+ *   - The zero-width characters (U+200B..U+200D, U+2060, U+FEFF) are
+ *     DELETED rather than mapped. They are invisible, they survive OCR
+ *     and copy-paste, and one of them dropped inside a digit run is
+ *     enough to break every `\d{9,}` in this file.
+ *   - The Unicode dashes (U+2010..U+2015, U+2212) onto `-`, so a date or
+ *     a range typeset with an en dash reads as one shape.
+ *   - The superscript digits (U+00B9, U+00B2, U+00B3, U+2070,
+ *     U+2074..U+2079) onto their ASCII digits, so 「kg/m²」 is the same
+ *     token to gate 2 as 「kg/m2」.
+ *   - The Arabic-Indic digits (U+0660..U+0669, U+06F0..U+06F9) onto
+ *     ASCII, for the same reason as the full-width ones.
+ *
+ * WHAT IS DELIBERATELY NOT FOLDED, so the list above is not read as
+ * covering it: the Roman numerals (U+2160..U+217F) and the enclosed
+ * digits (U+2460..U+24FF). Neither carries an ASCII digit, gate 2
+ * therefore never reads either as a measurement, and 「Ⅲ级」 and 「①」 are
+ * a grade and a list marker — names, not numbers. Nor are the CJK
+ * punctuation marks that have no ASCII counterpart in the FF block —
+ * 「。」 and 「、」 keep their own code points and the patterns below name
+ * them literally where they matter.
+ *
+ * THE COST, STATED: a published impression carries a half-width 「-」
+ * where the report printed 「－」, and half-width digits and letters
+ * throughout. That is accepted on purpose, and it is why the fold was
+ * narrowed to the characters that can hide inside an identifier rather
+ * than applied to the whole block. WHAT IS NOT AN OPTION is scanning a
+ * folded copy and publishing the original: that is a gate certifying a
+ * string nobody examined.
+ */
+const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/g;
+const FULL_WIDTH_ASCII = /[\uFF01-\uFF5E]/g;
+/** The full-width characters that are NOT folded: sentence and
+ *  grouping punctuation, which no identifier can hide behind. See the
+ *  note on `normaliseForGates`. */
+const FULL_WIDTH_KEPT: ReadonlySet<string> = new Set([
+  '\uFF01',
+  '\uFF02',
+  '\uFF07',
+  '\uFF08',
+  '\uFF09',
+  '\uFF0C',
+  '\uFF1A',
+  '\uFF1B',
+  '\uFF1F',
+]);
+const UNICODE_DASH = /[\u2010-\u2015\u2212]/g;
+const SUPERSCRIPT_DIGIT = /[\u00B9\u00B2\u00B3\u2070\u2074-\u2079]/g;
+const SUPERSCRIPT_DIGITS: Readonly<Record<string, string>> = {
+  '\u00B9': '1',
+  '\u00B2': '2',
+  '\u00B3': '3',
+  '\u2070': '0',
+  '\u2074': '4',
+  '\u2075': '5',
+  '\u2076': '6',
+  '\u2077': '7',
+  '\u2078': '8',
+  '\u2079': '9',
+};
+const ARABIC_INDIC_DIGIT = /[\u0660-\u0669\u06F0-\u06F9]/g;
+
+const normaliseForGates = (raw: string): string =>
+  raw
+    .replace(ZERO_WIDTH, '')
+    .replace(FULL_WIDTH_ASCII, (c) =>
+      FULL_WIDTH_KEPT.has(c) ? c : String.fromCharCode(c.charCodeAt(0) - 0xfee0),
+    )
+    .replace(UNICODE_DASH, '-')
+    .replace(SUPERSCRIPT_DIGIT, (c) => SUPERSCRIPT_DIGITS[c])
+    .replace(ARABIC_INDIC_DIGIT, (c) => {
+      const code = c.charCodeAt(0);
+      return String(code >= 0x06f0 ? code - 0x06f0 : code - 0x0660);
+    });
+
+const anyOf = (words: readonly string[]) =>
+  [...words].sort((a, b) => b.length - a.length).join('|');
+
+/**
+ * A RECORD NUMBER'S LABEL, AS A SUFFIX RULE RATHER THAN A LIST.
+ *
+ * The list this replaces was an enumeration — 住院号, 门诊号, 病案号,
+ * 病历号 … — and the finding against it was the finding an enumeration
+ * always gets: 门诊卡号, 就诊卡号, ID号 and 检查编号 are not on it, and the
+ * next hospital will print a fifth spelling. The enumerable part of such
+ * a label is its SUFFIX. A counter in a Chinese medical document is
+ * printed under 「…号」 and the prefix is whatever that hospital calls the
+ * counter, so the suffix is matched and the prefix is a bounded run of
+ * Han or Latin characters.
+ *
+ * WITH ONE EXCLUSION, AND IT IS NOT A JUDGEMENT CALL. A handful of
+ * ordinary words end in 号 and none of them is a counter. 「高信号」 is
+ * the commonest word in an MRI impression; a bare 号 suffix would read it
+ * as a label and eat the value printed after it, which is the same
+ * failure `CHINESE_SURNAMES` had. The excluded characters are the ones
+ * that make 号 mean something other than a number — 信/符/括/逗/句/问/
+ * 顿/引/冒/分/叹/折 — asserted as a lookbehind on the character
+ * immediately before the 号, so 登记号 and 编号 keep working.
+ *
+ * AND THE SHAPES THAT DO NOT END IN 号 stay as literals, because there
+ * is no suffix to generalise: an ID card, a barcode, and the birth date
+ * / age family. On that last one, unchanged from the list this replaces:
+ * `dateOfBirth` / `birthday` are on HARD_DELETE_KEYS, `patientAge` is
+ * deliberately absent from OCR_FIELDS_SAFE_KEYS_PRECISE, and
+ * `clinicalise` says in as many words that there is NO age band in
+ * either mode. An age printed inside an impression is that same value
+ * arriving by another door, so it leaves by the same one. The observed
+ * production leak this check was written for — 「…年龄:23 … 科别:神经内科
+ * … 住院号:R000000…」 inside `ecgSummary` — printed all three together.
+ */
+const NOT_A_RECORD_NUMBER_BEFORE_HAO = '信符括逗句问顿引冒分叹折';
+
+const RECORD_NUMBER_LABEL_SOURCE = [
+  `(?:[一-龥]{1,5}|[A-Za-z]{1,6})(?<![${NOT_A_RECORD_NUMBER_BEFORE_HAO}])号`,
+  '(?<![A-Za-z])ID(?![A-Za-z])',
+  ...['身份证', '条形码', '出生日期', '出生年月', '年龄', '生日'],
+].join('|');
+
+/**
+ * A PERSON'S LABEL, ALSO AS A SUFFIX RULE, AND SPLIT INTO TWO TIERS
+ * BECAUSE ONLY ONE OF THEM MAY EAT WHAT FOLLOWS UNCONDITIONALLY.
+ *
+ * The list this replaces treated 受检者 / 被检者 / 受检人 / 技师 as
+ * DEDICATED labels whose following two or three Han characters were
+ * eaten with no further question asked. In a report's IMPRESSION those
+ * words are ordinary sentence subjects, so 「受检者未见明显异常」 became
+ * 「受检者[人名未共享]显异常」 — THE NEGATION DELETED AND THE RULED-OUT
+ * FINDING PUBLISHED AS PRESENT. That is the exact defect this whole
+ * change exists to end, reintroduced by its own guardrail.
+ *
+ * TIER 1 — DEDICATED. 姓名 / 名字 / 签名, with up to four Han characters
+ * of prefix (患者姓名, 受检者姓名, 医师签名). These strings exist on a page
+ * in order to introduce a name and can be nothing else, so whatever
+ * follows one IS the value and is taken without corroboration.
+ *
+ * TIER 2 — ROLES. 医师 / 医生 / 大夫 / 技师 / 技士 / 护士 / 护师, again with a
+ * Han prefix — which is what covers 经治医师, 住院医师, 管床医师, 诊断医师,
+ * 主治医师 and the bare 医师 in one rule instead of eleven entries — plus
+ * the standalone role nouns 受检者 / 被检者 / 受检人 / 送检人 / 申请人. Every
+ * one of these can open an ordinary clinical sentence, so a tier-2 label
+ * only eats what follows it when a DELIMITER says a field follows
+ * (姓名：, 受检者（…）) or when the surname witness fires. Otherwise it is
+ * left alone and the sentence survives intact.
+ */
+const DEDICATED_NAME_LABEL_SOURCE = '[一-龥]{0,4}(?:姓名|名字|签名)';
+
+const PERSON_ROLE_LABEL_SOURCE = [
+  '[一-龥]{0,4}(?:医师|医生|大夫|技师|技士|护师|护士)',
+  '受检者',
+  '被检者',
+  '受检人',
+  '送检人',
+  '申请人',
+].join('|');
+
+const PERSON_NAME_LABEL_SOURCE = `(?:${DEDICATED_NAME_LABEL_SOURCE}|${PERSON_ROLE_LABEL_SOURCE})`;
+
+/**
+ * ORDINARY WORDS A NAME FOLLOWS IN PROSE, used by the SCRUB and by
+ * nothing else.
+ *
+ * 「患者张三，女」 is how a report opens. The word is not an identifier
+ * and never refuses a cell — see `DEDICATED_NAME_LABEL_SOURCE` — but a
+ * name directly after one is a name.
+ */
+const PERSON_NOUNS: readonly string[] = ['患者', '病人', '本例', '该患者'];
+
+/**
+ * THE FIRST CHARACTER OF A CHINESE NAME, AS CORROBORATION AND NOTHING
+ * MORE.
+ *
+ * The one reliable thing about a Chinese personal name. The deleted
+ * extractor's own note said it best — 「Chinese names have no reliable
+ * pattern」 — and that is true of the NAME; it is not true of the
+ * surname, which is drawn from a list this short.
+ *
+ * TWENTY-TWO CHARACTERS ARE GONE FROM IT, and the rule that removed them
+ * is the rule this file now applies to every witness: A WITNESS THAT
+ * FIRES ON ORDINARY CLINICAL VOCABULARY IS NOT A WITNESS. Each of these
+ * is the opening character of a word an impression prints constantly, so
+ * corroborating on it deleted the analyte or the hedge after 患者 and put
+ * a person marker in its place:
+ *
+ *   白 (白细胞, 白蛋白, 脑白质)   高 (高信号, 高度, 高密度)
+ *   石 (结石)                     方 (方向, 前方)
+ *   金 (金属)                     田 / 万 / 向 (向心性, 方向)
+ *   于 (a preposition)            严 (严重)
+ *   曾 (曾行, 曾有)               余 (其余, 余各叶)
+ *   范 (范围)                     黄 (黄疸, 黄斑)
+ *   段 (节段)                     叶 (肺叶, 左叶)
+ *   程 (程度, 过程)               史 (病史)
+ *   孔 (椎间孔)                   毛 (毛糙, 毛细血管)
+ *   任 (任何)                     戴 (戴支具)
+ *
+ * WHAT THAT COSTS, STATED RATHER THAN HIDDEN: a patient actually
+ * surnamed 高 or 黄 is no longer reached by THIS witness. They are still
+ * reached by the two mechanisms that do not guess — the document's own
+ * `patientName` cell (see `identifierValuesInInput`) and a dedicated
+ * label in front of the name — and by gate 0, which sends nothing at all
+ * off the documents where unlabelled names are the norm.
+ *
+ * NOT A COMPLETE LIST AND IT CANNOT BE. A rare surname after 患者 is a
+ * name this scrub does not reach. See the limitations `scrubIdentifiers`
+ * states.
+ */
+const CHINESE_SURNAMES =
+  '王李张刘陈杨赵吴周徐孙马朱胡郭何林罗郑梁谢宋唐许韩冯邓曹彭肖董袁潘蒋蔡杜苏魏吕丁沈姚卢姜崔钟谭陆汪廖贾夏韦付邹孟熊秦邱江尹薛闫雷侯龙陶黎贺顾郝龚邵钱覃武莫汤';
+
+/** Labels a means of CONTACTING this person is printed under. Removed
+ *  with the value, like a record number, and marked as a number because
+ *  that is what a telephone is. Suffix-shaped for the same reason the
+ *  record-number label is: 联系电话 / 家属电话 / 手机 are one rule. */
+const CONTACT_LABEL_SOURCE = [
+  '[一-龥]{0,3}(?:电话|手机|传真|邮箱|微信|联系方式)',
+  '(?<![A-Za-z])(?:QQ|qq|Tel|TEL|tel|Fax|FAX|fax|E-?mail|E-?MAIL|e-?mail)(?![A-Za-z])',
+].join('|');
+
+/** Labels a PLACE is printed under. Split from the contact labels only
+ *  so the marker can say which of the two it took: 「患者[地点未共享]」
+ *  over a telephone number reads as a hospital transfer. */
+const ADDRESS_LABEL_SOURCE = '[一-龥]{0,3}(?:家庭住址|现住址|住址|地址|工作单位|籍贯|户籍)';
+
+/**
+ * EVERY LABEL SHAPE AT ONCE, USED AS A NEGATIVE LOOKAHEAD INSIDE EVERY
+ * VALUE RUN — which is the structural half of the ordering fix.
+ *
+ * `ADDRESS_SCRUB` accepted Han characters in its value class and ran
+ * BEFORE the name scrub, so on 「住址：北京市海淀区中关村大街1号 姓名：张
+ * 三」 it ran greedily through the address, through the space, THROUGH
+ * THE 姓名 LABEL, and stopped somewhere inside 张三 — and the name behind
+ * it then survived, because the label that would have caught it had been
+ * eaten by the address. Order alone cannot fix that: whichever scrub
+ * runs first can swallow the next one's label.
+ *
+ * So no value run may cross a label, whatever the order. The guard is
+ * asserted character by character inside the run rather than at its end,
+ * which is what makes it hold for a greedy quantifier.
+ */
+const ANY_LABEL_SOURCE = [
+  RECORD_NUMBER_LABEL_SOURCE,
+  PERSON_NAME_LABEL_SOURCE,
+  CONTACT_LABEL_SOURCE,
+  ADDRESS_LABEL_SOURCE,
+].join('|');
+
+/**
+ * IDENTIFIER SHAPES THAT ANNOUNCE THEMSELVES WITHOUT A LABEL, EACH
+ * PAIRED WITH THE MARKER IT LEAVES BEHIND.
+ *
+ * One list of pairs rather than two lists matched by index: the pairing
+ * used to live in a second array whose order had to be kept in step by
+ * hand, which is a drift waiting to happen every time a shape is added
+ * in the middle.
+ *
+ * These are the ones both readers can act on unaided, so they are also
+ * the ones the free-text residual check is allowed to use: after
+ * `scrubIdentifiers` has run, a hit here means the scrub did NOT make the
+ * string safe, and the whole field is withheld.
+ *
+ * EVERY PATTERN HERE ASSUMES ASCII DIGITS AND ASCII PUNCTUATION. That is
+ * not an oversight and it is not a hope — see `normaliseForGates`, which
+ * every entry point to this vocabulary runs first.
+ *
+ * `\b` is used only where both sides of the match are ASCII. A Chinese
+ * character is a non-word character to JavaScript, so `\b` does fire
+ * between 号 and R — but it does NOT fire between two digits, which is
+ * why the long-run patterns are anchored on non-digit lookarounds
+ * instead.
+ */
+interface SelfAnnouncingIdentifier {
+  readonly pattern: RegExp;
+  /** Which sentinel the match is replaced with. */
+  readonly sentinel: 'number' | 'date' | 'place';
+}
+
+const MONTH_NAME = 'Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
+
+const SELF_ANNOUNCING_IDENTIFIERS: readonly SelfAnnouncingIdentifier[] = [
+  // A mainland ID card: 18 characters, or the legacy 15 digits. WITH THE
+  // OCR SPACES TOLERATED. A page that breaks the number into its blocks
+  // used to have only its first block removed by the labelled scrub, and
+  // the remainder published — and the remainder is the BIRTH-DATE field
+  // of the card.
+  {
+    pattern:
+      /(?<!\d)\d{6}\s*(?:18|19|20)\d{2}\s*(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\s*\d{3}[\dXx](?!\d)/,
+    sentinel: 'number',
+  },
+  { pattern: /(?<!\d)\d{15}(?!\d)/, sentinel: 'number' },
+  // A letter-prefixed record number (R000000), or any long digit run —
+  // a barcode, an ID card, a mobile number.
+  { pattern: /(?<![A-Za-z\d])[A-Za-z]{1,3}\d{5,}(?!\d)/, sentinel: 'number' },
+  { pattern: /(?<!\d)\d{9,}(?!\d)/, sentinel: 'number' },
+  // A landline with its area code, in the two ways a page prints one.
+  { pattern: /(?<!\d)0\d{2,3}[-\s]\d{7,8}(?!\d)/, sentinel: 'number' },
+  // A DATE FINER THAN A YEAR, IN THE FOUR SHAPES A CHINESE DOCUMENT
+  // ACTUALLY PRINTS. The year alone is not an identifier — this pipeline
+  // publishes it as `reportDate_year`, and gate 2 protects it as a name —
+  // but the MONTH already narrows a person to one of a few hundred, and
+  // the day is how a family member's death or a prior admission is
+  // pinned to them.
+  //
+  // 2019年3月 and 2019年3月5日 were the shapes the list had; 2019-03,
+  // 19-03-05 and 05-Mar-2019 were not, and all three are what an OCR
+  // bridge emits off a header.
+  { pattern: /(?<!\d)(?:19|20)?\d{2}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日?)?/, sentinel: 'date' },
+  {
+    pattern:
+      /(?<!\d)(?:19|20)\d{2}\s*[-/.]\s*(?:0?[1-9]|1[0-2])(?:\s*[-/.]\s*(?:0?[1-9]|[12]\d|3[01]))?(?!\d)/,
+    sentinel: 'date',
+  },
+  {
+    pattern: /(?<!\d)\d{2}\s*[-/.]\s*(?:0?[1-9]|1[0-2])\s*[-/.]\s*(?:0?[1-9]|[12]\d|3[01])(?!\d)/,
+    sentinel: 'date',
+  },
+  {
+    pattern: new RegExp(
+      String.raw`(?<![A-Za-z\d])(?:0?[1-9]|[12]\d|3[01])\s*[-/ ]\s*(?:${MONTH_NAME})[a-z]*\s*[-/ ]\s*(?:19|20)?\d{2}(?![A-Za-z\d])`,
+    ),
+    sentinel: 'date',
+  },
+  {
+    pattern: new RegExp(
+      String.raw`(?<![A-Za-z\d])(?:19|20)\d{2}\s*[-/ ]\s*(?:${MONTH_NAME})[a-z]*\s*[-/ ]\s*(?:0?[1-9]|[12]\d|3[01])(?![A-Za-z\d])`,
+    ),
+    sentinel: 'date',
+  },
+  { pattern: /(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日(?!\d)/, sentinel: 'date' },
+  // AN ADDRESS, and only where enough components agree that it is one.
+  // A single 号 is 「10 号染色体」 and a single 区 is an anatomical region,
+  // so neither alone may match: what is required is an administrative
+  // chain (省/市 → 市/区/县) or a street plus a number.
+  {
+    pattern: /[一-龥]{2,8}(?:省|自治区|特别行政区)[一-龥]{2,8}(?:市|自治州|区|县)/,
+    sentinel: 'place',
+  },
+  { pattern: /[一-龥]{2,8}市[一-龥]{2,8}(?:区|县|旗)/, sentinel: 'place' },
+  {
+    pattern: /[一-龥]{2,10}(?:街道|大街|路|街|巷|村|镇|乡|小区)[一-龥\d]{0,10}号/,
+    sentinel: 'place',
+  },
+];
+
+const IDENTIFIER_VALUE_PATTERNS: readonly RegExp[] = SELF_ANNOUNCING_IDENTIFIERS.map(
+  (entry) => entry.pattern,
+);
+
+/**
+ * A LABEL STILL STANDING **WITH A VALUE BEHIND IT**, which is not the
+ * same question as 「does this text contain the word 年龄」.
+ *
+ * The bare-label detectors these replace were a denial of service on the
+ * reports this channel exists to carry. 年龄 and 电话 are on the label
+ * lists and the residual check fired on the word alone, so
+ * 「腰椎年龄相关性退变」 — ordinary radiology — withheld the ENTIRE
+ * impression of a genuine report, and so did 「建议电话随访」.
+ *
+ * What the check is actually for is a scrub that did not understand what
+ * it was looking at. The scrub removes a record-number or contact label
+ * TOGETHER WITH its value, so a label still followed by an alphanumeric
+ * value afterwards means exactly that. A label with prose after it is
+ * prose.
+ */
+const labelWithValueStanding = (labelSource: string): RegExp =>
+  new RegExp(`(?:${labelSource})(?:\\s*[:：=]\\s*(?=[A-Za-z0-9一-龥])|\\s*(?=[A-Za-z0-9]))`);
+
+const RECORD_NUMBER_VALUE_STANDING = labelWithValueStanding(RECORD_NUMBER_LABEL_SOURCE);
+const CONTACT_VALUE_STANDING = labelWithValueStanding(
+  `${CONTACT_LABEL_SOURCE}|${ADDRESS_LABEL_SOURCE}`,
+);
+
+/** A cell whose value even NAMES a dedicated name label is refused whole
+ *  — `isUntrustworthyText` has no way to publish half a value, and a cell
+ *  that prints 姓名 is a cell the extractor filled with a page fragment.
+ *  ONLY the dedicated tier: a cell printing 医师 or 技师 may be
+ *  「主治医师查房」, and refusing it would be the same denial of service
+ *  the bare 年龄 detector was. */
+const DEDICATED_NAME_LABEL_PATTERN = new RegExp(DEDICATED_NAME_LABEL_SOURCE);
+
 const ID_PATTERNS: readonly RegExp[] = [
-  // Chinese record-number labels, with or without a value after them.
-  /(住院号|门诊号|病历号|就诊号|登记号|标本号|样本号|条形码|检验号|影像号|身份证)/,
-  // A bare identifier: a letter-prefixed run of digits (R000000), or a
-  // long digit run (barcode, ID card).
-  /\b[A-Za-z]{1,3}\d{5,}\b/,
-  /\b\d{9,}\b/,
+  ...IDENTIFIER_VALUE_PATTERNS,
+  RECORD_NUMBER_VALUE_STANDING,
+  CONTACT_VALUE_STANDING,
+  DEDICATED_NAME_LABEL_PATTERN,
+];
+
+/**
+ * WHAT THE FREE-TEXT RESIDUAL CHECK ASKS, which is a SUBSET of what a
+ * cell is refused for, and the difference is deliberate.
+ *
+ * The scrub leaves person labels standing on purpose —
+ * 「受检者[人名未共享]」 — so asking a name-label pattern after the scrub
+ * would withhold every impression that ever named a patient, including
+ * the ones the scrub handled correctly. A record-number label is
+ * different: the scrub removes it WITH its value, so one still standing
+ * with a value behind it means the scrub did not understand what it was
+ * looking at, and that is exactly the state that must fail closed.
+ */
+const RESIDUAL_IDENTIFIER_PATTERNS: readonly RegExp[] = [
+  ...IDENTIFIER_VALUE_PATTERNS,
+  RECORD_NUMBER_VALUE_STANDING,
+  CONTACT_VALUE_STANDING,
 ];
 
 /** The two questions asked of one piece of text — a value, or a key
- *  naming one. The length ceiling lives on `allowlist.ts` beside the key
- *  list whose premise it states, and is imported by the write-path
- *  schema as well — see `SAFE_VALUE_MAX_LENGTH` there for why it is not
- *  declared in this file. */
+ *  naming one. Normalised first, for the reason `normaliseForGates`
+ *  gives: an ID card typeset in full-width digits used to pass this
+ *  check as readily as it passed the gates. The length ceiling lives on
+ *  `allowlist.ts` beside the key list whose premise it states, and is
+ *  imported by the write-path schema as well — see `SAFE_VALUE_MAX_LENGTH`
+ *  there for why it is not declared in this file. */
 const isUntrustworthyText = (text: string): boolean => {
-  const trimmed = text.trim();
+  const trimmed = normaliseForGates(text).trim();
   if (trimmed.length > SAFE_VALUE_MAX_LENGTH) return true;
   return ID_PATTERNS.some((pattern) => pattern.test(trimmed));
 };
@@ -1028,12 +1517,22 @@ const isUntrustworthyText = (text: string): boolean => {
  * overclaim. The profile scope's non-genetics cells — `familyHistory`,
  * `onsetRegion`, `assistiveDevices`, `gender`, `diagnosisStage`,
  * `independentlyAmbulatory` — travel from the retriever to layer 3
- * untouched by any layer of this file, and layer 3 is a gate on KEYS.
- * That is not a typeof short-circuit and it is not what this fix was
- * about: it reads identically for a bare string and for an array, and
- * closing it needs a decision about free text the patient typed
- * (`familyHistory` is unbounded by design, so this function's ceiling is
- * not its ceiling) that does not belong to this function.
+ * untouched by THIS function, and layer 3 is a gate on KEYS. That is
+ * not a typeof short-circuit and it is not what this fix was about: it
+ * reads identically for a bare string and for an array, and closing it
+ * needed a decision about free text the patient typed (`familyHistory`
+ * is unbounded by design, so this function's ceiling is not its
+ * ceiling) that does not belong to this function.
+ *
+ * THAT DECISION IS NOW MADE, ONE LAYER DOWN. `scrubKeptValue` (layer 4)
+ * walks every string layer 3 kept, on every scope, and takes the
+ * identifiers out of it rather than refusing the cell — which is the
+ * answer the ceiling could not give: a family history is allowed to be
+ * long, and it is not allowed to carry a telephone number. This
+ * function still owns the CELL question, and the two share one
+ * identifier vocabulary, so a value it would refuse is a value the
+ * scrub would have edited; sharing the list is what keeps the two from
+ * disagreeing about the same string.
  */
 const isUntrustworthyValue = (
   value: unknown,
@@ -1453,18 +1952,20 @@ const publishDiagnosisTypeCell = (
  * is being made here: the retriever hands over one document per chunk
  * and this is that one.
  */
+const chunkDocument = (chunk: Record<string, unknown>): GeneticEvidenceDocumentLike => ({
+  ocrPayload: {
+    fields: chunk.fields,
+    extractedText: typeof chunk.extractedText === 'string' ? chunk.extractedText : null,
+  },
+  documentType: typeof chunk.documentType === 'string' ? chunk.documentType : null,
+  status: typeof chunk.status === 'string' ? chunk.status : null,
+  // Required by the shape, read by nothing on this path.
+  id: '',
+  uploadedAt: null,
+});
+
 const chunkIsLaboratoryGeneticReport = (chunk: Record<string, unknown>): boolean =>
-  isLaboratoryGeneticReport({
-    ocrPayload: {
-      fields: chunk.fields,
-      extractedText: typeof chunk.extractedText === 'string' ? chunk.extractedText : null,
-    },
-    documentType: typeof chunk.documentType === 'string' ? chunk.documentType : null,
-    status: typeof chunk.status === 'string' ? chunk.status : null,
-    // Required by the shape, read by nothing on this path.
-    id: '',
-    uploadedAt: null,
-  });
+  isLaboratoryGeneticReport(chunkDocument(chunk));
 
 /** Project an OCR fields blob through a mode-specific filter.
  *
@@ -2027,6 +2528,1389 @@ const filterByAllowlist = (
   return { kept, dropped };
 };
 
+// ---------------------------------------------------------------- layer 4
+
+/**
+ * LAYER 4 — THE THREE GATES ON FREE TEXT, AND THEY RUN LAST.
+ *
+ * A report's own impression is the sentence the radiologist, the
+ * geneticist or the pulmonologist wrote about the result. It reaches
+ * the model as the report printed it, and it gets there only through
+ * three gates, in this order:
+ *
+ *   Gate 0 — ELIGIBILITY. Which documents may send free text at all.
+ *            A RESULT document's impression is a test's own conclusion
+ *            about a result and, names and numbers aside, is clinical
+ *            language. A NARRATIVE document — 病历摘要, 门诊病历,
+ *            出院小结, 入院记录 — is a story about a person: 主诉, 现病史,
+ *            既往史, occupation, address, who in the family had what,
+ *            the names of the treating doctors. What identifies a person
+ *            there is not a pattern; 「其兄 2019 年因同病去世」 identifies
+ *            a family and cannot be scrubbed without deleting the
+ *            sentence. So a narrative sends NOTHING, and the marker says
+ *            an impression exists and was not shared. See
+ *            `documentEligibility`.
+ *
+ *   Gate 1 — IDENTIFIERS, IN BOTH MODES. Names, record numbers, ID
+ *            cards, phone numbers, addresses, dates finer than a year.
+ *            CONSENT HAS NOTHING TO DO WITH THIS GATE: nobody consented
+ *            to identifiers. It sits here, at the last point before text
+ *            leaves the server, rather than in the retriever, so that
+ *            every path producing free text — the ones that exist today
+ *            and the ones added later — passes through one
+ *            implementation. See `scrubIdentifiers`.
+ *
+ *   Gate 2 — MEASUREMENTS, UNDER STRICT CONSENT. An impression is full
+ *            of numbers, and passing them through in strict mode would
+ *            open a hole in the consent model straight through the
+ *            free-text path — handing a patient who never granted
+ *            「精确数值」 exactly the numbers that consent exists to
+ *            withhold. `isQualitativeResult` already states the rule
+ *            this file applies to cells: anything carrying a digit is a
+ *            measurement, so 阳性(1:8) stays withheld because the titre
+ *            is the number the patient did not consent to share. Same
+ *            rule here. See `maskMeasurements` for the digits that are
+ *            part of a NAME and must survive it.
+ *
+ * ALL THREE FAIL CLOSED. A guardrail that passes what it cannot judge
+ * is not a guardrail. Where the eligibility gate cannot tell what kind
+ * of document this is, where the identifier scrub cannot make a string
+ * safe, or where the mask cannot bound its own reading of a digit, the
+ * WHOLE field is withheld and replaced with a marker saying an
+ * impression exists and was not shared. The model must never conclude
+ * that a report had no impression because a gate ate it silently — and
+ * the same when the text is capped, which reports how much was cut.
+ *
+ * THE STRUCTURE IS THE ENFORCEMENT, NOT THIS COMMENT. Comments have not
+ * held rules in this module: three rounds of them failed on the
+ * laboratory gate. `GatedFreeText` is a branded string whose brand
+ * symbol is module-private, and `gateFreeText` is the only function
+ * that mints one, so a raw string cannot be assigned into a published
+ * free-text field at any call site and the compiler says so — the same
+ * device `UploaderDeclaredDocumentType` uses in
+ * patient-profile/genetic-evidence.ts.
+ */
+
+declare const gatedFreeTextBrand: unique symbol;
+
+/**
+ * PROSE THAT HAS PASSED ALL THREE GATES.
+ *
+ * Nominal on purpose. No value carries the brand at runtime and the
+ * symbol is module-private, so the only way to obtain one is
+ * `gateFreeText` below: a plain `string` — the retriever's raw
+ * impression above all — is not assignable to it.
+ */
+export type GatedFreeText = string & { readonly [gatedFreeTextBrand]: true };
+
+/** Everything one free-text field contributes to the prompt. The only
+ *  producer is `gateFreeText`, and `text` is the branded type, so a
+ *  caller cannot build one of these out of a raw string. */
+export interface FreeTextOutcome {
+  /** The gated text. `null` whenever any gate refused. */
+  readonly text: GatedFreeText | null;
+  /** Why nothing is being sent, when nothing is. Always paired with a
+   *  `text` of `null`, and never both absent — the model has to be able
+   *  to tell 「there was an impression and you are not getting it」 from
+   *  「this report has no impression」. */
+  readonly withheld: string | null;
+  readonly valuesMasked: number;
+  readonly identifiersRemoved: number;
+  readonly charactersCut: number;
+}
+
+/** WHY AN IMPRESSION IS NOT BEING SENT. One vocabulary, so the model
+ *  reads the same word for the same refusal, and so a reader of the
+ *  audit row can tell which gate fired. */
+const FREE_TEXT_REFUSALS = {
+  narrative:
+    'impression_exists_but_this_document_is_a_clinical_narrative_about_a_person_not_a_test_result',
+  unknownKind: 'impression_exists_but_this_platform_cannot_tell_what_kind_of_document_this_is',
+  identifiers: 'impression_exists_but_identifiers_in_it_could_not_be_removed',
+  unclassifiedValue: 'impression_exists_but_a_number_in_it_could_not_be_classified',
+} as const;
+
+// ------------------------------------------------------------ gate 0
+
+/**
+ * DOES THE CLASSIFIER'S OWN VOCABULARY NAME THIS DOCUMENT AS A RESULT.
+ *
+ * Split off `CLASSIFIED_REPORT_TYPES`, which is the list this repo
+ * already keeps of what `_classify_report` in
+ * apps/report-manager/app/services/fshd_report_service.py can conclude
+ * — pinned against that Python table by get-my-reports.test.ts. No new
+ * document-type list is invented here; the only thing added is which
+ * side of the eligibility line each existing entry falls on, and both
+ * sides are enumerated so a type added to the classifier fails the
+ * partition test in pii-redactor.test.ts rather than defaulting to
+ * eligible.
+ *
+ * The three that are NOT result documents are not a judgement call:
+ * `medical_summary` IS 病历摘要 and `physical_exam` IS 体格检查, and both
+ * of those strings are entries on `CLINICAL_NARRATIVE_MARKERS` in
+ * patient-profile/genetic-evidence.ts — the list five rounds of work
+ * went into. `other` is not a classification at all; it is the
+ * classifier saying it could not name the document, which is the
+ * 「cannot tell」 case and fails closed.
+ */
+const RESULT_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  'abdominal_ultrasound',
+  'biochemistry',
+  'blood_routine',
+  'coagulation',
+  'diaphragm_ultrasound',
+  'ecg',
+  'echocardiography',
+  'genetic_report',
+  'infection_screening',
+  'muscle_enzyme',
+  'muscle_mri',
+  'pulmonary_function',
+  'stool_test',
+  'thyroid_function',
+  'urinalysis',
+]);
+
+/**
+ * THE OTHER SIDE OF THE PARTITION, AND IT IS TWO DIFFERENT THINGS.
+ *
+ * `medical_summary` and `physical_exam` are documents the classifier
+ * NAMED, and what it named them is 病历摘要 and 体格检查 — both of which
+ * are entries on `CLINICAL_NARRATIVE_MARKERS` in
+ * patient-profile/genetic-evidence.ts. `other` is not a classification
+ * at all; it is the classifier saying it could not name the document.
+ *
+ * Those are two different refusals and they used to produce one marker.
+ * A document positively classified 病历摘要 told the model 「this
+ * platform cannot tell what kind of document this is」 — which is false,
+ * and worse than useless: the model cannot distinguish 「we know what
+ * this is and its prose is about a person」 from 「we have no idea what
+ * we are holding」, and the first is a fact it can reason with.
+ *
+ * `NON_RESULT_DOCUMENT_TYPES` is DERIVED from the two rather than
+ * written a third time, so it stays exhaustive with them by
+ * construction — and it is now consulted by `documentEligibility`
+ * rather than exported for a test and read by nothing else.
+ */
+const NARRATIVE_DOCUMENT_TYPES: ReadonlySet<string> = new Set(['medical_summary', 'physical_exam']);
+
+/** The classifier declining to name the document. Not a kind. */
+const UNNAMED_DOCUMENT_TYPES: ReadonlySet<string> = new Set(['other']);
+
+export const NON_RESULT_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  ...NARRATIVE_DOCUMENT_TYPES,
+  ...UNNAMED_DOCUMENT_TYPES,
+]);
+
+type Eligibility = 'result' | 'narrative' | 'unknown';
+
+/**
+ * WHICH DOCUMENTS MAY SEND FREE TEXT AT ALL.
+ *
+ * Three answers, and only one of them sends anything.
+ *
+ * THE NARRATIVE QUESTION IS ASKED FIRST AND OUTRANKS THE LABEL, exactly
+ * as it does in `isLaboratoryGeneticReport`: a 病历摘要 with a whole
+ * genetics report pasted into it is still a 病历摘要, and it will carry
+ * a classifier label as readily as anything else. The predicate is
+ * `showsClinicalNarrative`, shared with that gate rather than copied —
+ * see its note in patient-profile/genetic-evidence.ts.
+ *
+ * AND IT IS ASKED OF A DOCUMENT THAT INCLUDES THE IMPRESSION ITSELF.
+ * `showsClinicalNarrative` searches the stored page plus an allowlist
+ * of `fields` cells whose contents this pipeline knows, and of the
+ * eight keys an impression can arrive under exactly one is on that
+ * list. So the sentence that makes a document a narrative was, for
+ * seven of the eight, in the one cell the predicate could not read:
+ * a payload whose `reportImpression` opens 「主诉：双下肢无力3年」 and
+ * whose page was never stored showed the predicate nothing. The text
+ * about to be sent is part of the document's own page, so it is put
+ * where the predicate reads the page.
+ *
+ * THEN THE LABEL, AND IT MUST BE A POSITIVE ONE. 「not a narrative」 is
+ * not 「a result」: an archived 病历摘要 with no page and no
+ * narrative-only cells shows this predicate nothing at all, which is
+ * precisely the row the laboratory gate spends four paragraphs on. So
+ * eligibility requires the classifier to have NAMED this document as
+ * one of the result kinds. Anything else — `other`, an unparsed row, a
+ * label from some vocabulary this platform does not know — is
+ * `unknown`, and `unknown` sends nothing.
+ *
+ * WHAT THAT COSTS AND WHO PAYS IT. `documentClassifiedType` falls back
+ * to `patient_documents.document_type` on a row the parse never
+ * labelled, and two values are spelled the same in both vocabularies —
+ * `genetic_report` and `other`. So a row the parser never classified,
+ * uploaded under 基因检测报告, is eligible on the uploader's declaration
+ * alone. That is the same weak witness the laboratory gate documents at
+ * step (4) and accepts for the same reason: refusing it would refuse
+ * the genuine report of a patient whose page was not stored. The other
+ * upload-form values (`mri`, `blood_panel`) are not on the classifier's
+ * list, so an unparsed MRI sends nothing — fail closed.
+ */
+const documentEligibility = (
+  document: GeneticEvidenceDocumentLike,
+  impression: string,
+): Eligibility => {
+  const withImpression: GeneticEvidenceDocumentLike = {
+    ...document,
+    ocrPayload: isPlainObject(document.ocrPayload)
+      ? {
+          ...document.ocrPayload,
+          extractedText: [
+            typeof document.ocrPayload.extractedText === 'string'
+              ? document.ocrPayload.extractedText
+              : '',
+            impression,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        }
+      : { extractedText: impression },
+  };
+  if (showsClinicalNarrative(withImpression)) return 'narrative';
+  const type = documentClassifiedType(document);
+  if (RESULT_DOCUMENT_TYPES.has(type)) return 'result';
+  // A NAMED NON-RESULT IS A NARRATIVE, NOT AN UNKNOWN. See
+  // `NARRATIVE_DOCUMENT_TYPES`: 病历摘要 and 体格检查 are documents this
+  // platform recognised, and the marker has to say the true reason.
+  if (NARRATIVE_DOCUMENT_TYPES.has(type)) return 'narrative';
+  return 'unknown';
+};
+
+// ------------------------------------------------------------ gate 1
+
+/**
+ * THE MARKERS, AND WHY NONE OF THEM IS SPELLED WITH A WORD THIS FILE
+ * SEARCHES FOR.
+ *
+ * The scrub runs more than once over the same string — the channel runs
+ * it, and then `scrubKeptValue` runs it again over everything layer 3
+ * kept — so a marker has to survive its own scrub unchanged. It was
+ * 「[地址未共享]」 and 「[姓名未共享]」 first, and both are made of words on
+ * the lists above: the second pass read 地址 inside the marker the first
+ * pass had just written, called the string unsafe, and withheld a
+ * correctly scrubbed impression. 姓名 did the visible version of the
+ * same thing — 「受检者[姓名[姓名[姓名未共享]]]」, the label scrub matching
+ * inside its own output, three deep.
+ *
+ * So the markers are spelled with synonyms no list here carries, and —
+ * because a synonym is a thing someone can change later — the scrub
+ * does not write them at all until it has finished. It works in
+ * private-use sentinels (U+E000 to U+E003), which are outside every
+ * character class here — 一-龥 is U+4E00 to U+9FA5 and the token scan is
+ * ASCII — so no pattern in this file can match one. The residual
+ * question is asked of the sentinel text, and the human wording is
+ * substituted last.
+ */
+const NAME_MARKER = '[人名未共享]';
+const NUMBER_MARKER = '[编号未共享]';
+const DATE_MARKER = '[日期未共享]';
+const PLACE_MARKER = '[地点未共享]';
+const MEASUREMENT_MARKER = '[数值未共享]';
+const TRUNCATION_MARKER = '[后续未列出]';
+
+/**
+ * WHERE A TRUNCATION MAY CUT: never inside one of this file's own
+ * markers.
+ *
+ * Every marker is a bracketed run with no bracket inside it, so 「the
+ * cut opened a bracket it did not close」 is decidable by looking for
+ * the last 「[」 in the slice and asking whether a 「]」 follows it. If
+ * one does not, the slice is pulled back to that bracket. The two
+ * failures this prevents are an unclosed 「[数值未」 dangling in the
+ * prompt, and a marker cut down far enough to vanish — which reads to
+ * the model as an ordinary truncation while the counts beside it still
+ * say a value was masked there.
+ */
+const cutBeforeAnyOpenMarker = (text: string, limit: number): number => {
+  const slice = text.slice(0, limit);
+  const open = slice.lastIndexOf('[');
+  if (open === -1) return limit;
+  return slice.indexOf(']', open) === -1 ? open : limit;
+};
+
+const NAME_SENTINEL = '\uE000';
+const NUMBER_SENTINEL = '\uE001';
+const DATE_SENTINEL = '\uE002';
+const PLACE_SENTINEL = '\uE003';
+const SENTINEL_MARKERS: Readonly<Record<string, string>> = {
+  [NAME_SENTINEL]: NAME_MARKER,
+  [NUMBER_SENTINEL]: NUMBER_MARKER,
+  [DATE_SENTINEL]: DATE_MARKER,
+  [PLACE_SENTINEL]: PLACE_MARKER,
+};
+
+/**
+ * THE VALUE BEHIND A LABEL, AND WHY EACH FAMILY GETS ITS OWN CLASS.
+ *
+ * Three rules hold across all of them:
+ *
+ *   1. NO RUN MAY CROSS A LABEL. Every Han-capable class is written as
+ *      `(?!ANY_LABEL_SOURCE)` per character, so a greedy quantifier
+ *      cannot run out of one field and into the next one's label. See
+ *      `ANY_LABEL_SOURCE` for the address that ate a 姓名 label and the
+ *      name behind it.
+ *   2. NO RUN MAY CROSS THE WHITESPACE THE PAGE ITSELF DREW, except
+ *      where the continuation is positively of the same kind as what
+ *      came before it — a further all-digit block of one OCR-split
+ *      number, or a further Latin word of one Latin name. The space is
+ *      the boundary the page printed; anything else is a run that
+ *      swallows the next field.
+ *   3. EVERY CLASS ASSUMES ASCII PUNCTUATION. `normaliseForGates` has
+ *      already folded 「：」「（」「－」 onto their ASCII forms, so the
+ *      classes name each delimiter once instead of twice.
+ */
+
+/** A record number or a contact detail: an ASCII run, and — because an
+ *  ID card broken across OCR blocks is still an ID card — up to three
+ *  further ALL-DIGIT blocks after it. 「身份证号 110101 19900307 1234」
+ *  used to lose its first block and publish the rest, which is the
+ *  card's birth-date field. A continuation that is not all digits (「CK
+ *  890」) is not part of the number and stops the run. */
+const LABELLED_ASCII_VALUE = String.raw`\s*[:：=]?\s*[A-Za-z0-9()\-/.]{1,24}(?:\s+\d{2,8}){0,3}`;
+
+const RECORD_NUMBER_SCRUB = new RegExp(
+  `(?:${RECORD_NUMBER_LABEL_SOURCE})${LABELLED_ASCII_VALUE}`,
+  'g',
+);
+const CONTACT_SCRUB = new RegExp(`(?:${CONTACT_LABEL_SOURCE})${LABELLED_ASCII_VALUE}`, 'g');
+
+/** An address value may hold Han characters, which is what made it the
+ *  greediest class in the file. It is bounded four ways: a Han value
+ *  needs the page to have printed a DELIMITER (otherwise 「地址不详」 —
+ *  ordinary prose — loses its 不详 to the same defect the name labels
+ *  had), it may not cross a label, it may not cross whitespace, and it
+ *  is capped. An unlabelled address is not left to this scrub: the
+ *  administrative-chain shapes in `SELF_ANNOUNCING_IDENTIFIERS` reach
+ *  「北京市海淀区…」 with no label in front of it at all. */
+const ADDRESS_SCRUB = new RegExp(
+  `(?:${ADDRESS_LABEL_SOURCE})(?:\\s*[:：=]\\s*(?:(?!${ANY_LABEL_SOURCE})[A-Za-z0-9()\\-/.一-龥]){1,30}|\\s*(?:(?!${ANY_LABEL_SOURCE})[A-Za-z0-9()\\-/.]){1,30})`,
+  'g',
+);
+
+/**
+ * A NAME, AND WHAT COUNTS AS ONE DEPENDS ON WHAT INTRODUCED IT.
+ *
+ * THE VALUE IS NOT ENUMERABLE AND THE LABEL IS. That is the whole
+ * shape of the fix. The old rule took 「two or three contiguous Han
+ * characters」 after a label, so 姓名：ZHANG SAN, 姓名：欧阳建国, a
+ * transliterated minority name and every name after the first in a
+ * 、-separated list were all published. After a label the value is
+ * WHATEVER FOLLOWS, in whatever script and however many names it lists,
+ * up to the boundary the page drew.
+ *
+ *   - LATIN — one to four Latin words. A Latin personal name spans
+ *     spaces and a Chinese one does not, so the space continuation is
+ *     allowed here and nowhere else.
+ *   - HAN — up to four characters (欧阳建国 is four), repeated across
+ *     「、」 so a list of names is one value. Whitespace ends it: 「姓名：
+ *     张三 患者李四」 with a space-tolerant run took 张三患 as one name,
+ *     ate the 患者 label off the next field and left 李四 standing.
+ *   - WITNESSED HAN — the surname corroboration, for the cases where
+ *     nothing but a bare word introduced the name.
+ */
+const LATIN_NAME_VALUE = String.raw`[A-Za-z][A-Za-z.'·\-]{0,19}(?:\s+[A-Za-z][A-Za-z.'·\-]{0,19}){0,3}`;
+const HAN_NAME_VALUE = `(?:(?!${ANY_LABEL_SOURCE})[一-龥·]){1,4}(?:\\s*、\\s*(?:(?!${ANY_LABEL_SOURCE})[一-龥·]){1,4}){0,4}`;
+const WITNESSED_NAME_VALUE = `[${CHINESE_SURNAMES}][一-龥]{1,2}(?:\\s*、\\s*[${CHINESE_SURNAMES}][一-龥]{1,2}){0,4}`;
+
+/**
+ * WHERE A WITNESSED NAME HAS TO END, AND THIS IS THE STRUCTURAL HALF OF
+ * THE SURNAME FIX.
+ *
+ * 「患者白细胞计数正常」 and 「患者高信号区域局限」 were read as
+ * 患者 + a three-character name because nothing said where the name
+ * stopped. A personal name in prose is followed by punctuation or by
+ * whitespace — 「患者张三，女」 — and an analyte or a hedge is followed by
+ * more of its own word. Requiring the boundary is what lets the surname
+ * list stay a corroboration instead of becoming the whole test; trimming
+ * the list (see `CHINESE_SURNAMES`) is the second half, not the first.
+ */
+const NAME_BOUNDARY = String.raw`(?=[\s,;:.()\[\]!?"'/\\|、。，；：！？（）“”‘’]|$)`;
+
+/**
+ * A name after a DEDICATED label — 姓名：张三, 患者姓名 ZHANG SAN,
+ * 医师签名王五. Whatever follows the label is the value, because that is
+ * the label's only job, so no delimiter and no witness is required.
+ */
+const DEDICATED_NAME_SCRUB = new RegExp(
+  `(${DEDICATED_NAME_LABEL_SOURCE})\\s*[:：=]?\\s*[(（]?(?:${LATIN_NAME_VALUE}|${HAN_NAME_VALUE})[)）]?`,
+  'g',
+);
+
+/**
+ * A name after a ROLE label. Two shapes and neither of them may eat
+ * prose:
+ *
+ *   - DELIMITED — 受检者：张三, 主治医师（王五）. A delimiter means a field
+ *     follows, and then the value is whatever follows.
+ *   - WITNESSED — 经治医师李四。 A role label with no delimiter is an
+ *     ordinary sentence subject as often as it is a label, so the
+ *     surname and the boundary both have to fire. 「受检者未见明显异常」
+ *     and 「技师操作规范」 hit neither and survive whole, WHICH IS THE
+ *     POINT: the old rule ate the negation out of the first one and
+ *     published a ruled-out finding as present.
+ */
+const ROLE_NAME_DELIMITED_SCRUB = new RegExp(
+  `(${PERSON_ROLE_LABEL_SOURCE})\\s*(?:[:：=]\\s*|[(（]\\s*)(?:${LATIN_NAME_VALUE}|${HAN_NAME_VALUE})\\s*[)）]?`,
+  'g',
+);
+const ROLE_NAME_WITNESSED_SCRUB = new RegExp(
+  `(${PERSON_ROLE_LABEL_SOURCE})\\s*(?:${WITNESSED_NAME_VALUE}|${LATIN_NAME_VALUE})${NAME_BOUNDARY}`,
+  'g',
+);
+
+/** A name after an ordinary NOUN, which needs both witnesses. See
+ *  `PERSON_NOUNS`, `CHINESE_SURNAMES` and `NAME_BOUNDARY`. */
+const NOUN_NAME_SCRUB = new RegExp(
+  `(${anyOf(PERSON_NOUNS)})\\s*[(（]?(?:${WITNESSED_NAME_VALUE})[)）]?${NAME_BOUNDARY}`,
+  'g',
+);
+
+/** The sentinel each self-announcing shape leaves behind, read off the
+ *  pair it was declared with rather than off a parallel array. */
+const SENTINEL_FOR: Readonly<Record<SelfAnnouncingIdentifier['sentinel'], string>> = {
+  number: NUMBER_SENTINEL,
+  date: DATE_SENTINEL,
+  place: PLACE_SENTINEL,
+};
+
+/** Every occurrence of a string this document filed under a
+ *  hard-delete key, whitespace-tolerant so an OCR line wrap through the
+ *  middle of a name still matches. */
+const knownIdentifierPattern = (value: string): RegExp | null => {
+  const characters = [...value.trim()].filter((c) => !/\s/.test(c));
+  if (characters.length < 2 || characters.length > 24) return null;
+  const escaped = characters.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(escaped.join('\\s*'), 'g');
+};
+
+interface ScrubResult {
+  readonly text: string;
+  readonly removed: number;
+  /** The scrub could not make this string safe — an identifier shape
+   *  survives it. The caller withholds the whole field. */
+  readonly unsafe: boolean;
+}
+
+/**
+ * GATE 1 — TAKE THE IDENTIFIERS OUT, THEN CHECK THAT THEY ARE OUT.
+ *
+ * NORMALISED FIRST, ALWAYS. See `normaliseForGates`: every pattern
+ * below is written in ASCII classes, and a page that typeset its digits
+ * full-width used to walk an ID card, a mobile number and a whole date
+ * past all of them without setting a single flag.
+ *
+ * THE ORDER IS EXPLICIT AND EACH STEP SAYS WHY IT IS WHERE IT IS. It
+ * matters less than it used to — no value class can cross a label any
+ * more (see `ANY_LABEL_SOURCE`), which is what made the old order
+ * load-bearing and fragile — but 「the order does not matter」 is a claim
+ * that has to be true of the whole pipeline rather than assumed of it,
+ * so both defences are kept:
+ *
+ *   1. THE SHARED PROSE SCRUB, from security/text-scrub.ts. It owns the
+ *      email pattern this file deliberately does not have a second copy
+ *      of, plus its own ID-card and mobile shapes. It runs FIRST because
+ *      it is script-independent and label-independent: nothing it
+ *      removes could have been part of a Chinese label's value, and
+ *      taking an email out early keeps its `@`-joined run from being
+ *      read as a record number.
+ *   2. THE VALUES THIS DOCUMENT ITSELF FILED UNDER AN IDENTIFIER KEY —
+ *      the patient's name, the physician's name. These are the only
+ *      names on the page known to BE names, so they are removed before
+ *      anything has a chance to eat the label in front of one.
+ *   3. RECORD NUMBERS and 4. CONTACT DETAILS, label and value together:
+ *      the label without its number states nothing and the number
+ *      without its label is still the number.
+ *   5. ADDRESSES. Last of the label-and-value family because its value
+ *      class is the only one that admits Han characters, so it is the
+ *      one whose greed used to reach a following label.
+ *   6. NAMES AFTER A DEDICATED LABEL, then 7. after a ROLE label
+ *      (delimited, then witnessed), then 8. after an ordinary NOUN. The
+ *      label is KEPT and the value replaced: 「受检者[人名未共享]」 still
+ *      tells the model whose body the sentence is about.
+ *   9. THE SHAPES THAT ANNOUNCE THEMSELVES, last, because by now every
+ *      label-bound value is gone and what is left is unlabelled.
+ *
+ * AND THEN THE RESIDUAL CHECK, WHICH IS THE HALF THAT FAILS CLOSED. A
+ * scrub that runs and reports success is worth nothing on its own —
+ * the whole reason the previous design refused to scrub free text was
+ * that a scrubber over prose is allow-by-default wearing a safety
+ * costume. So the scrubbed string is asked the same question again,
+ * with `RESIDUAL_IDENTIFIER_PATTERNS`, and a hit means the WHOLE field
+ * is withheld rather than published in a state this module could not
+ * account for.
+ *
+ * WHAT IT STILL CANNOT REACH, stated here rather than left to be
+ * discovered:
+ *
+ *   - AN UNLABELLED NAME THIS DOCUMENT NEVER FILED UNDER A KEY. 「张三，
+ *     男，双侧大腿…」 with no `patientName` cell, no 姓名 label and no
+ *     patient noun in front of it is a name no pattern in this file can
+ *     see. Two characters of Chinese are two characters of Chinese.
+ *     This is the single largest residual risk on this channel and it is
+ *     why Gate 0 exists: narrative documents, where relatives' and
+ *     physicians' names appear unlabelled as a matter of course, send
+ *     nothing at all.
+ *   - A RARE SURNAME AFTER 患者, or one of the twenty-two common ones
+ *     `CHINESE_SURNAMES` had to give up because they open ordinary
+ *     clinical words. Corroboration cannot be complete and this one is
+ *     deliberately less complete than it was.
+ *   - A FAMILY MEMBER NAMED ON A RESULT DOCUMENT. 「其兄张伟同病」 on a
+ *     genetics report is reached only if 张伟 was filed under a
+ *     hard-delete key, which it will not have been.
+ *   - AN ADDRESS WITH NO ADMINISTRATIVE CHAIN. 「中关村大街」 with no
+ *     number and no 市/区 is not matched; requiring less would match
+ *     anatomical prose.
+ *   - AN INSTITUTION'S NAME. 「北京协和医院」 identifies a hospital, not
+ *     a patient, and is left standing on purpose — it is what tells the
+ *     model an outside laboratory issued this report.
+ *
+ * AND WHAT IT COSTS IN THE OTHER DIRECTION: a name that is also an
+ * ordinary word is removed anyway. If this document filed
+ * `patientName: 高明`, then 「信号增高明显」 loses its 高明. Nobody
+ * consented to identifiers, so this gate resolves its doubt toward
+ * removal, and the cost is a garbled clause rather than a leaked name.
+ */
+const SHARED_SCRUB_MARKERS = /\[(?:ID|PHONE|EMAIL)\]/g;
+
+const scrubIdentifiers = (raw: string, knownValues: readonly string[]): ScrubResult => {
+  let text = normaliseForGates(raw);
+  let removed = 0;
+
+  const replaceAll = (pattern: RegExp, sentinel: string, keepLabel = false) => {
+    text = text.replace(pattern, (match: string, label?: string) => {
+      removed += 1;
+      return keepLabel && label ? `${label}${sentinel}` : sentinel;
+    });
+  };
+
+  // (1) The shared prose scrub — the one owner of the email pattern.
+  //     Its own markers are folded onto this file's sentinels so the
+  //     published string speaks one vocabulary.
+  const shared = scrubPiiText(text);
+  if (shared !== text) {
+    text = shared.replace(SHARED_SCRUB_MARKERS, () => {
+      removed += 1;
+      return NUMBER_SENTINEL;
+    });
+  }
+
+  // (2) The names this document filed under its own identifier keys.
+  for (const value of knownValues) {
+    const pattern = knownIdentifierPattern(value);
+    if (pattern) replaceAll(pattern, NAME_SENTINEL);
+  }
+
+  // (3)-(5) Label and value together.
+  replaceAll(RECORD_NUMBER_SCRUB, NUMBER_SENTINEL);
+  replaceAll(CONTACT_SCRUB, NUMBER_SENTINEL);
+  replaceAll(ADDRESS_SCRUB, PLACE_SENTINEL);
+
+  // (6)-(8) Names, label kept.
+  replaceAll(DEDICATED_NAME_SCRUB, NAME_SENTINEL, true);
+  replaceAll(ROLE_NAME_DELIMITED_SCRUB, NAME_SENTINEL, true);
+  replaceAll(ROLE_NAME_WITNESSED_SCRUB, NAME_SENTINEL, true);
+  replaceAll(NOUN_NAME_SCRUB, NAME_SENTINEL, true);
+
+  // (9) The shapes that announce themselves, each with the sentinel it
+  //     was declared beside.
+  for (const entry of SELF_ANNOUNCING_IDENTIFIERS) {
+    replaceAll(new RegExp(entry.pattern.source, 'g'), SENTINEL_FOR[entry.sentinel]);
+  }
+
+  // Asked of the SENTINEL text, before the human wording goes in. See
+  // the note on the markers: a marker spelled out of a word on one of
+  // these lists answers this question about itself.
+  const unsafe = RESIDUAL_IDENTIFIER_PATTERNS.some((pattern) => pattern.test(text));
+  return {
+    text: text.replace(/[\ue000-\ue003]/g, (c) => SENTINEL_MARKERS[c]),
+    removed,
+    unsafe,
+  };
+};
+
+// ------------------------------------------------------------ gate 2
+
+/**
+ * NUMBERS THAT ARE PART OF A NAME — AND THE DEFAULT IS NOW THE OTHER
+ * WAY ROUND.
+ *
+ * THE OLD RULE RESOLVED ITS DOUBT TOWARD PUBLISHING. It read the
+ * parser's `_NOT_INSIDE_A_LATIN_TOKEN` — 「a digit welded to the end of a
+ * Latin word is part of that word's NAME」 — and turned it into 「a token
+ * that welds letters to digits IS a name unless it matches a short unit
+ * list」. That rule is right about 4qA and D4Z4 and wrong about
+ * everything a laboratory prints, so under STRICT consent, which is the
+ * consent that says 「no precise numbers」, the model was handed
+ * 120/80mmHg, 890-1200U/L, 22.5kg/m2, 1.73m2 and LDL2.6. A unit list can
+ * never be long enough to close that, because the thing being tested for
+ * is 「is this a measurement」 and the answer was defaulting to no.
+ *
+ * SO: A TOKEN CARRYING A DIGIT IS A MEASUREMENT UNLESS IT IS
+ * POSITIVELY RECOGNISED AS A NAME. Doubt resolves toward masking,
+ * everywhere, which is the same direction gate 1 resolves in and for the
+ * same reason — the two failures are not equal. Over-masking a name
+ * costs clinical meaning in one clause; publishing a measurement under
+ * strict consent is the consent model failing.
+ *
+ * WHAT COUNTS AS POSITIVELY RECOGNISED, IN TWO VOCABULARIES, BECAUSE
+ * THE OLD ONE HAD ONLY THE LATIN HALF. It reached Latin tokens and
+ * exactly one Chinese span (「N 号染色体」), so 「3级」, 「FSHD 1型」, a
+ * vertebral level spelled in Chinese and the ordinals of an enumerated
+ * 结论 were all masked as measurements — and a bare four-digit YEAR with
+ * it, on a pipeline that publishes `reportDate_year` and a gate 1 that
+ * deliberately leaves a year standing.
+ *
+ *   - NAME SPANS, for the digits that touch a Chinese character. A
+ *     number followed by a Chinese CLASSIFIER — 号染色体, 型, 级, 期, a
+ *     vertebral level, a rib, an ECG lead — is a name in Chinese exactly
+ *     as `4qA` is one in Latin. So is a year written 「2019年」, and so is
+ *     the 「1.」 that opens a numbered conclusion.
+ *   - NAME TOKENS, for the Latin half. Derived where this repo already
+ *     holds the answer — every key on `OCR_FIELDS_SAFE_KEYS_PRECISE`
+ *     that carries a digit IS a name by that list's own reckoning
+ *     (ft3, ft4, fev1, d4z4) — plus the shape rules for the families
+ *     that are generated rather than listed: vertebral levels, ECG
+ *     leads, MRI sequences and the 4q/10q loci.
+ *
+ * WHAT THIS COSTS, STATED: an analyte this repo has no key for, printed
+ * welded to its value (「XYZ4.1」), is now MASKED rather than published.
+ * That is the correct direction and it is a real loss of a clause.
+ */
+const NAME_SPAN_PATTERNS: readonly RegExp[] = [
+  // A number followed by a Chinese classifier that makes it a name.
+  // 「10 号染色体」 / 「4 号染色体」 — profile.passport.ts writes this phrase.
+  /\d{1,3}\s*号(?:染色体|外显子|内含子|导联)/g,
+  // 「FSHD 1型」, 「肌力3级」, 「Ⅱ期」 written with an ASCII numeral, and the
+  // Chinese spellings of a vertebral level.
+  //
+  // THE SUB-STAGE LETTER IS PART OF THE GRADE. This read `\d{1,3}\s*`
+  // and a Mercuri fat-infiltration grade is routinely written with one
+  // — 2a, 2b, 3a — so 「双侧大腿脂肪浸润 Mercuri 2a 级，臀大肌 3 级。」
+  // published the 3 and masked the 2a, putting a real grade and a
+  // 「[数值未共享]」 in one rendered sentence and inviting the model to
+  // read the masked one as a number this platform was hiding. It is the
+  // scale this disease's muscle MRI is reported on; a grade is a name
+  // whether or not it carries a letter.
+  /\d{1,3}[a-dA-D]?\s*(?:型|级|期|区|段|肋|导联)/g,
+  /第\s*\d{1,3}\s*(?:颈|胸|腰|骶|尾)?(?:椎|肋|指|趾|节|次|型|级|期|对|组)/g,
+  /(?:颈|胸|腰|骶|尾)\s*\d{1,2}(?:\s*[-~]\s*\d{1,2})?/g,
+  // ...AND THE SAME GRADE NAMED BY ITS SCALE RATHER THAN BY A CHINESE
+  // CLASSIFIER. 「Mercuri 2a」 with no 级 behind it is how a report
+  // written half in Latin prints it, and the span above cannot see it.
+  /[Mm]ercuri\s*(?:分级|评分)?\s*[0-4][a-dA-D]?/g,
+  // A YEAR. Gate 1 leaves it standing on purpose and this pipeline
+  // publishes `reportDate_year`, so masking it here contradicted both.
+  // The 年 is required: a bare four-digit run with no 年 behind it is a
+  // laboratory value as readily as a year, and doubt masks.
+  /(?:19|20)\d{2}\s*年/g,
+];
+
+/**
+ * THE ORDINALS OF AN ENUMERATED CONCLUSION — 「结论：1.双侧… 2.肩胛带
+ * 肌…」 — AND THIS IS A FUNCTION BECAUSE THE QUESTION IT ASKS CANNOT BE
+ * ASKED OF ONE OCCURRENCE.
+ *
+ * It was a member of the list above, spelled
+ * `(?<=^|[\s,;:、。：；，])\d{1,2}\s*[.、)]\s*(?!\d)`, and that shape is a
+ * PUNCTUATION SHAPE rather than a positive test that a number is a
+ * name: it protects any one- or two-digit number that happens to sit in
+ * front of a dot, a 、 or a bracket, with no check that a list exists at
+ * all. 、 is an ordinary clause separator in Chinese, so
+ * 「双侧股四头肌脂肪分数 32、伴轻度水肿。」 — a measurement — reached the
+ * model under STRICT consent with its 32 intact, and `valuesMasked`
+ * counted zero, so the audit row said nothing had been withheld. That
+ * is the consent model failing silently, which is the one failure this
+ * gate exists to make impossible.
+ *
+ * A LIST IS EVIDENCE OF ITSELF. An enumeration numbers its items from
+ * one and counts up, so a candidate is a list marker only if the
+ * markers before it are there too, in order: 1., then 2., and so on. A
+ * lone number in front of a separator is not a list and gets no
+ * protection — it is masked like any other measurement, and the counter
+ * says so.
+ *
+ * WHAT THIS COSTS, STATED: a genuine single-item enumeration 「结论：
+ * 1.双侧大腿脂肪浸润。」 loses its 「1」 to a mask. The clause survives
+ * whole and the numeral carried nothing clinical, which is the cheap
+ * side of a trade whose other side is publishing a measurement.
+ */
+const ORDINAL_CANDIDATE = /(?<=^|[\s,;:、。：；，])(\d{1,2})\s*[.、)]\s*(?!\d)/g;
+
+const enumeratedOrdinalSpans = (text: string): { start: number; end: number }[] => {
+  const run: { start: number; end: number }[] = [];
+  let expected = 1;
+  for (const match of text.matchAll(ORDINAL_CANDIDATE)) {
+    if (Number(match[1]) !== expected) continue;
+    run.push({ start: match.index, end: match.index + match[0].length });
+    expected += 1;
+  }
+  // One marker is a number in front of a full stop; two in sequence are
+  // a list.
+  return run.length >= 2 ? run : [];
+};
+
+/**
+ * THE LATIN TOKENS THAT CARRY A DIGIT AND ARE STILL NAMES.
+ *
+ * DERIVED FROM `OCR_FIELDS_SAFE_KEYS_PRECISE` WHEREVER IT ALREADY KNOWS
+ * — a key on that list carrying a digit is a name by that list's own
+ * reckoning, which is what the note on the deleted `ANALYTE_PREFIXES`
+ * said in passing about ft3 / ft4 / fev1 and then used for the opposite
+ * purpose. `d4z4Repeats` yields `d4z4`, `fev1` yields itself.
+ */
+const nameTokenFromKey = (key: string): string | null => {
+  const match = /^[a-z]+\d+(?:[a-z]\d+)*/.exec(key.toLowerCase());
+  return match ? match[0] : null;
+};
+
+const DIGIT_BEARING_NAME_TOKENS: ReadonlySet<string> = new Set(
+  [...OCR_FIELDS_SAFE_KEYS_PRECISE]
+    .map((key) => nameTokenFromKey(key))
+    .filter((token): token is string => token !== null),
+);
+
+/**
+ * ...AND THE FAMILIES THAT ARE GENERATED RATHER THAN LISTED, so that a
+ * level or a lead this repo has no key for is still a name.
+ *
+ * C1..C8 / T1..T12 / L1..L6 / S1..S5 are vertebral levels and heart
+ * sounds; V1..V9 / aVR / aVL / aVF are ECG leads; T1WI / T2WI are MRI
+ * sequences; `4q35`, `4qA`, `4qB` and `10q26` are the loci this disease
+ * is defined on. Each is bounded so the shape cannot absorb a value —
+ * 「T3 1.8」 keeps its T3 and masks its 1.8.
+ */
+const NAME_TOKEN_SHAPES: readonly RegExp[] = [
+  /^(?:c[1-8]|t(?:1[0-2]|[1-9])|l[1-6]|s[1-5])$/,
+  /^t[12]wi$/,
+  /^(?:v[1-9]|avr|avl|avf)$/,
+  /^fshd[12]?$/,
+  /^(?:dux4|smchd1|dnmt3b|lrif1)$/,
+  /^covid-?19$/,
+];
+
+/**
+ * ...AND THE NAMES THAT ARE ONLY NAMES WHOLE.
+ *
+ * `tokenIsName` splits a token on the separators the token scan allows
+ * and asks about each part, which is right for a value with a unit
+ * welded on (`22.5kg/m2` fails on the part that is neither) and wrong
+ * for every name whose separator is INSIDE it. The dot is the one that
+ * did the damage, and it did it to the vocabulary this disease is
+ * defined on:
+ *
+ *   - HGVS. 「c.1490G>A」 scans as the token `c.1490G`, splits into `c`
+ *     and `1490g`, and `1490g` matches no shape — so the whole variant
+ *     was replaced by 「[数值未共享]」. Same for 「p.Arg1234Cys」. That
+ *     notation is the ENTIRE content of an FSHD2 / SMCHD1 result: with
+ *     it masked, a strict-consent reader is told a variant was found
+ *     and not which one.
+ *   - A LOCUS WITH A SUB-BAND. 「4q35.2」 split into `4q35` and `2`.
+ *     `4q35` alone survived, so the discriminator of this disease
+ *     survived at band resolution and vanished at sub-band resolution —
+ *     and 「4qA161」, the haplotype written with its allele size, was
+ *     masked outright because the old locus shape had nowhere to put
+ *     the size.
+ *   - AN ABBREVIATED VERTEBRAL LEVEL. Chinese radiology prints
+ *     「C5-6」, not 「C5-C6」; the second parts as `c5` and `c6` and
+ *     survives, the first parts as `c5` and a bare `6` and the whole
+ *     token is replaced.
+ *
+ * So the whole token is asked FIRST, and only a token no whole shape
+ * recognises is split. Each shape is anchored and bounded, so none of
+ * them can absorb a measurement standing next to a name.
+ */
+
+/** An HGVS reference sequence, when the token carried one: `NM_001723.7:`
+ *  scans as `001723.7:` once the underscore has ended the token before
+ *  it, so the prefix is optional and loose and the variant behind it is
+ *  what has to match. */
+const HGVS_REFERENCE = String.raw`(?:[a-z\d]+(?:[._][a-z\d]+)*:)?`;
+/** c. / g. / m. / n. / r. — a position, an optional intronic offset and
+ *  the allele letters. `c.-14G`, `c.*23A` and `c.1490+1G` included. */
+const HGVS_NUCLEOTIDE = String.raw`[cgmnr]\.[*\-]?\d+(?:[+\-]\d+)?[a-z]*`;
+/** p. — one- or three-letter amino acids around a codon number. */
+const HGVS_PROTEIN = String.raw`p\.[a-z]{1,3}\d+(?:[a-z]{1,3}|\*)?(?:fs(?:\*\d+)?)?`;
+/** What the tokeniser leaves of a range once the underscore has split
+ *  it: `c.1490_1492del` scans as `c.1490` and `1492del`. A number
+ *  ending in a change keyword is never a measurement. */
+const HGVS_RANGE_TAIL = String.raw`\d+(?:delins|del|ins|dup|inv)[a-z]*`;
+
+const WHOLE_TOKEN_NAME_SHAPES: readonly RegExp[] = [
+  // HGVS variant notation, in the forms the token scan produces.
+  new RegExp(`^(?:${HGVS_REFERENCE}(?:${HGVS_NUCLEOTIDE}|${HGVS_PROTEIN})|${HGVS_RANGE_TAIL})$`),
+  // A chromosome locus, with or without a sub-band, and a 4q/10q
+  // haplotype with or without its allele size: `4q`, `4q35`, `4q35.2`,
+  // `4qter`, `4qA`, `4qA161`, `10q26.3`.
+  /^\d{1,2}[pq](?:ter|\d{1,2}(?:\.\d{1,2})?)?(?:[ab]\d{0,3})?$/,
+  // A vertebral level or a range of them, however the second end is
+  // abbreviated: `c5`, `c5-c6`, `c5-6`, `t12-l1`, `c5/6`.
+  /^(?:c[1-8]|t(?:1[0-2]|[1-9])|l[1-6]|s[1-5])(?:[-~/](?:c[1-8]|t(?:1[0-2]|[1-9])|l[1-6]|s[1-5]|1[0-2]|[1-9]))?$/,
+];
+
+/**
+ * A PART OF A SPLIT TOKEN IS A NAME BY THE SAME TWO VOCABULARIES THE
+ * WHOLE TOKEN IS ASKED BY. `4q35-4q36` has no whole shape of its own and
+ * is judged end by end, and each end is a locus.
+ */
+const partIsName = (part: string): boolean =>
+  !/\d/.test(part) ||
+  DIGIT_BEARING_NAME_TOKENS.has(part) ||
+  NAME_TOKEN_SHAPES.some((shape) => shape.test(part)) ||
+  WHOLE_TOKEN_NAME_SHAPES.some((shape) => shape.test(part));
+
+/**
+ * A maximal ASCII token. A Chinese character is a boundary, which is
+ * what makes 「未检出3个重复单元」 offer up a bare 「3」.
+ *
+ * THE COMMA IS NOT A JOINER, and that is a consequence of
+ * `normaliseForGates`. It used to be one, for 「1,000」 — and once the
+ * full-width 「，」 that separates two Chinese clauses is folded onto an
+ * ASCII comma, joining across it welds a measurement to the name after
+ * it: 「CK 890，4号染色体」 became the single token 「890,4」, which
+ * overlapped the 「4号染色体」 name span and so PUBLISHED the 890 under
+ * strict consent. 「1,000」 now scans as two tokens, both of which are
+ * measurements and both of which are masked, which is the same answer
+ * one token would have given.
+ */
+const ASCII_TOKEN = /[A-Za-z0-9]+(?:[.:/^+\-~][A-Za-z0-9]+)*(?:\s*[%‰])?/g;
+
+/**
+ * IS THIS TOKEN A NAME?
+ *
+ * THE WHOLE TOKEN IS ASKED BEFORE IT IS SPLIT, and that ordering is the
+ * fix rather than an optimisation. Splitting first destroys every name
+ * whose separator is inside it — `c.1490G`, `4q35.2`, `C5-6` — because
+ * the halves a name is made of are not names on their own. See
+ * `WHOLE_TOKEN_NAME_SHAPES`.
+ *
+ * Only a token no whole shape recognises is split, and then every part
+ * has to be a name, so a value with a unit welded on (`22.5kg/m2`)
+ * still fails on the part that is neither.
+ */
+const tokenIsName = (token: string): boolean => {
+  const t = token
+    .trim()
+    .toLowerCase()
+    .replace(/[.,:]+$/, '');
+  if (!/\d/.test(t)) return true; // no digit — nothing to mask
+  if (WHOLE_TOKEN_NAME_SHAPES.some((shape) => shape.test(t))) return true;
+  const parts = t.split(/[.,:/^+~-]/).filter(Boolean);
+  if (parts.length === 0) return false;
+  return parts.every((part) => partIsName(part));
+};
+
+interface MaskResult {
+  readonly text: string;
+  readonly masked: number;
+  /** A digit survived that this gate cannot account for. Fails closed.
+   *  See `maskMeasurements`. */
+  readonly unclassified: boolean;
+}
+
+/** The protected spans OF A GIVEN STRING — and it takes the string as
+ *  an argument for the reason `maskMeasurements` gives. */
+const nameSpansIn = (text: string): { start: number; end: number }[] => {
+  const spans: { start: number; end: number }[] = enumeratedOrdinalSpans(text);
+  for (const pattern of NAME_SPAN_PATTERNS) {
+    for (const match of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      spans.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return spans;
+};
+
+/**
+ * A token is protected only when a name span CONTAINS it, not when it
+ * merely touches one. A token that straddles the edge of a span is a
+ * token this gate cannot account for, and doubt masks: 「V1-V3导联」
+ * straddles the 「3导联」 span and is answered by the Latin name shapes
+ * instead, while a measurement that happens to abut a name span gets no
+ * free ride out of the adjacency.
+ */
+const containedInNameSpan = (
+  spans: readonly { start: number; end: number }[],
+  start: number,
+  end: number,
+): boolean => spans.some((span) => span.start <= start && end <= span.end);
+
+/**
+ * GATE 2 — MASK THE MEASUREMENTS, KEEP THE CLINICAL LANGUAGE.
+ *
+ * What survives is the language and the structure:
+ * 「双侧大腿脂肪浸润约 [数值未共享]，肩胛带肌未见异常」 still tells the
+ * model the finding, its laterality, its site and the negative beside
+ * it. A masked number inside a negation keeps its negation:
+ * 「未检出3个重复单元」 masks to 「未检出[数值未共享]个重复单元」 and still
+ * reads as a negation, because the mask replaces the number and touches
+ * nothing else.
+ *
+ * THEN IT CHECKS ITSELF, and that is the half that fails closed. Every
+ * ASCII digit left standing is re-classified from scratch: if any of
+ * them is not inside a name span or a token this gate calls a name, the
+ * WHOLE field is withheld.
+ *
+ * AND THE SPANS ARE COMPUTED AGAINST THE STRING BEING SCANNED, WHICH IS
+ * THE BUG THIS SIGNATURE EXISTS TO MAKE IMPOSSIBLE. They used to be
+ * computed once, as offsets into the RAW string, and then re-used by the
+ * verification pass while it iterated the MASKED one. The marker is
+ * seven characters and it replaces tokens as short as one, so everything
+ * after the first mask was shifted, and the drift cut both ways: a
+ * protected name fell outside its own stale span and the field was
+ * withheld — an eligible report silenced — while a real measurement
+ * landed inside a stale span and was PUBLISHED under strict consent.
+ * `nameSpansIn` therefore takes the text it is describing, and each pass
+ * asks it about its own string.
+ */
+const maskMeasurements = (raw: string): MaskResult => {
+  const rawSpans = nameSpansIn(raw);
+
+  let masked = 0;
+  const text = raw.replace(ASCII_TOKEN, (token, ...rest) => {
+    const offset = rest[rest.length - 2] as number;
+    if (containedInNameSpan(rawSpans, offset, offset + token.length)) return token;
+    if (tokenIsName(token)) return token;
+    masked += 1;
+    return MEASUREMENT_MARKER;
+  });
+
+  // The independent second reading, against ITS OWN string.
+  // `MEASUREMENT_MARKER` carries no ASCII digit of its own, so anything
+  // found here came off the page.
+  const maskedSpans = nameSpansIn(text);
+  let unclassified = false;
+  for (const match of text.matchAll(new RegExp(ASCII_TOKEN.source, 'g'))) {
+    if (!/\d/.test(match[0])) continue;
+    if (containedInNameSpan(maskedSpans, match.index, match.index + match[0].length)) continue;
+    if (!tokenIsName(match[0])) unclassified = true;
+  }
+  return { text, masked, unclassified };
+};
+
+// ------------------------------------------------------------ the channel
+
+/**
+ * A FREE-TEXT CHANNEL: the key a retriever offers prose under, and the
+ * keys its gated form reaches the prompt under.
+ *
+ * A table rather than a branch, so that a retriever adding a free-text
+ * field adds a row here and gets all three gates — and cannot publish
+ * one without, because the published value has to be a `GatedFreeText`
+ * and `gateFreeText` is the only thing that makes one.
+ */
+interface FreeTextChannel {
+  /** What the retriever calls it. On NEITHER allowlist: layer 3 drops
+   *  the raw cell and the audit row shows that it did. */
+  readonly input: string;
+  /**
+   * WHETHER THIS CHANNEL PUBLISHES AT ALL.
+   *
+   * `false` means the gates are never run for it and none of its five
+   * keys is written, which is a different and stronger statement than
+   * 「the keys are not on the allowlist」: nothing is computed, nothing
+   * is dropped, and the audit row says nothing, because there was no
+   * attempt to publish for an audit to describe.
+   *
+   * It is a property of the CHANNEL rather than a branch in the loop
+   * below, so a second channel added to this table gets its own answer
+   * instead of inheriting this one's.
+   */
+  readonly enabled: boolean;
+  readonly text: string;
+  readonly withheld: string;
+  readonly valuesMasked: string;
+  readonly identifiersRemoved: string;
+  readonly charactersCut: string;
+}
+
+/** THE KEY THE REPORTS RETRIEVER OFFERS THE REPORT'S OWN IMPRESSION
+ *  UNDER. Named here rather than inline because gate 0 reads it whether
+ *  or not the channel publishes — see `documentEligibility` in
+ *  `redactFields`. */
+const REPORT_IMPRESSION_INPUT = 'reportImpressionAsPrinted';
+
+const FREE_TEXT_CHANNELS: Readonly<Record<RedactionScope, readonly FreeTextChannel[]>> = {
+  profile: [],
+  followups: [],
+  reports: [
+    {
+      input: REPORT_IMPRESSION_INPUT,
+      // THE SWITCH. One constant, declared and argued in
+      // security/allowlist.ts, and read here and in exactly the places
+      // that DESCRIBE this channel to somebody — the allowlist, the
+      // renderer's label table, `get_my_reports`'s description. None of
+      // those may be able to disagree with this one.
+      enabled: REPORT_IMPRESSION_CHANNEL_ENABLED,
+      ...REPORT_IMPRESSION_KEYS,
+    },
+  ],
+};
+
+/**
+ * THE ONLY PLACE A `GatedFreeText` IS MINTED.
+ *
+ * Runs the three gates in order and returns what the channel may
+ * publish. Every refusal returns `text: null` WITH a reason, never a
+ * silent drop.
+ */
+const gateFreeText = (
+  raw: string,
+  options: {
+    readonly eligibility: Eligibility;
+    readonly knownIdentifiers: readonly string[];
+    readonly mode: RedactionMode;
+  },
+): FreeTextOutcome => {
+  const refuse = (withheld: string): FreeTextOutcome => ({
+    text: null,
+    withheld,
+    valuesMasked: 0,
+    identifiersRemoved: 0,
+    charactersCut: 0,
+  });
+
+  // Gate 0.
+  if (options.eligibility === 'narrative') return refuse(FREE_TEXT_REFUSALS.narrative);
+  if (options.eligibility !== 'result') return refuse(FREE_TEXT_REFUSALS.unknownKind);
+
+  // Gate 1.
+  const scrubbed = scrubIdentifiers(raw, options.knownIdentifiers);
+  if (scrubbed.unsafe) return refuse(FREE_TEXT_REFUSALS.identifiers);
+
+  // THE CAP, AND IT RUNS BEFORE GATE 2 RATHER THAN AFTER IT.
+  //
+  // It used to run last, over the text gate 2 had just EXPANDED — every
+  // masked measurement is one to four characters replaced by a
+  // seven-character marker. So an impression that fitted under the cap
+  // in precise mode crossed it in strict, and the patient who consented
+  // to LESS lost the tail of the sentence as well as its numbers. In a
+  // Chinese impression the tail is where 结论 lives, so the strict
+  // reader lost the conclusion and the precise reader kept it. Cutting
+  // the identifier-scrubbed text means both modes cut at the same place
+  // in the same sentence, and the mode decides only what is masked
+  // inside what survives.
+  //
+  // The published string may therefore exceed `SAFE_VALUE_MAX_LENGTH`
+  // by the mask expansion. That is deliberate and it is the smaller
+  // cost: the constant is a bound on how much of a report's prose
+  // travels, and a marker is this platform's own word, not the report's.
+  //
+  // AND THE CUT NEVER LANDS INSIDE A MARKER. A slice through
+  // 「[数值未共享]」 leaves an unclosed bracket, or — worse — removes
+  // enough of it that the sentence reads as merely truncated while
+  // `valuesMasked` still claims a value was masked there. So the cut is
+  // pulled back to the start of any marker it would have opened.
+  let charactersCut = 0;
+  let body = scrubbed.text.trim();
+  if (body.length > SAFE_VALUE_MAX_LENGTH) {
+    const cut = cutBeforeAnyOpenMarker(body, SAFE_VALUE_MAX_LENGTH);
+    charactersCut = body.length - cut;
+    body = `${body.slice(0, cut)}${TRUNCATION_MARKER}`;
+  }
+
+  // Gate 2.
+  let valuesMasked = 0;
+  if (options.mode === 'strict') {
+    const gated = maskMeasurements(body);
+    if (gated.unclassified) return refuse(FREE_TEXT_REFUSALS.unclassifiedValue);
+    body = gated.text;
+    valuesMasked = gated.masked;
+  }
+
+  return {
+    text: body as GatedFreeText,
+    withheld: null,
+    valuesMasked,
+    identifiersRemoved: scrubbed.removed,
+    charactersCut,
+  };
+};
+
+/**
+ * THE REPORT-IMPRESSION CHANNEL, AS ONE CALL, OVER A RETRIEVER'S RAW
+ * OFFERING.
+ *
+ * `redactFields` runs EXACTLY this and then publishes what comes back;
+ * there is no second copy of the wiring. It is exported for that
+ * reason and one other: the channel's tests drive it directly, so the
+ * three gates and the corpus behind them are exercised on every CI run
+ * whether or not `REPORT_IMPRESSION_CHANNEL_ENABLED` lets the answer
+ * reach a prompt. A switch that silently stopped a hundred tests from
+ * running would rot the thing it was supposed to preserve.
+ *
+ * It reads the document afresh — eligibility off the page WITH the
+ * impression folded in, the known identifiers off the cells layer 1 is
+ * about to delete — so a caller cannot hand it a weaker view of the
+ * document than the redactor has.
+ *
+ * `null` means the report stated no impression: nothing to gate, and
+ * nothing to say was withheld.
+ */
+export const gateReportImpression = (
+  fields: Record<string, unknown>,
+  options: { readonly mode: RedactionMode },
+): FreeTextOutcome | null => {
+  const raw = fields[REPORT_IMPRESSION_INPUT];
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  return gateFreeText(raw, {
+    eligibility: documentEligibility(chunkDocument(fields), raw),
+    knownIdentifiers: identifierValuesInInput(fields, 0, new Set<object>()),
+    mode: options.mode,
+  });
+};
+
+/**
+ * IS THIS STRING FREE TEXT, OR IS IT A CELL?
+ *
+ * THE GATES USED TO GOVERN ONE KEY. `FREE_TEXT_CHANNELS` wired all three
+ * of them into `reportImpressionAsPrinted` and nothing else, and free
+ * text does not only arrive there:
+ *
+ *   - `ecgSummary`, `conductionAbnormality` and `fattyInfiltration` are
+ *     on `OCR_FIELDS_SAFE_KEYS_PRECISE` and hold prose. Under precise
+ *     consent they were published with NO ELIGIBILITY TEST AT ALL, so
+ *     one chunk could refuse the impression of a 病历摘要 as a narrative
+ *     about a person and print that document's narrative prose in the
+ *     row underneath.
+ *   - `familyHistory` is free text the PATIENT typed, it is on both
+ *     profile allowlists, and the channel table read `profile: []`. So
+ *     it got no measurement gate — which is the consent hole this whole
+ *     design exists to close, on the one field where the text is not
+ *     even a clinician's.
+ *
+ * The answer cannot be a longer channel table, for the reason every
+ * other list in this file had to stop being a list. It is a question
+ * asked of the VALUE, so a free-text field a future retriever adds is
+ * covered on the commit that adds it rather than on the commit somebody
+ * remembers to declare it.
+ *
+ * WHAT MAKES A STRING FREE TEXT, and the test is deliberately generous
+ * in the direction of gating:
+ *
+ *   - it is not a MACHINE TOKEN. `not_read_off_a_laboratory_report`,
+ *     `within_fshd1_repeat_range_grey_zone_8_to_10`, `muscle_mri`,
+ *     `4qA` and `FSHD1` are strings this module or this repo minted, and
+ *     they are `^[A-Za-z0-9_]+$`. Gating them would mask the digits out
+ *     of this platform's own readings, which is the opposite of what
+ *     any of this is for; AND
+ *   - it carries a sentence delimiter, OR runs past eight characters, OR
+ *     welds a digit onto a Chinese character. That last clause is what
+ *     catches 「外婆45岁发病」 — five characters and no punctuation, and
+ *     the age in the middle of it is exactly the precise value the
+ *     strict consent withheld.
+ *
+ * WHAT IS STILL NOT COVERED, stated rather than implied: a SHORT
+ * digit-free Chinese enum on a narrative document — 「窦性心动过缓」, six
+ * characters — reads as a cell and is published. It carries no
+ * measurement and no identifier shape; what it carries is a fact about
+ * a person's heart, off a document gate 0 would have silenced. That
+ * residual is bounded by the length rule and by nothing else.
+ */
+/**
+ * WHICH SCOPES CAN CARRY TEXT THIS PLATFORM DID NOT COMPOSE — which is
+ * the question gate 2 is actually asking of a string, and it cannot be
+ * asked of the string itself.
+ *
+ * `eventSummary` on the follow-ups scope reads 「跌倒（轻）×1，最近 3 天
+ * 前」 and `looksLikeFreeText` says yes about it, correctly: it is a
+ * sentence with punctuation and digits. But it is a sentence THIS
+ * PLATFORM wrote out of rows the patient recorded, and the numbers in it
+ * are `count` and `spanDays` — both of which sit on the follow-ups
+ * STRICT allowlist by name, three lines apart. Masking them would have
+ * the redactor contradicting the allowlist beside it.
+ *
+ * The follow-ups scope is the one that cannot carry foreign prose, and
+ * its own allowlist says why in as many words: the patient's free-text
+ * `notes` and event `description` are 「deliberately absent from BOTH
+ * modes」. What is left there is composed here. The profile scope carries
+ * `familyHistory`, which the patient types; the reports scope carries an
+ * OCR bridge's output. Both of those are foreign prose and both are
+ * gated.
+ *
+ * GATE 1 IS NOT ON THIS TABLE and runs everywhere regardless: nobody
+ * consented to identifiers, on any scope, whoever composed the sentence.
+ */
+const SCOPES_CARRYING_FOREIGN_PROSE: Readonly<Record<RedactionScope, boolean>> = {
+  profile: true,
+  reports: true,
+  followups: false,
+};
+
+const MACHINE_TOKEN = /^[A-Za-z0-9_]+$/;
+const SENTENCE_DELIMITER = /[，,；;。、：:]/;
+const DIGIT_WELDED_TO_HAN = /(?:[一-龥]\s*\d|\d\s*[一-龥])/;
+const FREE_TEXT_MIN_LENGTH = 8;
+
+const looksLikeFreeText = (value: string): boolean => {
+  const text = value.trim();
+  if (!text) return false;
+  if (MACHINE_TOKEN.test(text)) return false;
+  return (
+    SENTENCE_DELIMITER.test(text) ||
+    text.length > FREE_TEXT_MIN_LENGTH ||
+    DIGIT_WELDED_TO_HAN.test(text)
+  );
+};
+
+/**
+ * EVERY STRING LAYER 3 KEPT, THROUGH THE SAME GATES, AT ANY DEPTH.
+ *
+ * Gate 1 positioned literally last. The channel above has already run
+ * it over the impression — running it again is a no-op, the markers
+ * carry no identifiers — and this pass is what makes the claim 「the
+ * identifier scrub sits at the last point before text leaves the
+ * server」 true of the OTHER strings too: a precise-mode OCR cell, a
+ * profile's free-typed 家族史, whatever a future retriever adds. A
+ * string this pass cannot make safe is DROPPED rather than published,
+ * which is the same fail-closed answer the channel gives.
+ *
+ * AND GATES 0 AND 2 WITH IT, over the strings `looksLikeFreeText`
+ * answers yes about. That is the by-construction half: the three gates
+ * are properties of PROSE reaching a prompt, not properties of one key.
+ *
+ *   - Gate 0 is asked only where there is a document to judge, which is
+ *     the reports scope. A profile field is something the patient typed
+ *     about themselves, not a document whose kind can be classified, so
+ *     there is nothing for eligibility to read and it is not asked.
+ *   - Gate 2 is asked on every scope, because the consent it enforces
+ *     is the patient's and does not depend on where the prose came from.
+ *
+ * The known-identifier values are not passed here: they are the
+ * document's own name cells, and layer 1 has already deleted the cells
+ * this pass walks. What is left to find is the self-announcing shapes.
+ */
+interface KeptValueGate {
+  readonly mode: RedactionMode;
+  /** Whether gates 0 and 2 are asked of this scope's prose at all. See
+   *  `SCOPES_CARRYING_FOREIGN_PROSE`. */
+  readonly gatesProse: boolean;
+  /** `null` on a scope with no document to classify. */
+  readonly eligibility: Eligibility | null;
+  /** Paths already published BY a channel, which have been through all
+   *  three gates under the channel's own accounting and must not be
+   *  gated a second time — a second mask pass would count the same
+   *  measurement twice and a second cap would truncate a truncation. */
+  readonly channelKeys: ReadonlySet<string>;
+}
+
+const scrubKeptValue = (
+  value: unknown,
+  path: string[],
+  scrubbed: string[],
+  gated: string[],
+  depth: number,
+  options: KeptValueGate,
+): { keep: boolean; value: unknown } => {
+  if (typeof value === 'string') {
+    const here = path.join('.');
+    if (path.length === 1 && options.channelKeys.has(path[0])) {
+      return { keep: true, value };
+    }
+    const result = scrubIdentifiers(value, []);
+    if (result.unsafe) {
+      scrubbed.push(`${here} (withheld)`);
+      return { keep: false, value: undefined };
+    }
+    if (result.removed > 0) scrubbed.push(here);
+    let text = result.text;
+    if (options.gatesProse && looksLikeFreeText(text)) {
+      // Gate 0 — prose off a document this platform will not send prose
+      // from goes nowhere, whatever key it arrived under.
+      if (options.eligibility !== null && options.eligibility !== 'result') {
+        gated.push(`${here} (${options.eligibility})`);
+        return { keep: false, value: undefined };
+      }
+      // Gate 2 — the measurements, under strict consent.
+      if (options.mode === 'strict') {
+        const masked = maskMeasurements(text);
+        if (masked.unclassified) {
+          gated.push(`${here} (unclassified value)`);
+          return { keep: false, value: undefined };
+        }
+        if (masked.masked > 0) gated.push(here);
+        text = masked.text;
+      }
+    }
+    return { keep: true, value: text };
+  }
+  if (depth >= MAX_NESTING_DEPTH) return { keep: false, value: undefined };
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    value.forEach((item, index) => {
+      const inner = scrubKeptValue(
+        item,
+        [...path, String(index)],
+        scrubbed,
+        gated,
+        depth + 1,
+        options,
+      );
+      if (inner.keep) out.push(inner.value);
+    });
+    return { keep: true, value: out };
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const inner = scrubKeptValue(item, [...path, key], scrubbed, gated, depth + 1, options);
+      if (inner.keep) out[key] = inner.value;
+    }
+    return { keep: true, value: out };
+  }
+  return { keep: true, value };
+};
+
+/**
+ * THE NAMES THIS DOCUMENT ITSELF FILED UNDER AN IDENTIFIER KEY.
+ *
+ * Read off the redactor's INPUT, before layer 1 deletes the cells, for
+ * the same reason the laboratory gate is: they are gone by the time
+ * anything downstream could use them. `HARD_DELETE_KEYS_LOWER` is the
+ * identifier vocabulary this module already keeps — the extended one,
+ * not a second copy — so a key added there starts protecting free text
+ * on the same commit it starts being deleted.
+ *
+ * The values are used ONLY to find their own occurrences inside prose
+ * and replace them; none of them is ever published. This is the one
+ * mechanism that reaches a Chinese personal name with no label in front
+ * of it, which is why it is worth reading a deleted cell to get.
+ */
+const identifierValuesInInput = (
+  value: unknown,
+  depth: number,
+  ancestors: Set<object>,
+  underIdentifierKey = false,
+  out: string[] = [],
+): string[] => {
+  if (typeof value === 'string') {
+    if (underIdentifierKey && value.trim()) out.push(value);
+    return out;
+  }
+  if (typeof value !== 'object' || value === null) return out;
+  if (depth >= MAX_NESTING_DEPTH || ancestors.has(value)) return out;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        identifierValuesInInput(item, depth + 1, ancestors, underIdentifierKey, out);
+      }
+      return out;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      identifierValuesInInput(
+        item,
+        depth + 1,
+        ancestors,
+        underIdentifierKey || HARD_DELETE_KEYS_LOWER.has(key.toLowerCase()),
+        out,
+      );
+    }
+    return out;
+  } finally {
+    ancestors.delete(value);
+  }
+};
+
 // ---------------------------------------------------------------- public
 
 export const redactFields = (
@@ -2038,6 +3922,8 @@ export const redactFields = (
     hardDeleted: [],
     clinicalised: [],
     notAllowed: [],
+    identifiersScrubbed: [],
+    freeTextGated: [],
   };
 
   // THE LABORATORY GATE IS ASKED OF THE INPUT, BEFORE LAYER 1, and its
@@ -2053,6 +3939,22 @@ export const redactFields = (
   // answer is the same one the old call site computed wherever no page
   // is present.
   const fromLaboratoryReport = scope === 'reports' && chunkIsLaboratoryGeneticReport(fields);
+
+  // LAYER 4'S INPUT IS READ HERE, FOR THE SAME REASON AND OFF THE SAME
+  // MAP.
+  //
+  // Gate 0 reads the document's own page, which layer 1 deletes, and it
+  // reads it WITH the impression folded in — the sentence that makes a
+  // 病历摘要 a narrative is often in the impression cell itself. So the
+  // raw impression is read off the input, carried, and used at the end.
+  //
+  // IT IS READ WHETHER OR NOT THE CHANNEL PUBLISHES. With the switch
+  // off nothing is published from it, but gate 0's answer still governs
+  // every OTHER piece of prose on this chunk (see `scrubKeptValue`), and
+  // showing that gate less of the document than the document contains
+  // would make the switch a privacy change. It is not one.
+  const impressionInput = fields[REPORT_IMPRESSION_INPUT];
+  const impressionRaw = typeof impressionInput === 'string' ? impressionInput : '';
 
   // Layer 1 — recursive hard-delete (covers nested OCR blobs).
   const layer1 = hardDelete(fields);
@@ -2091,6 +3993,66 @@ export const redactFields = (
   // Layer 3 — always.
   const layer3 = filterByAllowlist(working, scope, mode);
   stats.notAllowed = layer3.dropped;
+  const kept = layer3.kept;
+
+  // Layer 4 — the three gates on free text, LAST. See the block above
+  // `GatedFreeText`. The allowlist is still the authority on which keys
+  // exist: a channel key that is not on `PROMPT_ALLOWLIST[scope][mode]`
+  // publishes nothing, so adding a channel without allowlisting it
+  // fails visibly rather than smuggling a field past layer 3.
+  const allowed = new Set(PROMPT_ALLOWLIST[scope][mode]);
+
+  // GATE 0 IS ASKED ONCE, ABOUT THE DOCUMENT, and its answer governs
+  // every piece of prose on this chunk rather than one key — see
+  // `looksLikeFreeText`. It is asked WITH the impression folded into the
+  // page, which is what `documentEligibility` needs and what the loop
+  // below used to ask per channel.
+  //
+  // `null` on a scope with no document to classify: a profile field is
+  // something the patient typed about themselves, not a document whose
+  // kind exists to be read.
+  const eligibility =
+    scope === 'reports' ? documentEligibility(chunkDocument(fields), impressionRaw) : null;
+
+  const channelKeys = new Set<string>();
+  for (const channel of FREE_TEXT_CHANNELS[scope]) {
+    // A channel publishing under its own key must not leave the raw
+    // value standing when a gate refuses — or when the switch means
+    // there was no gate run at all. `put` skips a null, so the key is
+    // cleared first and only written back if something survived.
+    delete kept[channel.text];
+    // THE SWITCH, AT THE ONE POINT WHERE ANYTHING WOULD BE PUBLISHED.
+    // Off, the gates are not run and none of the five keys is written —
+    // not the text, not a marker, not a zero. `stats` stays silent too:
+    // there was no attempt to publish for the audit row to describe.
+    if (!channel.enabled) continue;
+    const outcome = gateReportImpression(fields, { mode });
+    if (!outcome) continue;
+    const put = (key: string, value: unknown) => {
+      if (value === null || value === 0) return;
+      if (!allowed.has(key)) {
+        stats.notAllowed.push(key);
+        return;
+      }
+      kept[key] = value;
+      channelKeys.add(key);
+    };
+    put(channel.text, outcome.text);
+    put(channel.withheld, outcome.withheld);
+    put(channel.valuesMasked, outcome.valuesMasked);
+    put(channel.identifiersRemoved, outcome.identifiersRemoved);
+    put(channel.charactersCut, outcome.charactersCut);
+  }
+
+  // ...and all three gates over everything else layer 3 kept, at any
+  // depth. See `scrubKeptValue` and `looksLikeFreeText`.
+  const walked = scrubKeptValue(kept, [], stats.identifiersScrubbed, stats.freeTextGated, 0, {
+    mode,
+    gatesProse: SCOPES_CARRYING_FOREIGN_PROSE[scope],
+    eligibility,
+    channelKeys,
+  });
+  const final = walked.keep ? (walked.value as Record<string, unknown>) : {};
 
   if (logger && layer3.dropped.length > 0) {
     logger.warn(
@@ -2098,6 +4060,18 @@ export const redactFields = (
       'pii_redactor: dropped fields not in PROMPT_ALLOWLIST',
     );
   }
+  if (logger && stats.identifiersScrubbed.length > 0) {
+    logger.warn(
+      { scope, mode, scrubbed: stats.identifiersScrubbed },
+      'pii_redactor: identifiers removed from free text before the prompt',
+    );
+  }
+  if (logger && stats.freeTextGated.length > 0) {
+    logger.warn(
+      { scope, mode, gated: stats.freeTextGated },
+      'pii_redactor: free text gated for eligibility or measurements before the prompt',
+    );
+  }
 
-  return { fields: layer3.kept, stats };
+  return { fields: final, stats };
 };

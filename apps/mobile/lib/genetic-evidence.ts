@@ -234,10 +234,10 @@ const uploaderDeclaredGeneticReport = (document: GeneticEvidenceDocumentLike): b
 /**
  * THE STRUCTURE TABLES AND THE THREE READERS BELOW ARE THE API'S.
  *
- * `CLINICAL_NARRATIVE_MARKERS`, `LABORATORY_REPORT_MARKERS` and the
- * functions over them are copied from
- * apps/api/src/modules/patient-profile/genetic-evidence.ts, whose
- * narrative half in turn mirrors MEDICAL_SUMMARY_STRUCTURE_MARKERS in
+ * `NARRATIVE_DOCUMENT_KIND_MARKERS`, `CLINICAL_STORY_SECTION_MARKERS`,
+ * `LABORATORY_REPORT_MARKERS` and the functions over them are copied
+ * from apps/api/src/modules/patient-profile/genetic-evidence.ts, whose
+ * narrative half in turn mirrors the same two tuples in
  * apps/report-manager/app/services/fshd_report_service.py. Three copies
  * of one question, and nothing in the build links them — the same
  * standing condition this whole file is written under. IF ONE MOVES
@@ -272,7 +272,11 @@ const PAGE_TEXT_FIELD_KEYS: readonly string[] = [
   'specimen',
 ];
 
-const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
+/** THE WORDS THAT NAME A DOCUMENT A CLINICAL NARRATIVE — a TITLE, not
+ *  a topic. Each is what the page calls ITSELF, and no result report is
+ *  titled any of them, which is why this half needs no second
+ *  witness. */
+const NARRATIVE_DOCUMENT_KIND_MARKERS: readonly string[] = [
   '病历摘要',
   '门诊病历',
   '住院病历',
@@ -281,6 +285,15 @@ const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
   '出院记录',
   '入院记录',
   '病程记录',
+];
+
+/** THE SECTIONS A PERSON'S STORY IS TOLD IN. Names of SECTIONS rather
+ *  than of documents, and a result report prints these words in two
+ *  places that are not sections: as REQUISITION COLUMNS across the top
+ *  of a radiology or EMG report, and as the object of a sentence —
+ *  请结合临床及查体 / 与主诉相符 / 结合既往史 is the standard closing of a
+ *  Chinese radiology conclusion. See `showsClinicalNarrative`. */
+const CLINICAL_STORY_SECTION_MARKERS: readonly string[] = [
   '主诉',
   '现病史',
   '既往史',
@@ -339,14 +352,83 @@ const documentEvidenceText = (document: GeneticEvidenceDocumentLike): string => 
   return parts.join('\n').toLowerCase();
 };
 
-/** Does this document read as a clinical narrative. */
+/** Where a heading may start: the head of its line, a space, an opening
+ *  bracket, or the end of the previous sentence — never welded to
+ *  another Chinese character, which is what makes the 查体 of
+ *  「请结合临床及查体」 a noun inside a phrase rather than a section. */
+const startsAHeading = (before: string): boolean =>
+  /\s/.test(before) || '【[（(「《〔〖'.includes(before) || '。！？；;.!?'.includes(before);
+
+/** Where a heading may end: its separator, or the line. Running text
+ *  after the marker means it is a mention, not a section label. */
+const endsAHeading = (after: string): boolean =>
+  /\s/.test(after) || '：:】]）)」》〕〗'.includes(after);
+
+/** A label the way a printed form prints one. */
+const FIELD_LABEL = /[一-龥A-Za-z][一-龥A-Za-z0-9]{0,7}[：:]/;
+
+/** IS THIS LINE A ROW OF FORM FIELDS RATHER THAN A SECTION OF PROSE.
+ *  A radiology or EMG report is printed with the referring clinician's
+ *  requisition across the top, and that block carries 主诉 and 现病史 as
+ *  COLUMNS — two or more labels separated by nothing but whitespace.
+ *  A narrative section owns its line, and two narrative sections that
+ *  share one are separated by the end of a sentence rather than by a
+ *  column gap. One column is not a form row, deliberately: where the
+ *  layout cannot tell, the answer is narrative. */
+const isFormRow = (line: string): boolean =>
+  line.split(/\s+/).filter((column) => FIELD_LABEL.test(column)).length >= 2;
+
+/** Does `marker` appear on `line` in heading position. */
+const showsHeading = (line: string, marker: string): boolean => {
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    const before = at === 0 ? '\n' : line[at - 1];
+    const after = line[at + marker.length] ?? '\n';
+    if (startsAHeading(before ?? '\n') && endsAHeading(after)) return true;
+  }
+  return false;
+};
+
+/** Does this line call the document a narrative — the document-kind
+ *  name ENDS the line or carries its own separator. What precedes it is
+ *  not asked: the 病历摘要 inside 门诊病历摘要 is still the page naming
+ *  itself, while 「参见出院小结中的记载」 puts 中 after the name and is a
+ *  mention. */
+const namesItselfANarrative = (line: string): boolean =>
+  NARRATIVE_DOCUMENT_KIND_MARKERS.some((marker) => {
+    for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+      const rest = line.slice(at + marker.length);
+      if (rest.trim() === '' || endsAHeading(rest[0] ?? '\n')) return true;
+    }
+    return false;
+  });
+
+/** Does this line open a section of a person's story. */
+const isNarrativeSectionLine = (line: string): boolean =>
+  !isFormRow(line) && CLINICAL_STORY_SECTION_MARKERS.some((marker) => showsHeading(line, marker));
+
+/**
+ * IS THE PROSE ON THIS PAGE A STORY ABOUT A HUMAN BEING, rather than a
+ * test's conclusion about a result.
+ *
+ * NOT 「does this page contain any of seventeen words」, which is what it
+ * was and what cost genuine result reports their grade: the requisition
+ * block printed across the top of a radiology report carries 主诉 /
+ * 现病史 as form columns, and 请结合临床及查体 / 与主诉相符 / 结合既往史 is
+ * the standard closing of a Chinese radiology, EMG or muscle-MRI
+ * conclusion — a radiologist REFERRING to the clinical history, which
+ * is the opposite of the document being one. So the markers are read in
+ * their position: a section heading is not a mention, a requisition
+ * column is not a narrative section, and a document title is neither.
+ * Every case the page's own layout cannot settle stays a narrative.
+ */
 const showsClinicalNarrative = (document: GeneticEvidenceDocumentLike): boolean => {
   const fields = payloadFields(document);
   if (fields && CLINICAL_NARRATIVE_FIELD_KEYS.some((key) => pickReading(fields, [key]))) {
     return true;
   }
-  const text = documentEvidenceText(document);
-  return CLINICAL_NARRATIVE_MARKERS.some((marker) => text.includes(marker));
+  const lines = documentEvidenceText(document).split(/\r?\n/);
+  if (lines.some(namesItselfANarrative)) return true;
+  return lines.some(isNarrativeSectionLine);
 };
 
 /** Does it read as a laboratory's report. The 检测方法 the parser read

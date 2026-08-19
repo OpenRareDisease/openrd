@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RedactionMode } from './allowlist.js';
-import { GENETIC_READING_REFUSALS, redactFields } from './pii-redactor.js';
+import { REPORT_IMPRESSION_CHANNEL_ENABLED } from './allowlist.js';
+import type { FreeTextOutcome } from './pii-redactor.js';
+import { GENETIC_READING_REFUSALS, gateReportImpression, redactFields } from './pii-redactor.js';
 import { renderChunkForPrompt } from './render.js';
 import { GENETIC_FIELD_KEYS } from '../../patient-profile/genetic-evidence.js';
 import type { RetrievedChunk } from '../retrievers/base.js';
@@ -1924,5 +1926,889 @@ describe('a container cell reaches no prompt unexamined', () => {
     const serialised = JSON.stringify(nested.fields);
     expect(serialised).not.toContain(NAME);
     expect(serialised).not.toContain(ID_CARD);
+  });
+});
+
+/**
+ * LAYER 4 — THE THREE GATES ON FREE TEXT.
+ *
+ * `retrievers/patient-reports.test.ts` drives these through the real
+ * retriever and the real renderer, which is where the product-visible
+ * behaviour is pinned. What is pinned HERE is what belongs to the
+ * redactor itself: that the two lists the eligibility gate is built out
+ * of stay exhaustive over the classifier's own vocabulary, that the
+ * identifier scrub really is positioned last — over everything layer 3
+ * kept, on every scope, and not only over the impression — and that the
+ * raw text a retriever offers is never what gets published.
+ */
+/**
+ * WHAT THE CHANNEL ANSWERS ABOUT A CHUNK, SHAPED AS THE FIVE ROWS IT
+ * WOULD PUBLISH — AND ASKED OF `gateReportImpression` RATHER THAN OF
+ * `redactFields`.
+ *
+ * The channel is behind one switch, default OFF
+ * (`REPORT_IMPRESSION_CHANNEL_ENABLED` in allowlist.ts). Driving the
+ * gate suites through `redactFields` would make every one of them
+ * assert `undefined` in the shipped configuration — a hundred tests
+ * that pass by testing nothing, which is how the built thing rots.
+ * `gateReportImpression` is the function `redactFields` calls when the
+ * switch is on and there is no second copy of the wiring, so these
+ * suites exercise the three gates on every run whichever way the switch
+ * points. What the switch itself does is pinned in 「the switch on the
+ * report-impression channel」 at the end of this file.
+ *
+ * Zeroes and nulls are dropped exactly as `put()` drops them, so an
+ * assertion here reads as the prompt row it is about.
+ */
+const channelRows = (outcome: FreeTextOutcome | null): Record<string, unknown> => {
+  if (!outcome) return {};
+  const rows: Record<string, unknown> = {};
+  if (outcome.text !== null) rows.reportImpression = outcome.text;
+  if (outcome.withheld !== null) rows.reportImpressionWithheld = outcome.withheld;
+  if (outcome.valuesMasked > 0) rows.reportImpressionValuesMasked = outcome.valuesMasked;
+  if (outcome.identifiersRemoved > 0) {
+    rows.reportImpressionIdentifiersRemoved = outcome.identifiersRemoved;
+  }
+  if (outcome.charactersCut > 0) rows.reportImpressionCharactersCut = outcome.charactersCut;
+  return rows;
+};
+
+/** The channel's rows for a whole chunk, as the retriever offered it. */
+const channelFor = (
+  fields: Record<string, unknown>,
+  mode: RedactionMode = 'precise',
+): Record<string, unknown> => channelRows(gateReportImpression(fields, { mode }));
+
+describe('layer 4 — free text', () => {
+  const RESULT_REPORT = {
+    documentType: 'muscle_mri',
+    status: 'parsed',
+    fields: { classifiedType: 'muscle_mri' },
+  };
+
+  it('partitions every type the classifier can conclude', async () => {
+    // The eligibility gate is 「is this document a RESULT」, and it is
+    // answered off `CLASSIFIED_REPORT_TYPES` — the list this repo
+    // already keeps of what `_classify_report` can conclude, pinned
+    // against that Python table by get-my-reports.test.ts. No new
+    // document-type list is invented; what is added is which side of
+    // the line each existing entry falls on, and this keeps that
+    // decision exhaustive. A type added to the classifier fails here
+    // rather than defaulting to eligible.
+    const { CLASSIFIED_REPORT_TYPES } = await import('../tools/get-my-reports.js');
+    const { NON_RESULT_DOCUMENT_TYPES } = await import('./pii-redactor.js');
+    const undecided: string[] = [];
+    const both: string[] = [];
+    for (const type of CLASSIFIED_REPORT_TYPES) {
+      const sends =
+        channelFor({
+          documentType: type,
+          status: 'parsed',
+          fields: { classifiedType: type },
+          reportImpressionAsPrinted: '双侧大腿脂肪浸润。',
+        }).reportImpression !== undefined;
+      const listedAsNonResult = NON_RESULT_DOCUMENT_TYPES.has(type);
+      if (sends && listedAsNonResult) both.push(type);
+      if (!sends && !listedAsNonResult) undecided.push(type);
+    }
+    expect(both).toEqual([]);
+    expect(undecided).toEqual([]);
+    // ...and the three that do not send are the ones whose Chinese name
+    // is itself an entry on CLINICAL_NARRATIVE_MARKERS (病历摘要, 体格检查)
+    // plus the classifier saying it could not name the document.
+    expect([...NON_RESULT_DOCUMENT_TYPES].sort()).toEqual([
+      'medical_summary',
+      'other',
+      'physical_exam',
+    ]);
+  });
+
+  it('never publishes the raw text a retriever offered', () => {
+    // `reportImpressionAsPrinted` is on NEITHER allowlist. What reaches
+    // a prompt is the gated form under a different key, and the raw
+    // cell is reported as dropped so the audit row can show it.
+    for (const mode of ['strict', 'precise'] as RedactionMode[]) {
+      const { fields, stats } = redactFields(
+        { ...RESULT_REPORT, reportImpressionAsPrinted: '双侧大腿脂肪浸润。' },
+        { scope: 'reports', mode },
+      );
+      expect(fields.reportImpressionAsPrinted).toBeUndefined();
+      expect(stats.notAllowed).toContain('reportImpressionAsPrinted');
+      // ...and that is true of the raw cell whether or not the channel
+      // publishes a gated form of it. What the gates make of it:
+      expect(
+        channelFor({ ...RESULT_REPORT, reportImpressionAsPrinted: '双侧大腿脂肪浸润。' }, mode)
+          .reportImpression,
+      ).toBe('双侧大腿脂肪浸润。');
+    }
+  });
+
+  it('reads the names off the input, before layer 1 deletes the cells', () => {
+    // The one mechanism that reaches a Chinese personal name with no
+    // label in front of it. The cells themselves are hard-deleted and
+    // never published; their VALUES are used to find their own
+    // occurrences in the prose.
+    const rows = channelFor({
+      ...RESULT_REPORT,
+      fields: { classifiedType: 'muscle_mri', patientName: '张三', doctorName: '王五' },
+      reportImpressionAsPrinted: '张三，双侧大腿脂肪浸润，报告已交王五。',
+    });
+    expect(rows.reportImpression).toBe('[人名未共享]，双侧大腿脂肪浸润，报告已交[人名未共享]。');
+  });
+
+  it('scrubs identifiers out of every string layer 3 kept, on every scope', () => {
+    // GATE 1 POSITIONED LITERALLY LAST. The channel above is not the
+    // only path that produces text: a precise-mode OCR cell and the
+    // patient's own free-typed 家族史 are strings too, and a field a
+    // future retriever adds will be one. One implementation, at the
+    // last point before anything leaves the server.
+    // An OCR CELL is refused whole, one layer earlier and by the same
+    // vocabulary: `isUntrustworthyValue` cannot publish half a cell, so
+    // sharing the lists means a value the scrub would have taken
+    // something out of never reaches layer 4 at all. That is the
+    // stronger answer and it is asserted here so 「one vocabulary」 is
+    // visible as a property rather than a claim.
+    const report = redactFields(
+      {
+        ...RESULT_REPORT,
+        fields: { classifiedType: 'muscle_mri', ecgSummary: '窦性心律，联系电话 13812345678' },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const cells = report.fields.fields as Record<string, unknown>;
+    expect(cells.ecgSummary).toBeUndefined();
+    expect(cells.fieldsDroppedAsUnsafe).toBe(1);
+
+    // A PROFILE CELL the patient typed is the case layer 4 exists for.
+    // `familyHistory` / `onsetRegion` / `assistiveDevices` used to
+    // travel from the retriever to layer 3 untouched by any layer of
+    // this module — the gap `isUntrustworthyValue` names in as many
+    // words — because layer 3 is a gate on KEYS and nothing looked at
+    // the value.
+    const profile = redactFields(
+      { familyHistory: '母亲疑似，联系电话 13800000000' },
+      { scope: 'profile', mode: 'strict' },
+    );
+    expect(String(profile.fields.familyHistory)).not.toContain('13800000000');
+    expect(String(profile.fields.familyHistory)).toContain('母亲疑似');
+    expect(profile.stats.identifiersScrubbed).toContain('familyHistory');
+  });
+
+  it('drops a kept string the scrub cannot make safe, and names it', () => {
+    // Fail closed on that last pass too: a string this module cannot
+    // account for is not published, and the audit row says which.
+    const { fields, stats } = redactFields(
+      { familyHistory: '母亲住院号：无' },
+      { scope: 'profile', mode: 'strict' },
+    );
+    expect(fields.familyHistory).toBeUndefined();
+    expect(stats.identifiersScrubbed).toContain('familyHistory (withheld)');
+  });
+
+  it('offers no free-text channel on a scope that has no document to judge', () => {
+    // Gate 0 has nothing to read outside the reports scope, and a gate
+    // that cannot tell fails closed — so there is no channel at all
+    // there rather than an ungated one.
+    const { fields } = redactFields(
+      { reportImpressionAsPrinted: '双侧大腿脂肪浸润。', gender: 'female' },
+      { scope: 'profile', mode: 'precise' },
+    );
+    expect(Object.keys(fields)).toEqual(['gender']);
+  });
+});
+
+/**
+ * LAYER 4 — THE REPAIRS, ONE DESCRIBE PER ROOT CAUSE.
+ *
+ * Every case below was executed against the implementation before the
+ * repair and produced the wrong answer; each is pinned here so the
+ * shape cannot come back. Where a class remains OPEN it is pinned as
+ * OPEN rather than left unstated, so the residual is visible in the
+ * suite instead of only in a comment.
+ */
+describe('layer 4 — the gates, repaired', () => {
+  const RESULT_REPORT = {
+    documentType: 'muscle_mri',
+    status: 'parsed',
+    fields: { classifiedType: 'muscle_mri' },
+  };
+
+  /** The impression a report printed, as the gates answer about it. See
+   *  `channelRows`. */
+  const gated = (impression: string, mode: RedactionMode = 'precise') =>
+    channelFor({ ...RESULT_REPORT, reportImpressionAsPrinted: impression }, mode);
+
+  const impressionOf = (impression: string, mode: RedactionMode = 'precise') =>
+    gated(impression, mode).reportImpression as string | undefined;
+
+  /** The same text typeset in full-width digits and Latin letters, which
+   *  is what a Chinese hospital PDF and the OCR bridge routinely emit. */
+  const fullWidth = (text: string) =>
+    text
+      .replace(/[0-9]/g, (d) => String.fromCharCode(0xff10 + d.charCodeAt(0) - 48))
+      .replace(/[A-Za-z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0));
+
+  describe('A — a confusable form defeats no gate, and none of them fails open', () => {
+    it('reads a full-width ID card, mobile and date as the identifiers they are', () => {
+      expect(impressionOf(`影像正常。身份证号${fullWidth('110101199003071234')}`)).toBe(
+        '影像正常。身份证号[编号未共享]',
+      );
+      expect(impressionOf(`影像正常。联系电话${fullWidth('13812345678')}`)).toBe(
+        '影像正常。联系电话[编号未共享]',
+      );
+      expect(impressionOf(fullWidth('2019') + '年' + fullWidth('3') + '月复查')).toBe(
+        '[日期未共享]复查',
+      );
+    });
+
+    it('reads a full-width measurement as a measurement under strict consent', () => {
+      // This is the one that failed OPEN AND SILENT: the mask did not
+      // fire, and the self-check re-scanned with the same ASCII regex
+      // and therefore agreed that nothing was left unclassified.
+      expect(impressionOf('脂肪浸润约' + fullWidth('45') + '%', 'strict')).toBe(
+        '脂肪浸润约[数值未共享]',
+      );
+      expect(impressionOf('脂肪浸润约45%', 'strict')).toBe('脂肪浸润约[数值未共享]');
+    });
+
+    it('reads a full-width label as a label', () => {
+      expect(impressionOf(`${fullWidth('ID')}号：${fullWidth('X12345')} 影像正常。`)).toBe(
+        '[编号未共享] 影像正常。',
+      );
+    });
+
+    it('sees through a zero-width character dropped inside a digit run', () => {
+      expect(impressionOf('110101​19900307123​4 影像正常。')).toBe('[编号未共享] 影像正常。');
+    });
+
+    it('reads a superscript unit as the unit it is', () => {
+      expect(impressionOf('BMI 22.5kg/m²。', 'strict')).toBe('BMI [数值未共享]。');
+    });
+
+    it('leaves the report own punctuation and typography alone', () => {
+      // The fold is deliberately NOT the whole full-width block: 「，」
+      // 「；」「：」「（）」 and the ideographic space are the report's own
+      // typography and no identifier hides behind them.
+      expect(impressionOf('右侧腓肠肌炎性改变　未见水肿')).toBe('右侧腓肠肌炎性改变　未见水肿');
+      expect(impressionOf('结论：双侧大腿脂肪浸润；肩胛带肌未见异常。')).toBe(
+        '结论：双侧大腿脂肪浸润；肩胛带肌未见异常。',
+      );
+    });
+
+    it('refuses a CELL carrying a full-width identifier, on the same vocabulary', () => {
+      const { fields } = redactFields(
+        {
+          ...RESULT_REPORT,
+          fields: {
+            classifiedType: 'muscle_mri',
+            ecgSummary: `窦性心律 ${fullWidth('110101199003071234')}`,
+          },
+        },
+        { scope: 'reports', mode: 'precise' },
+      );
+      const cells = fields.fields as Record<string, unknown>;
+      expect(cells.ecgSummary).toBeUndefined();
+      expect(cells.fieldsDroppedAsUnsafe).toBe(1);
+    });
+  });
+
+  describe('B — the gate 2 self-check reads the string it is scanning', () => {
+    it('masks every measurement when name spans sit AFTER the first mask', () => {
+      // The spans used to be offsets into the RAW string, re-used while
+      // iterating the MASKED one. The marker is seven characters and
+      // replaces tokens as short as one, so a span after the first mask
+      // was shifted — and a real measurement landing inside a stale span
+      // was PUBLISHED under strict consent.
+      expect(impressionOf('CK 890，4号染色体，LDH 300，10号染色体，PT 13.7', 'strict')).toBe(
+        'CK [数值未共享]，4号染色体，LDH [数值未共享]，10号染色体，PT [数值未共享]',
+      );
+    });
+
+    it('keeps every protected name when masks sit BEFORE the spans', () => {
+      // The other direction of the same drift: a protected name falling
+      // outside its own stale span, the field then failing the residual
+      // check, and an eligible report silenced.
+      const out = gated('CK 890 U/L，游离脂肪 45%，4号染色体缺失，10号染色体正常', 'strict');
+      expect(out.reportImpressionWithheld).toBeUndefined();
+      expect(out.reportImpression).toBe(
+        'CK [数值未共享] U/L，游离脂肪 [数值未共享]，4号染色体缺失，10号染色体正常',
+      );
+      expect(out.reportImpressionValuesMasked).toBe(2);
+    });
+  });
+
+  describe('C — the name scrub does not eat clinical prose', () => {
+    it('KEEPS THE NEGATION after 受检者 / 被检者 / 受检人 / 技师', () => {
+      // The defect this whole change exists to end, reintroduced by its
+      // own guardrail: 「受检者[人名未共享]显异常」 published a ruled-out
+      // finding as present.
+      expect(impressionOf('受检者未见明显异常。')).toBe('受检者未见明显异常。');
+      expect(impressionOf('被检者未见异常信号。')).toBe('被检者未见异常信号。');
+      expect(impressionOf('受检人未见肌肉萎缩。')).toBe('受检人未见肌肉萎缩。');
+      expect(impressionOf('技师操作规范。')).toBe('技师操作规范。');
+      expect(impressionOf('主治医师查房后未见异常。')).toBe('主治医师查房后未见异常。');
+    });
+
+    it('keeps the analyte and the hedge after 患者', () => {
+      expect(impressionOf('患者白细胞计数正常，高信号未见。')).toBe(
+        '患者白细胞计数正常，高信号未见。',
+      );
+      expect(impressionOf('患者高信号区域局限。')).toBe('患者高信号区域局限。');
+      expect(impressionOf('患者高度水肿，黄疸消退。')).toBe('患者高度水肿，黄疸消退。');
+      expect(impressionOf('患者余各叶未见异常。')).toBe('患者余各叶未见异常。');
+    });
+
+    it('still takes a name after 患者 when both witnesses fire', () => {
+      expect(impressionOf('患者张三，男，双侧大腿脂肪浸润。')).toBe(
+        '患者[人名未共享]，男，双侧大腿脂肪浸润。',
+      );
+    });
+  });
+
+  describe('D — no value run crosses a label', () => {
+    it('does not let an address swallow the 姓名 label and the name behind it', () => {
+      expect(impressionOf('住址：北京市海淀区中关村大街1号 姓名：张三 影像所见正常。')).toBe(
+        '[地点未共享] 姓名[人名未共享] 影像所见正常。',
+      );
+    });
+  });
+
+  describe('E — the label is the enumerable part, the value is not', () => {
+    it('reaches the 医师 spellings the old list did not have', () => {
+      for (const label of ['经治医师', '住院医师', '管床医师', '诊断医师', '医师', '医生']) {
+        expect(impressionOf(`${label}李四。影像所见正常。`)).toBe(
+          `${label}[人名未共享]。影像所见正常。`,
+        );
+      }
+    });
+
+    it('reaches the 号 spellings the old list did not have', () => {
+      for (const label of ['门诊卡号', '就诊卡号', 'ID号', '检查编号']) {
+        expect(impressionOf(`${label}：X12345 影像所见正常。`)).toBe('[编号未共享] 影像所见正常。');
+      }
+    });
+
+    it('does not read an ordinary word ending in 号 as a label', () => {
+      expect(impressionOf('T2高信号 3处，未见水肿。')).toContain('高信号');
+    });
+
+    it('takes the whole value after a label, whatever script and however many names', () => {
+      expect(impressionOf('姓名：ZHANG SAN 影像所见正常。')).toBe(
+        '姓名[人名未共享] 影像所见正常。',
+      );
+      expect(impressionOf('姓名：欧阳建国 影像所见正常。')).toBe('姓名[人名未共享] 影像所见正常。');
+      expect(impressionOf('姓名：张三、李四 影像所见正常。')).toBe(
+        '姓名[人名未共享] 影像所见正常。',
+      );
+      expect(impressionOf('姓名：阿依古丽 影像所见正常。')).toBe('姓名[人名未共享] 影像所见正常。');
+    });
+  });
+
+  describe('F — gate 2 resolves its doubt toward withholding', () => {
+    it('masks the measurements a unit list could never enumerate', () => {
+      for (const [printed, expected] of [
+        ['血压120/80mmHg。', '血压[数值未共享]。'],
+        ['参考值890-1200U/L。', '参考值[数值未共享]。'],
+        ['BMI 22.5kg/m2。', 'BMI [数值未共享]。'],
+        ['体表面积1.73m2。', '体表面积[数值未共享]。'],
+        ['LDL2.6。', '[数值未共享]。'],
+      ] as const) {
+        expect(impressionOf(printed, 'strict')).toBe(expected);
+      }
+    });
+
+    it('keeps the Chinese digit-bearing names, not only the Latin ones', () => {
+      expect(impressionOf('肌肉萎缩3级，FSHD 1型。', 'strict')).toBe('肌肉萎缩3级，FSHD 1型。');
+      expect(impressionOf('第5腰椎滑脱，腰3-4椎间盘膨出。', 'strict')).toBe(
+        '第5腰椎滑脱，腰3-4椎间盘膨出。',
+      );
+      expect(impressionOf('结论：1.双侧大腿脂肪浸润；2.肩胛带肌未见异常。', 'strict')).toBe(
+        '结论：1.双侧大腿脂肪浸润；2.肩胛带肌未见异常。',
+      );
+      expect(impressionOf('肌力Ⅲ级，脂肪浸润3级。', 'strict')).toBe('肌力Ⅲ级，脂肪浸润3级。');
+    });
+
+    it('keeps a YEAR, which gate 1 leaves standing and this pipeline publishes', () => {
+      expect(impressionOf('2019年检查所见未变。', 'strict')).toBe('2019年检查所见未变。');
+    });
+
+    it('keeps the Latin names and masks the value beside them', () => {
+      expect(
+        impressionOf('T2 高信号，C5-C6 椎间盘突出，4q35 缺失，4qA 单倍型，FSHD1。', 'strict'),
+      ).toBe('T2 高信号，C5-C6 椎间盘突出，4q35 缺失，4qA 单倍型，FSHD1。');
+      expect(impressionOf('FT3 4.1，T3 1.8，TSH 2.5。', 'strict')).toBe(
+        'FT3 [数值未共享]，T3 [数值未共享]，TSH [数值未共享]。',
+      );
+      expect(impressionOf('V1-V3导联ST段抬高，aVR无异常。', 'strict')).toBe(
+        'V1-V3导联ST段抬高，aVR无异常。',
+      );
+    });
+
+    it('keeps the negation around a masked number', () => {
+      expect(impressionOf('未检出3个重复单元。', 'strict')).toBe('未检出[数值未共享]个重复单元。');
+    });
+
+    it('prints all of it under precise consent', () => {
+      expect(impressionOf('血压120/80mmHg，CK 890 U/L。', 'precise')).toBe(
+        '血压120/80mmHg，CK 890 U/L。',
+      );
+    });
+  });
+
+  describe('G — an ordinary clinical word does not withhold the whole impression', () => {
+    it('publishes an impression that merely CONTAINS a label word', () => {
+      expect(impressionOf('腰椎年龄相关性退变。')).toBe('腰椎年龄相关性退变。');
+      expect(impressionOf('建议电话随访。')).toBe('建议电话随访。');
+      expect(impressionOf('地址不详，未见异常。')).toBe('地址不详，未见异常。');
+    });
+
+    it('still withholds when the label has a value behind it that survived', () => {
+      // The state the residual check exists for: a scrub that did not
+      // understand what it was looking at. `年龄:23` IS removed, so the
+      // way to observe the check is a label the scrub cannot reach.
+      expect(impressionOf('年龄:23岁，双侧大腿脂肪浸润。')).toBe(
+        '[编号未共享]岁，双侧大腿脂肪浸润。',
+      );
+    });
+  });
+
+  describe('H — the cap runs before gate 2, and never cuts through a marker', () => {
+    const longImpression = (pad: number) =>
+      '所'.repeat(pad) + '住院号:R000001' + '结论：符合FSHD改变。';
+
+    it('cuts at the same place in both modes', () => {
+      for (const pad of [190, 193, 196]) {
+        const strict = gated(longImpression(pad), 'strict');
+        const precise = gated(longImpression(pad), 'precise');
+        expect(strict.reportImpressionCharactersCut).toBe(precise.reportImpressionCharactersCut);
+        expect(String(strict.reportImpression).replace(/\[数值未共享\]/g, '')).toBe(
+          String(precise.reportImpression),
+        );
+      }
+    });
+
+    it('pulls the cut back rather than slicing a marker in half', () => {
+      // pad 199 puts the 200th character inside 「[编号未共享]」.
+      const out = String(gated(longImpression(199), 'precise').reportImpression);
+      expect(out).not.toContain('[编号');
+      expect(out.endsWith('[后续未列出]')).toBe(true);
+      // no bracket is left open
+      expect((out.match(/\[/g) ?? []).length).toBe((out.match(/\]/g) ?? []).length);
+    });
+
+    it('keeps the 结论 for a strict-consent reader when precise keeps it', () => {
+      const text = '双侧大腿脂肪浸润约45%，'.repeat(12) + '结论：符合FSHD改变。';
+      expect(String(impressionOf(text, 'strict'))).toContain('结论：符合FSHD改变。');
+      expect(String(impressionOf(text, 'precise'))).toContain('结论：符合FSHD改变。');
+    });
+  });
+
+  describe('I — the gates govern free text wherever it is, not one key', () => {
+    it('applies gate 0 to a prose CELL on a narrative document', () => {
+      const { fields, stats } = redactFields(
+        {
+          documentType: 'medical_summary',
+          status: 'parsed',
+          fields: {
+            classifiedType: 'medical_summary',
+            ecgSummary: '窦性心律，大致正常心电图',
+            ecgRhythm: '窦性心律',
+          },
+          reportImpressionAsPrinted: '双侧大腿脂肪浸润。',
+        },
+        { scope: 'reports', mode: 'precise' },
+      );
+      const cells = fields.fields as Record<string, unknown>;
+      // One chunk used to refuse the impression as a narrative about a
+      // person and print that document's narrative prose beside it.
+      expect(cells.ecgSummary).toBeUndefined();
+      expect(stats.freeTextGated).toContain('fields.ecgSummary (narrative)');
+      // ...and a short structured enum on the same blob is still a cell.
+      expect(cells.ecgRhythm).toBe('窦性心律');
+      expect(
+        channelFor({
+          documentType: 'medical_summary',
+          status: 'parsed',
+          fields: {
+            classifiedType: 'medical_summary',
+            ecgSummary: '窦性心律，大致正常心电图',
+            ecgRhythm: '窦性心律',
+          },
+          reportImpressionAsPrinted: '双侧大腿脂肪浸润。',
+        }).reportImpressionWithheld,
+      ).toContain('clinical_narrative');
+    });
+
+    it('leaves the same cell alone on a result document', () => {
+      const { fields } = redactFields(
+        {
+          documentType: 'ecg',
+          status: 'parsed',
+          fields: { classifiedType: 'ecg', ecgSummary: '窦性心律，大致正常心电图' },
+        },
+        { scope: 'reports', mode: 'precise' },
+      );
+      expect((fields.fields as Record<string, unknown>).ecgSummary).toBe(
+        '窦性心律，大致正常心电图',
+      );
+    });
+
+    it('applies gate 2 to familyHistory, which the patient typed', () => {
+      // `FREE_TEXT_CHANNELS` read `profile: []`, so the one field on
+      // both allowlists that is unbounded patient prose got no
+      // measurement gate at all — the consent hole this design exists
+      // to close.
+      const strict = redactFields(
+        { familyHistory: '外婆45岁发病，母亲30岁起病' },
+        { scope: 'profile', mode: 'strict' },
+      );
+      expect(strict.fields.familyHistory).toBe('外婆[数值未共享]岁发病，母亲[数值未共享]岁起病');
+      expect(strict.stats.freeTextGated).toContain('familyHistory');
+
+      const precise = redactFields(
+        { familyHistory: '外婆45岁发病，母亲30岁起病' },
+        { scope: 'profile', mode: 'precise' },
+      );
+      expect(precise.fields.familyHistory).toBe('外婆45岁发病，母亲30岁起病');
+    });
+
+    it('does not mask a sentence this platform composed itself', () => {
+      // The follow-ups scope carries no foreign prose — its own
+      // allowlist denies `notes` and `description` in both modes — and
+      // the numbers inside `eventSummary` are `count` and `spanDays`,
+      // both of which sit on the STRICT allowlist by name.
+      const { fields } = redactFields(
+        { eventSummary: '跌倒（轻）×1，最近 3 天前', eventCount: 1 },
+        { scope: 'followups', mode: 'strict' },
+      );
+      expect(fields.eventSummary).toBe('跌倒（轻）×1，最近 3 天前');
+    });
+
+    it('does not mask a refusal label this module minted', () => {
+      const { fields } = redactFields(
+        { d4z4: '9', haplotype: '4qA' },
+        { scope: 'profile', mode: 'strict' },
+      );
+      expect(String(fields.d4z4_clinical)).not.toContain('[数值未共享]');
+      expect(GENETIC_READING_REFUSALS.has(String(fields.haplotype_clinical))).toBe(true);
+    });
+  });
+
+  describe('J — the shapes that were missing', () => {
+    it('removes an email, using the pattern text-scrub.ts already owns', () => {
+      expect(impressionOf('联系 doctor@hospital.com 咨询。')).toBe('联系 [编号未共享] 咨询。');
+    });
+
+    it('removes a date finer than a year in all four printed shapes', () => {
+      for (const printed of ['2019年3月', '2019-03', '19-03-05', '05-Mar-2019']) {
+        expect(impressionOf(`${printed}复查。`)).toBe('[日期未共享]复查。');
+      }
+    });
+
+    it('removes the whole of an identifier an OCR space broke apart', () => {
+      // The remainder that used to be published is the BIRTH-DATE field
+      // of the card.
+      expect(impressionOf('身份证号 110101 19900307 1234 影像正常。')).toBe(
+        '[编号未共享] 影像正常。',
+      );
+      expect(impressionOf('身份证号 110101 19900307 1234 影像正常。')).not.toContain('19900307');
+    });
+  });
+
+  describe('K — the marker says the true reason', () => {
+    it('tells a positively classified narrative apart from an unrecognised label', () => {
+      const narrative = channelFor({
+        documentType: 'medical_summary',
+        status: 'parsed',
+        fields: { classifiedType: 'medical_summary' },
+        reportImpressionAsPrinted: '影像所见正常。',
+      });
+      expect(narrative.reportImpressionWithheld).toBe(
+        'impression_exists_but_this_document_is_a_clinical_narrative_about_a_person_not_a_test_result',
+      );
+
+      const unknown = channelFor({
+        documentType: 'mri',
+        status: 'parsed',
+        fields: {},
+        reportImpressionAsPrinted: '影像所见正常。',
+      });
+      expect(unknown.reportImpressionWithheld).toBe(
+        'impression_exists_but_this_platform_cannot_tell_what_kind_of_document_this_is',
+      );
+    });
+  });
+
+  /**
+   * THE CLASSES THAT REMAIN OPEN, PINNED AS OPEN.
+   *
+   * Each of these publishes rather than failing closed, and each is
+   * named in `scrubIdentifiers`. They are asserted here so that
+   * anything which starts catching them shows up as a changed test
+   * rather than as a silent improvement nobody reviewed — and so that
+   * the list cannot quietly grow.
+   */
+  describe('what still gets through — stated, not papered over', () => {
+    it('OPEN: an unlabelled Chinese name in prose, with no label and no key', () => {
+      expect(impressionOf('张三，男，双侧大腿未见脂肪浸润。')).toBe(
+        '张三，男，双侧大腿未见脂肪浸润。',
+      );
+    });
+
+    it('OPEN: a surname this file gave up because it opens a clinical word', () => {
+      expect(impressionOf('患者黄明，双侧大腿脂肪浸润。')).toContain('黄明');
+    });
+
+    it('OPEN: a family member named on a RESULT document', () => {
+      expect(impressionOf('其兄2019年因同病去世，本人未见异常。')).toContain('其兄');
+    });
+
+    it('OPEN: an address with no administrative chain, and an institution on purpose', () => {
+      expect(impressionOf('中关村大街影像所见正常。')).toContain('中关村大街');
+      expect(impressionOf('北京协和医院影像所见正常。')).toContain('北京协和医院');
+    });
+
+    it('CLOSED: the same name once the document filed it under a hard-delete key', () => {
+      const rows = channelFor({
+        ...RESULT_REPORT,
+        fields: { classifiedType: 'muscle_mri', patientName: '张三' },
+        reportImpressionAsPrinted: '张三，男，双侧大腿未见脂肪浸润。',
+      });
+      expect(rows.reportImpression).toBe('[人名未共享]，男，双侧大腿未见脂肪浸润。');
+    });
+  });
+});
+
+/**
+ * THE SWITCH ON THE REPORT-IMPRESSION CHANNEL.
+ *
+ * The suites above ask what the gates ANSWER. This one asks what
+ * reaches a prompt, which is a different question and the one the
+ * switch decides. It is written to hold in both positions rather than
+ * to pin the default, so flipping `REPORT_IMPRESSION_CHANNEL_ENABLED`
+ * is a one-line change that leaves the suite green and honest.
+ *
+ * OFF is the shipped state and the strong claim: the impression key and
+ * its four sibling markers do not reach the prompt AT ALL — not as an
+ * empty value, not as a withheld marker, not as a label with nothing
+ * under it. The model sees the structured cells, which is where every
+ * number in an answer already comes from.
+ */
+describe('the switch on the report-impression channel', () => {
+  const RESULT_REPORT = {
+    documentType: 'muscle_mri',
+    status: 'parsed',
+    fields: { classifiedType: 'muscle_mri' },
+  };
+
+  const NARRATIVE_REPORT = {
+    documentType: 'medical_summary',
+    status: 'parsed',
+    fields: { classifiedType: 'medical_summary' },
+  };
+
+  const IMPRESSION_KEYS = [
+    'reportImpression',
+    'reportImpressionWithheld',
+    'reportImpressionValuesMasked',
+    'reportImpressionIdentifiersRemoved',
+    'reportImpressionCharactersCut',
+  ];
+
+  const publishedFor = (row: Record<string, unknown>, mode: RedactionMode) =>
+    redactFields(row, { scope: 'reports', mode });
+
+  it.each(['strict', 'precise'] as RedactionMode[])(
+    'publishes the five keys in %s mode only while the switch is on',
+    (mode) => {
+      const { fields } = publishedFor(
+        { ...RESULT_REPORT, reportImpressionAsPrinted: '张三，双侧大腿脂肪浸润约 60%。' },
+        mode,
+      );
+      const present = IMPRESSION_KEYS.filter((key) => key in fields);
+      if (REPORT_IMPRESSION_CHANNEL_ENABLED) {
+        expect(present).toContain('reportImpression');
+      } else {
+        expect(present).toEqual([]);
+      }
+    },
+  );
+
+  it.each(['strict', 'precise'] as RedactionMode[])(
+    'sends no WITHHELD marker either, in %s mode, when the switch is off',
+    (mode) => {
+      // A refused impression is the case a marker exists for, so it is
+      // the case most likely to leak one past a switch that only
+      // suppressed the text. The gates still answer — `channelRows`
+      // above proves that — the answer simply goes nowhere.
+      const { fields } = publishedFor(
+        { ...NARRATIVE_REPORT, reportImpressionAsPrinted: '双侧大腿脂肪浸润。' },
+        mode,
+      );
+      expect(
+        gateReportImpression(
+          { ...NARRATIVE_REPORT, reportImpressionAsPrinted: '双侧大腿脂肪浸润。' },
+          { mode },
+        )?.withheld,
+      ).toContain('clinical_narrative');
+      if (!REPORT_IMPRESSION_CHANNEL_ENABLED) {
+        expect(IMPRESSION_KEYS.filter((key) => key in fields)).toEqual([]);
+      }
+    },
+  );
+
+  it('says nothing in the audit row about a channel that never ran', () => {
+    // 「dropped fields not in PROMPT_ALLOWLIST」 is how an operator finds
+    // a retriever surfacing something it should not. A default that
+    // logged five of those on every report chunk would read as a
+    // misconfiguration rather than as a decision.
+    const { stats } = publishedFor(
+      { ...RESULT_REPORT, reportImpressionAsPrinted: '双侧大腿脂肪浸润。' },
+      'strict',
+    );
+    for (const key of IMPRESSION_KEYS) expect(stats.notAllowed).not.toContain(key);
+    // The RAW cell is still reported as dropped: the retriever really
+    // did offer it and layer 3 really did refuse it.
+    expect(stats.notAllowed).toContain('reportImpressionAsPrinted');
+  });
+
+  it('leaves the allowlist, the label table and the description in step', async () => {
+    const { PROMPT_ALLOWLIST } = await import('./allowlist.js');
+    const { SCOPE_LABELS } = await import('./render.js');
+    const { GetMyReportsTool } = await import('../tools/get-my-reports.js');
+    const onTheAllowlist = IMPRESSION_KEYS.filter(
+      (key) =>
+        PROMPT_ALLOWLIST.reports.strict.includes(key) ||
+        PROMPT_ALLOWLIST.reports.precise.includes(key),
+    );
+    const labelled = IMPRESSION_KEYS.filter((key) => key in SCOPE_LABELS.reports);
+    const described = new GetMyReportsTool({} as never).description.includes(
+      "the report's own impression exactly as the report printed it",
+    );
+    if (REPORT_IMPRESSION_CHANNEL_ENABLED) {
+      expect(onTheAllowlist).toEqual(IMPRESSION_KEYS);
+      expect(labelled).toEqual(IMPRESSION_KEYS);
+      expect(described).toBe(true);
+    } else {
+      expect(onTheAllowlist).toEqual([]);
+      expect(labelled).toEqual([]);
+      expect(described).toBe(false);
+    }
+  });
+
+  it('shows gate 0 the impression whether or not the channel publishes it', () => {
+    // The switch is not a privacy change in either direction. Gate 0's
+    // answer governs every other piece of prose on the chunk, and it is
+    // computed from the page WITH the impression folded in — so a
+    // 病历摘要 whose only narrative marker is inside the impression cell
+    // still refuses the prose cell beside it with the channel off.
+    const { fields, stats } = publishedFor(
+      {
+        documentType: 'other',
+        status: 'parsed',
+        fields: { classifiedType: 'other', ecgSummary: '窦性心律，大致正常心电图' },
+        reportImpressionAsPrinted: '病历摘要：主诉双下肢无力3年，现病史如上。',
+      },
+      'precise',
+    );
+    expect((fields.fields as Record<string, unknown>).ecgSummary).toBeUndefined();
+    expect(stats.freeTextGated).toContain('fields.ecgSummary (narrative)');
+  });
+});
+
+/**
+ * GATE 2 AND THE VOCABULARY THIS DISEASE IS DEFINED ON.
+ *
+ * Every case here was executed against the mask before the repair and
+ * came back masked — that is, this platform telling a strict-consent
+ * reader that the one fact the report was written to state is a number
+ * they did not consent to see. They are fixed whether or not the
+ * channel is switched on, because they are what decides whether it can
+ * ever be switched on, and because gate 2 also runs over the prose
+ * CELLS that travel today.
+ *
+ * Asked of `gateReportImpression` for the reason `channelRows` gives.
+ */
+describe('gate 2 keeps the clinical vocabulary', () => {
+  const RESULT_REPORT = {
+    documentType: 'genetic_report',
+    status: 'parsed',
+    fields: { classifiedType: 'genetic_report' },
+  };
+
+  const masked = (impression: string) =>
+    gateReportImpression(
+      { ...RESULT_REPORT, reportImpressionAsPrinted: impression },
+      { mode: 'strict' },
+    );
+
+  it.each([
+    // HGVS. This is the WHOLE content of an FSHD2 / SMCHD1 result.
+    ['a coding variant', 'SMCHD1 基因检出杂合变异 c.1490G>A，临床意义未明。'],
+    ['a protein variant', 'SMCHD1 基因检出杂合变异 p.Arg1234Cys，考虑致病。'],
+    ['a one-letter protein variant', '检出 p.R1234C 变异。'],
+    ['a transcript-qualified variant', '检出 NM_001723.7:c.1490G>A 杂合变异。'],
+    ['a deletion range', '检出 c.1490_1492del 缺失。'],
+    // The locus, at the resolution that discriminates this disease.
+    ['a locus with a sub-band', '缺失片段定位于 4q35.2 区域。'],
+    ['a haplotype with its allele size', '单倍型 4qA161/4qB163。'],
+    // What Chinese radiology actually prints.
+    ['an abbreviated vertebral level', 'C5-6 椎间盘轻度突出。'],
+    ['two of them in a list', '颈椎 C5-6、C6-7 退变。'],
+    ['a level range across two regions', 'T12-L1 水平椎管狭窄。'],
+    // The fat-infiltration scale this cohort's MRI is reported on.
+    ['a graded stage with a letter', '双侧大腿脂肪浸润 Mercuri 2a 级，臀大肌 3 级。'],
+    ['the same grade with no Chinese classifier', '双侧大腿 Mercuri 2b，臀中肌 Mercuri 1。'],
+  ])('publishes %s unmasked under strict consent', (_label, impression) => {
+    const out = masked(impression);
+    expect(out?.withheld).toBeNull();
+    expect(out?.text).toBe(impression);
+    expect(out?.valuesMasked).toBe(0);
+  });
+
+  it('masks a real measurement standing in front of an ordinary 、', () => {
+    // THE ORDINAL SPAN WAS A PUNCTUATION SHAPE. It protected any one- or
+    // two-digit number in front of a dot, a 、 or a bracket with no check
+    // that a list existed, and 、 is an ordinary clause separator — so
+    // this measurement was PUBLISHED under strict consent and
+    // `valuesMasked` counted zero, which is the consent model failing
+    // with the audit row saying nothing happened.
+    const out = masked('双侧股四头肌脂肪分数 32、伴轻度水肿。');
+    expect(out?.text).toBe('双侧股四头肌脂肪分数 [数值未共享]、伴轻度水肿。');
+    expect(out?.valuesMasked).toBe(1);
+  });
+
+  it('still protects the ordinals of a real enumerated conclusion', () => {
+    // A list is evidence of itself: the markers run from one and count
+    // up. Both of these have that and neither loses a numeral.
+    for (const impression of [
+      '结论：1.双侧大腿脂肪浸润。2.肩胛带肌萎缩。',
+      '结论：1.脂肪浸润。2.肌萎缩。3.未见水肿。',
+    ]) {
+      const out = masked(impression);
+      expect(out?.text).toBe(impression);
+      expect(out?.valuesMasked).toBe(0);
+    }
+  });
+
+  it('masks a lone ordinal, and that is the stated cost', () => {
+    // One marker is a number in front of a full stop, not a list. The
+    // clause survives whole and the numeral carried nothing clinical;
+    // the other side of this trade is publishing a measurement.
+    const out = masked('结论：1.双侧大腿脂肪浸润。');
+    expect(out?.text).toBe('结论：[数值未共享].双侧大腿脂肪浸润。');
+  });
+
+  it.each([
+    ['a BMI with its unit welded on', 'BMI 22.5kg/m2，偏高。'],
+    ['a blood pressure', '血压 120/80mmHg。'],
+    ['an analyte welded to its value', 'LDL2.6 mmol/L。'],
+    ['a reference range', 'CK 890-1200U/L。'],
+    ['a decimal after a clause separator', '结论：脂肪分数 1.02、伴水肿。'],
+    ['a value for an analyte this repo has no key for', 'XYZ4.1 升高。'],
+  ])('still masks %s', (_label, impression) => {
+    const out = masked(impression);
+    expect(out?.valuesMasked).toBeGreaterThan(0);
+    expect(out?.text).toContain('[数值未共享]');
   });
 });
