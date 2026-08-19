@@ -237,6 +237,16 @@ const CROSS_FILE_CLAIMS: Array<{
     anchorPattern: [/指南共识\/ (\d[\d,]*) chunks/],
   },
   {
+    // Not census-pinned, though it could be: it is a GROUP BY over
+    // kb_chunks like the census's own rows, just on a key the census
+    // does not compute. Until it does, this row is what holds the two
+    // copies together.
+    what: 'the duplicate groups the old dedup key could not see',
+    here: [/(\d[\d,]*) 块归成 (\d[\d,]*) 组/],
+    anchor: 'medical-kb.ts',
+    anchorPattern: [/puts (\d[\d,]*) chunks into (\d[\d,]*) duplicate groups/],
+  },
+  {
     // Not census-pinned: a property of the extraction, not of the
     // corpus's shape, so no query can re-derive it.
     what: 'how much of the (cid:N) residue is light enough to keep',

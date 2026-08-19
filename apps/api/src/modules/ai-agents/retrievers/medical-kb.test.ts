@@ -6,6 +6,7 @@ import {
   MedicalKbRetriever,
   NO_RELEVANT_RESULTS,
   apparatusScore,
+  contentFingerprint,
   isDamagedExtraction,
   stripIngestLabel,
   isNavigationBoilerplate,
@@ -814,6 +815,105 @@ describe('over-fetch, trim and dedup arithmetic', () => {
     const texts = result.chunks.map((c) => c.content);
     expect(new Set(texts).size).toBe(texts.length);
     expect(texts).toHaveLength(3);
+  });
+});
+
+describe('同一段文字进了两次库，不能给模型看两遍', () => {
+  /**
+   * 同一份文档常常进了两次库，一次 .docx 一次 .pdf。
+   *
+   * 两个转换器对入库标注和空格的处理不一样：.pdf 那份带着 [page N]，
+   * .docx 那份没有；「of FSHD」在 .docx 里被抽成 ofFSHD，在 .pdf 里
+   * 空格还在。旧的去重键直接拿原文判——标注也一起算，空格只压缩不忽略
+   * ——所以这两个副本在它眼里是两段不同的文字。把新旧两个键都在现语料
+   * 上重放，406 块归成 190 组，旧键一组都没归出来。
+   *
+   * 代价是实测出来的：问「FSHD 的 D4Z4 重复单元数和病情严重程度是什么
+   * 关系？」，排第一和第二的命中就是同一段的两个副本，而那一段是全语料
+   * 里唯一按重复数分档讲严重程度的一段。模型于是把那张分档表看了两遍，
+   * 八张引用卡里有两张指着同样的两句话。
+   */
+  const DOCX_COPY =
+    'In FSHD1, disease severity roughly and inversely correlates to the number of ' +
+    'D4Z4 repeat units on the contracted allele, especially inpatients carrying short ' +
+    'repeats. Patients carrying repeats of 1-3 units are more severely affected than ' +
+    'those with longer repeats.';
+  /** The same paragraph out of the .pdf: the ingest label is there, and
+   *  the converter kept the space in 「in patients」. */
+  const PDF_COPY =
+    '[page 5]\n' +
+    'In FSHD1, disease severity roughly and inversely correlates to the number of ' +
+    'D4Z4 repeat units on the contracted allele, especially in patients carrying short ' +
+    'repeats. Patients carrying repeats of 1-3 units are more severely affected than ' +
+    'those with longer repeats.';
+
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('入库标注不该让同一段看起来是两段', () => {
+    expect(contentFingerprint('[page 5]\n患者应在确诊后接受基线肺功能评估。')).toBe(
+      contentFingerprint('患者应在确诊后接受基线肺功能评估。'),
+    );
+  });
+
+  it('空格落在哪里不该让同一段看起来是两段', () => {
+    // 这一条是压缩空白做不到的：一边的空白长度是 0。
+    expect(contentFingerprint(DOCX_COPY)).toBe(contentFingerprint(PDF_COPY));
+  });
+
+  it('只是空白不同才算同一段，字不一样就不算', () => {
+    expect(contentFingerprint('低强度有氧运动对 FSHD 患者是安全的。')).not.toBe(
+      contentFingerprint('高强度离心运动对 FSHD 患者不是安全的。'),
+    );
+  });
+
+  it('.docx 和 .pdf 两个副本只进一次上下文', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        { content: DOCX_COPY, metadata: { source_file: 'road-2023.docx' } },
+        { content: PDF_COPY, metadata: { source_file: 'road-2023.pdf' } },
+        {
+          content:
+            'However, this correlation is often broken by high levels of intrafamilial and ' +
+            'interindividual clinical heterogeneity.',
+          metadata: { source_file: 'gkaf643.pdf' },
+        },
+      ],
+      metadata: {},
+    }) as unknown as typeof globalThis.fetch;
+
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb.test' });
+    const result = await retriever.search({ question: 'q', limit: 8 }, ctx);
+
+    expect(result.metadata?.droppedDuplicates).toBe(1);
+    expect(result.chunks).toHaveLength(2);
+    // 留下的是排在前面的那个副本，不是随便一个。
+    expect(result.chunks[0].sourceFile).toBe('road-2023.docx');
+    // 而且被挤掉的不是别人：第三段是另一份文档，必须还在。
+    expect(result.chunks[1].sourceFile).toBe('gkaf643.pdf');
+  });
+
+  it('引用卡也不能两张指着同一段', async () => {
+    // 病人看到的那一半。八张卡里有两张点开是同样的句子，只是文件名不同，
+    // 读起来像两份独立的证据，其实是一份。
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        { content: DOCX_COPY, metadata: { source_file: 'road-2023.docx' } },
+        { content: PDF_COPY, metadata: { source_file: 'road-2023.pdf' } },
+      ],
+      metadata: {},
+    }) as unknown as typeof globalThis.fetch;
+
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb.test' });
+    const result = await retriever.search({ question: 'q', limit: 8 }, ctx);
+
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations.map((c) => c.chunkId)).toEqual(result.chunks.map((c) => c.id));
   });
 });
 

@@ -1,7 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildContext, CHUNK_BEGIN, CHUNK_END } from './context-builder.js';
 import {
+  CLINICAL_INFERENCE_BOUNDS,
   CORPUS_UNAVAILABLE_NOTICE,
   DEFAULT_SYSTEM_PROMPT,
   FINAL_TURN_DIRECTIVE,
@@ -15,6 +20,7 @@ import { OrchestratorConsentDenied, type OrchestratorEvent } from './types.js';
 import type { ILLMProvider, LlmChatRequest, LlmChatResponse } from '../llm/base.js';
 import type { RetrieveContext, RetrieveResult } from '../retrievers/base.js';
 import { PROMPT_ALLOWLIST, REPORT_IMPRESSION_CHANNEL_ENABLED } from '../security/allowlist.js';
+import { GENETIC_READING_REFUSALS } from '../security/pii-redactor.js';
 import type { ITool, ToolExecutionResult } from '../tools/base.js';
 import { ToolRegistry } from '../tools/registry.js';
 
@@ -2158,6 +2164,251 @@ describe('围栏契约只有一处拼写', () => {
   it('系统提示词里写的围栏就是 context-builder 实际写的那两个字符串', () => {
     expect(DEFAULT_SYSTEM_PROMPT).toContain(CHUNK_BEGIN);
     expect(DEFAULT_SYSTEM_PROMPT).toContain(CHUNK_END);
+  });
+});
+
+/**
+ * THE SECTION THAT SAYS WHAT THE MODEL MAY CONCLUDE.
+ *
+ * Driven live at precise consent, one patient, one question, the
+ * assistant answered 「1–3 个重复单元的患者往往发病更早、病情进展相对较
+ * 快」 and 「甲基化程度很高——高甲基化通常与更严重的表型相关」 and
+ * 「剩余的重复呈现一种代偿性高甲基化状态」. The first is the ladder
+ * `clinicaliseD4Z4` deleted; the second grades a cell this repo states
+ * no boundary for; the third is a mechanism no chunk stated.
+ *
+ * TWO KINDS OF ASSERTION HERE, AND THE SECOND KIND IS THE POINT. That
+ * the section is present is one line. What the rest of this block
+ * checks is that the section stays TRUE: it quotes four other files,
+ * and a quote is a claim about them. The 孕前 sentence, the passport
+ * grade's clause and the deleted ladder are read off their own sources
+ * rather than off a memory of them — the same discipline
+ * `get_my_reports.test.ts` applies to the Python parser's vocabulary,
+ * for the same reason. A prompt that misquotes this platform to the
+ * model is worse than one that says nothing: the model repeats it to
+ * the patient in this platform's voice.
+ */
+const REPO_ROOT_FOR_QUOTES = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  '..',
+  '..',
+  '..',
+);
+const repoSource = (...segments: string[]): string =>
+  fs.readFileSync(path.join(REPO_ROOT_FOR_QUOTES, ...segments), 'utf8');
+
+describe('本人数据的推断边界', () => {
+  it('是系统提示词的一部分，并且每一轮 LLM 都收到了它', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    const result = await new Orchestrator(
+      llm,
+      new ToolRegistry().register(
+        mkTool('get_my_profile', stubResult('patient_profile', 1, PROFILE_WITH_GENETICS)),
+      ),
+      silentLogger as unknown as RetrieveContext['logger'],
+    ).run({
+      userId: 'u1',
+      question: '我的 D4Z4 重复数是多少？',
+      requestId: 'r-inference-bounds',
+      consentLevel: 'precise',
+    });
+
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(CLINICAL_INFERENCE_BOUNDS);
+    // The planning round and the answering round both. The answering
+    // round is the one that writes the prose, so it is the one that
+    // cannot be allowed to drift — but a planner told nothing about
+    // this asks for lookups shaped by the ladder.
+    expect(roundText(llm, 0)).toContain(CLINICAL_INFERENCE_BOUNDS);
+    expect(roundText(llm, 1)).toContain(CLINICAL_INFERENCE_BOUNDS);
+    expect(result.finalPrompt.system).toContain(CLINICAL_INFERENCE_BOUNDS);
+  });
+
+  /**
+   * PRECISE CONSENT IS THE MODE THAT PUTS THE RAW COUNT AND THE RAW
+   * PERCENTAGE IN THE PROMPT, and it is the mode with no visibility
+   * notice — `buildVisibilityNotice` returns '' for it. So before this
+   * section existed, the one turn that carried the patient's actual
+   * numbers was the one turn nothing said anything about reading them.
+   */
+  it('精确模式下没有可见范围提示，边界仍然到达模型', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的甲基化值说明什么？',
+      requestId: 'r-inference-bounds-precise',
+      consentLevel: 'precise',
+    });
+
+    expect(noticeOf(llm, 1)).toBe('');
+    expect(roundText(llm, 1)).toContain(CLINICAL_INFERENCE_BOUNDS);
+  });
+
+  it('禁止的是那四类推断，并且逐条写出来', () => {
+    // Severity / prognosis / progression rate / onset age, derived for
+    // THIS patient from a number on their report. All four are named,
+    // because the live answer hit three of them in one paragraph.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(
+      '不要从他本人的数字推严重度、预后、进展速度或发病早晚',
+    );
+    // And named as a rule over the cells, not over one cell: the live
+    // answer took the ladder off the repeat count and the grading off
+    // the methylation percentage in the same breath.
+    for (const cell of ['重复数', '单倍型', '甲基化值', 'EcoRI 片段长度', '随访数值']) {
+      expect(CLINICAL_INFERENCE_BOUNDS).toContain(cell);
+    }
+    // The hedge is the shape the violation actually arrived in
+    // (「往往」「相对较快」), so the hedge is refused explicitly.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('「通常」「往往」「可能」也一样不行');
+    // Population-level statements stay population-level.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('群体层面的结论要说成群体层面的');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('不要接一句「所以你……」');
+    // No mechanism the sources do not state, named with the invented
+    // one that reached a patient.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('资料里没写的机制不要写');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('代偿性高甲基化');
+  });
+
+  /**
+   * THE 孕前 PAGE IS WHERE THIS PLATFORM SAYS THE REPEAT COUNT TRACKS
+   * SEVERITY 「在群体层面」 — the sentence `clinicaliseD4Z4`'s note cites
+   * as the reason the ladder was deleted. The prompt quotes it at the
+   * model, so the quote has to still be that page's words.
+   */
+  it('孕前页面那句话是照着孕前页面抄的', () => {
+    const pregnancyPage = repoSource('apps', 'mobile', 'lib', 'pregnancy-timeline-content.ts');
+    const quoted =
+      '在群体层面和发病早晚、轻重相关，' +
+      '重复数越短总体上越早越重；但这是趋势，不是对某一个孩子的预测，8–10 这个区间尤其预测不了';
+    expect(pregnancyPage).toContain(quoted);
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(quoted);
+  });
+
+  /** Same, for the passport grade's own clause about what it declines
+   *  to do with a repeat count. */
+  it('护照分级那句话是照着护照抄的', () => {
+    const passport = repoSource(
+      'apps',
+      'api',
+      'src',
+      'modules',
+      'patient-profile',
+      'passport-share.html.ts',
+    );
+    const quoted = '去套指南里按重复数分组的建议';
+    expect(passport).toContain(quoted);
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(quoted);
+  });
+
+  /**
+   * THE PROMPT TELLS THE MODEL THE LADDER WAS DELETED, so the ladder
+   * has to still be deleted. If a future edit reinstates a severity
+   * band in the redactor, this section becomes a lie the model is
+   * reading — and the model would then have both the band and a
+   * paragraph saying the band does not exist.
+   */
+  it('提示词说被删掉的那套分级，确实还是删掉的', () => {
+    const redactor = repoSource(
+      'apps',
+      'api',
+      'src',
+      'modules',
+      'ai-agents',
+      'security',
+      'pii-redactor.ts',
+    );
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('low_repeat_severe / _moderate / _mild');
+    // Named in the redactor's note as history and nowhere as a value:
+    // a quoted literal is what a projection can publish.
+    for (const band of ['low_repeat_severe', 'low_repeat_moderate', 'low_repeat_mild']) {
+      expect(redactor).not.toContain(`'${band}'`);
+    }
+    // And no band on the D4Z4 reader carries a severity word at all,
+    // whatever it is spelled.
+    for (const token of GENETIC_READING_REFUSALS) {
+      expect(token).not.toMatch(/severe|moderate|mild/);
+    }
+  });
+
+  /**
+   * THE METHYLATION CELL IS THE ONE THIS PLATFORM GRADES WITH NOTHING,
+   * and the section has to say so in the redactor's own terms —
+   * 「没有 methylation_clinical」 — rather than merely discouraging a
+   * grade. A discouragement invites the model to supply a boundary it
+   * believes is standard, which is exactly what happened.
+   */
+  it('甲基化：说清楚本平台没有分界线，也没有 methylation_clinical', () => {
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('本平台任何地方都没有写过甲基化的分界线');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('没有 methylation_clinical 这个字段不是漏了');
+    // The live answer also had the direction backwards. FSHD is
+    // associated with HYPOmethylation, and the correction is stated
+    // WITHOUT becoming a licence to grade this patient's 95%.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('低甲基化');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('对着他的数值下结论依然不行');
+    // No `methylation_clinical` exists to contradict it, in either mode.
+    for (const mode of ['strict', 'precise'] as const) {
+      expect(PROMPT_ALLOWLIST.profile[mode]).not.toContain('methylation_clinical');
+    }
+  });
+
+  /**
+   * AND IT MAY NOT TURN INTO A GAG. `buildVisibilityNotice` already
+   * documents the failure on the other side: a model that reads a
+   * refusal as a gap apologises or sends the patient to a consent
+   * switch for an answer that is in the prompt. So every reading this
+   * platform DOES publish stays sayable, in this platform's words.
+   */
+  it('本平台自己的判读仍然可以照着说', () => {
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(
+      'within_fshd1_repeat_range 是「这个重复数落在 FSHD1 的范围里」，不是「所以病情严重」',
+    );
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('这些结论可以直接讲给用户，但要用本平台的说法');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('不是缺口');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('也不要因此让用户去开授权');
+  });
+
+  /**
+   * EVERY REFUSAL TOKEN, NOT A SNAPSHOT OF TODAY'S. The section
+   * interpolates `GENETIC_READING_REFUSALS` for the same reason
+   * `buildVisibilityNotice` does — a token added to the redactor later
+   * would otherwise reach a precise-consent prompt with nothing
+   * anywhere telling the model it is an answer rather than a gap.
+   */
+  it('每一个拒绝判读的词都在这一段里出现过', () => {
+    expect(GENETIC_READING_REFUSALS.size).toBeGreaterThan(0);
+    for (const token of GENETIC_READING_REFUSALS) {
+      expect(CLINICAL_INFERENCE_BOUNDS).toContain(token);
+    }
+  });
+
+  /**
+   * 「你目前诊断处于 Stage3」 REACHED A PATIENT. `diagnosisStage` is a
+   * free-text column (`z.string().max(120)` in profile.schema.ts) with
+   * no vocabulary anywhere in this repo — the live database holds
+   * Stage3, Stage 4 and 确诊 side by side — and `render.ts` prints it
+   * under 诊断阶段 with no value table, unlike `independentlyAmbulatory`.
+   *
+   * THIS BULLET IS NOT THE FIX FOR THAT. Localising a wire value is
+   * render.ts's job and this file must not grow a second value table.
+   * What belongs here is the inference bound: the model may repeat the
+   * cell and may not interpret it as a stage on some scale, because
+   * this platform has never defined one.
+   */
+  it('诊断阶段：可以复述，不可以当分期量表解释', () => {
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('「诊断阶段」是原样存下来的自由文本');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('没有受控词表');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('不要把它当成某个分期量表去解释');
+    const schema = repoSource(
+      'apps',
+      'api',
+      'src',
+      'modules',
+      'patient-profile',
+      'profile.schema.ts',
+    );
+    expect(schema).toContain('diagnosisStage: z.string().max(120)');
   });
 });
 

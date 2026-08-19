@@ -2753,5 +2753,427 @@ D4Z4重复单元数:3个
         self.assertEqual(kinds["D4Z4重复单元数:3个"], fshd_report_service._KIND_PLAIN)
 
 
+#: The 常规生化全套 of patient_documents 62dd3f96-ac74-42ae-9759-d7b24e230343,
+#: as PaddleOCR emits it: one cell per line, 「No 项目 结果 参考区间 单位
+#: 方法」, a row index glued to some names and standing alone on others,
+#: an arrow column that is only printed when the row is abnormal, and a
+#: method column full of assay names built on the analytes they measure.
+#: Trimmed to the rows the three defects of this round were measured on.
+ARCHIVED_BIOCHEMISTRY_CELLS = """福建医科大学附属第一医院检验报告单
+检验目的：常规生化全套检查
+临床诊断：面肩肱型肌营养不良症
+No
+项目
+结果
+参考区间
+单位
+方法
+*8
+丙氨酸氨基转移酶（ALT）
+21
+9-50
+U/L
+乳酸脱氢酶法
+*9
+天冬氨酸氨基转移酶（AST）
+23
+15-40
+U/L
+苹果酸脱氢酶
+*12乳酸脱氢酶（LDH)
+319
+↑
+120-250
+U/L
+速率法
+*13碱性磷酸酶（ALP)
+47
+45-125
+U/L
+氧化酶法
+*14肌酸激酶（CK)
+693
+↑
+50-310
+U/L
+速率法
+15肌酸激酶同工酶（活性）（CKMB)
+49
+↑
+<25
+U/L
+免疫抑制法
+17肌酐(CREA)
+40.0
+↓
+57-97
+umol/L
+酶法
+"""
+
+
+class AMethodNameIsNotAResultLabelTest(unittest.TestCase):
+    """A CHINESE ASSAY IS NAMED AFTER THE ENZYME THAT DRIVES IT.
+
+    Measured on the archived 常规生化全套: the ALT row's method column
+    reads 「乳酸脱氢酶法」 and, on the cell-per-line layout, is a line of
+    its own eleven rows above the report's own
+    「*12乳酸脱氢酶（LDH)  319  ↑  120-250」. The first line carrying a
+    keyword wins, so 乳酸脱氢酶 matched the METHOD, found no number on
+    it, read forward into the next row and took 「*9」 — the AST row's
+    INDEX. An LDH of 319 against an upper limit of 250 reached a
+    clinician as 9.
+
+    `_gap_names_a_method` built this defence for the genetics cells. This
+    is the same rule on the laboratory path, and it is applied to the
+    whole map rather than to LDH: ten of the map's analytes have a
+    Chinese name that heads a common assay name, and only the order the
+    laboratory happened to print its methods in was protecting the other
+    nine.
+    """
+
+    @staticmethod
+    def _fields(result):
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def _read(self, text):
+        return self._fields(analyze_fshd_report(text, "other", "B.jpeg"))
+
+    def test_the_archived_report_reads_its_own_ldh_row(self):
+        fields = self._read(ARCHIVED_BIOCHEMISTRY_CELLS)
+        self.assertEqual(fields["ldh"]["field_value"], "319")
+        self.assertEqual(fields["ldh"]["unit"], "U/L")
+        self.assertIn("*12乳酸脱氢酶(LDH)", fields["ldh"]["source_text"])
+        self.assertNotIn("乳酸脱氢酶法", fields["ldh"]["source_text"])
+
+    def test_the_row_index_of_the_next_row_is_never_a_measurement(self):
+        fields = self._read(ARCHIVED_BIOCHEMISTRY_CELLS)
+        for name in ("ldh", "ck", "ckmb", "alt", "ast", "alp", "creatinine"):
+            self.assertNotEqual(fields[name]["field_value"], "9", name)
+            self.assertNotIn("*9", fields[name]["source_text"], name)
+
+    def test_every_method_named_analyte_in_the_map_is_covered(self):
+        """The shape, not the instance — one case per colliding analyte."""
+        for key, method, name, value, reference, unit in (
+            ("ldh", "乳酸脱氢酶法", "*12乳酸脱氢酶(LDH)", "319", "120-250", "U/L"),
+            ("ck", "肌酸激酶法", "*14肌酸激酶(CK)", "693", "50-310", "U/L"),
+            ("urea", "尿素酶法", "*16尿素(UREA)", "6.11", "3.10-8.0", "mmol/L"),
+            ("uric_acid", "尿酸酶法", "*19尿酸(UA)", "583", "208-428", "umol/L"),
+            ("creatinine", "肌酐酶法", "17肌酐(CREA)", "40.0", "57-97", "umol/L"),
+            ("glucose", "葡萄糖氧化酶法", "*20葡萄糖(GLU)", "4.52", "3.90-6.10", "mmol/L"),
+            ("phosphorus", "磷钼酸法", "*31无机磷(P)", "1.33", "0.85-1.51", "mmol/L"),
+            ("calcium", "钙羧基偶氮法", "*30钙(CA)", "2.26", "2.11-2.52", "mmol/L"),
+            ("magnesium", "镁二甲苯胺蓝法", "32镁(MG)", "0.93", "0.53-1.11", "mmol/L"),
+            ("cholesterol", "胆固醇氧化酶法", "*21总胆固醇(TCHO)", "3.68", "<5.18", "mmol/L"),
+        ):
+            with self.subTest(analyte=key):
+                fields = self._read("\n".join((
+                    "XX医院 生化检验报告",
+                    "*1丙氨酸氨基转移酶(ALT)", "21", "9-50", "U/L", method,
+                    name, value, reference, unit, "速率法",
+                )))
+                self.assertEqual(fields[key]["field_value"], value)
+                self.assertEqual(fields[key]["unit"], unit)
+                self.assertEqual(fields["alt"]["field_value"], "21")
+
+    def test_a_row_that_prints_its_own_method_column_still_reads(self):
+        """A TOKEN, NOT A LINE. A row printed on one line carries its
+        method beside its reading, and refusing the line would refuse the
+        reading with it."""
+        fields = self._read("\n".join((
+            "XX医院 生化检验报告",
+            "*8丙氨酸氨基转移酶(ALT) 21 9-50 U/L 乳酸脱氢酶法",
+            "*12乳酸脱氢酶(LDH) 319 ↑ 120-250 U/L 速率法",
+        )))
+        self.assertEqual(fields["alt"]["field_value"], "21")
+        self.assertEqual(fields["ldh"]["field_value"], "319")
+
+    def test_an_analyte_named_only_in_a_method_column_is_not_published(self):
+        """Nothing is better than the next row's index."""
+        fields = self._read("\n".join((
+            "XX医院 生化检验报告",
+            "*8丙氨酸氨基转移酶(ALT)", "21", "9-50", "U/L", "乳酸脱氢酶法",
+            "*9天冬氨酸氨基转移酶(AST)", "23", "15-40", "U/L", "苹果酸脱氢酶",
+        )))
+        self.assertNotIn("ldh", fields)
+        self.assertEqual(fields["alt"]["field_value"], "21")
+        self.assertEqual(fields["ast"]["field_value"], "23")
+
+
+class TheRowSaysWhetherItIsAbnormalTest(unittest.TestCase):
+    """THE FLAG AND THE INTERVAL WERE INSIDE THE CAPTURED SNIPPET.
+
+    The CK row of the archived report was captured whole —
+    「*14肌酸激酶(CK) 693 ↑ 50-310 U/L」 — and published as an ordinary
+    693 with `is_abnormal: false` and an empty reference. A CK of 693
+    against an upper limit of 310, flagged ↑ by the laboratory, on the
+    marker this disease is monitored by, on the passport a patient hands
+    to a clinician.
+    """
+
+    @staticmethod
+    def _by_analyte(result):
+        return {obs["analyte_name"]: obs for obs in result["observations"]}
+
+    def test_the_archived_ck_row_carries_its_flag_and_its_interval(self):
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        ck = observations["ck"]
+        self.assertEqual(ck["result"]["value_num"], 693.0)
+        self.assertTrue(ck["interpretation"]["is_abnormal"])
+        self.assertEqual(ck["interpretation"]["direction"], "high")
+        self.assertEqual(ck["reference"]["range_raw"], "50-310")
+        self.assertEqual(ck["reference"]["low"], 50.0)
+        self.assertEqual(ck["reference"]["high"], 310.0)
+
+    def test_a_one_sided_interval_is_recorded_as_one_sided(self):
+        """「<25」 is an upper limit and no lower one, which is the whole
+        of what the CKMB row states."""
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        ckmb = observations["ckmb"]
+        self.assertEqual(ckmb["result"]["value_num"], 49.0)
+        self.assertTrue(ckmb["interpretation"]["is_abnormal"])
+        self.assertEqual(ckmb["reference"]["range_raw"], "<25")
+        self.assertIsNone(ckmb["reference"]["low"])
+        self.assertEqual(ckmb["reference"]["high"], 25.0)
+
+    def test_a_downward_flag_reads_too(self):
+        creatinine = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )["creatinine"]
+        self.assertEqual(creatinine["interpretation"]["direction"], "low")
+        self.assertEqual(creatinine["reference"]["low"], 57.0)
+        self.assertEqual(creatinine["reference"]["high"], 97.0)
+
+    def test_the_abnormal_rows_reach_the_summary(self):
+        summary = analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")[
+            "latest_summary"
+        ]
+        flagged = {row["analyte_name"] for row in summary["abnormal_list"]}
+        self.assertEqual(flagged, {"ck", "ckmb", "ldh", "creatinine"})
+        self.assertEqual(summary["by_analyte"]["ldh"]["reference_high"], 250.0)
+
+    def test_an_unflagged_row_is_not_made_abnormal_by_its_interval(self):
+        """The laboratory's verdict, not this file's. Grading a reading
+        against its interval is a decision with a specimen, an age and a
+        unit in it; recording what the row printed is not."""
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        alt = observations["alt"]
+        self.assertFalse(alt["interpretation"]["is_abnormal"])
+        self.assertIsNone(alt["interpretation"]["direction"])
+        self.assertEqual(alt["reference"]["range_raw"], "9-50")
+
+    def test_a_flag_spelled_out_does_not_end_the_row(self):
+        """「偏高」 has CJK in it and no digits, so a row boundary drawn on
+        「looks like an analyte name」 cut the row between its reading and
+        its interval."""
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶(CK)", "693", "偏高", "50-310", "U/L",
+                "肌酐(CREA)", "40.0", "偏低", "57-97", "umol/L",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["interpretation"]["direction"], "high")
+        self.assertEqual(observations["ck"]["reference"]["high"], 310.0)
+        self.assertEqual(observations["ck"]["result"]["unit"], "U/L")
+        self.assertEqual(observations["creatinine"]["interpretation"]["direction"], "low")
+
+    def test_a_one_sided_reading_is_not_also_its_own_reference(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶同工酶(CKMB)", "<0.01", "U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        ckmb = observations["ckmb"]
+        self.assertEqual(ckmb["result"]["value_raw"], "<0.01")
+        self.assertIsNone(ckmb["reference"]["range_raw"])
+
+    def test_a_row_with_no_reference_column_keeps_the_shape_it_had(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK): 890 U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["reference"],
+                         {"range_raw": None, "low": None, "high": None, "unit": "U/L"})
+
+    def test_the_interval_comes_off_this_row_and_not_the_next(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶(CK)", "693",
+                "碱性磷酸酶(ALP)", "47", "45-125", "U/L",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["result"]["value_num"], 693.0)
+        self.assertIsNone(observations["ck"]["reference"]["range_raw"])
+        self.assertEqual(observations["alp"]["reference"]["range_raw"], "45-125")
+
+
+class AMilligramIsNotAMagnesiumTest(unittest.TestCase):
+    """`mg` IS BOTH MAGNESIUM AND A MILLIGRAM.
+
+    `_analyte_keyword_pattern` answers 「is this hit inside a longer
+    word」, and 「mg/dL」 puts a token boundary right after the `mg`. So
+    the unit column of any row reporting in milligrams named itself
+    magnesium and then read forward for a number. The same class as
+    「mb」 inside 「CK-MB」, one column further right.
+    """
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_a_milligram_unit_does_not_publish_a_magnesium(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "血清铁", "12.0", "mg/dL", "200", "ng/mL")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertNotIn("magnesium", panel)
+
+    def test_a_real_magnesium_row_still_reads(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "镁(MG)", "0.93", "0.53-1.11", "mmol/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["magnesium"], 0.93)
+
+    def test_a_latin_analyte_column_still_reads(self):
+        """A lone 「CK」 cell is unit-shaped too, and it spans its whole
+        token, so it still names creatine kinase."""
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "CK", "890", "U/L")), "other", "B.jpeg"
+        ))
+        self.assertEqual(panel["ck"], 890.0)
+
+
+class NoMyoglobinIsMintedFromACkMbTest(unittest.TestCase):
+    """THE ARCHIVED PAYLOAD FOR 62dd3f96 CARRIES `mb: 49`, WHICH IS THE
+    CKMB'S 49, AND THE PARSER NO LONGER MINTS IT.
+
+    Confirmed by execution against the archived text rather than by
+    reading: the boundary in `_analyte_keyword_pattern` puts `-` inside
+    the word, so `mb` is refused inside both 「CKMB」 and 「CK-MB」. The
+    row is locked here because the archived row is still on a patient's
+    screen and nothing about that row tells this file it was fixed.
+    """
+
+    def test_the_archived_report_mints_no_myoglobin(self):
+        result = analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("mb", panel)
+        self.assertEqual(panel["ckmb"], 49.0)
+
+    def test_both_spellings_of_the_isoenzyme_refuse_the_myoglobin(self):
+        for printed in ("肌酸激酶同工酶(CKMB)", "肌酸激酶同工酶(CK-MB)"):
+            with self.subTest(printed=printed):
+                panel = analyze_fshd_report(
+                    "\n".join(("XX医院 生化检验报告", f"{printed}: 49 U/L")),
+                    "other",
+                    "B.jpeg",
+                )["fshd"]["normalized_summary"]["lab_panel"]
+                self.assertNotIn("mb", panel)
+                self.assertEqual(panel["ckmb"], 49.0)
+
+    def test_a_real_myoglobin_row_still_reads(self):
+        panel = analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶同工酶(CK-MB): 25 U/L",
+                "肌红蛋白(MYO): 45 ng/mL",
+            )),
+            "other",
+            "B.jpeg",
+        )["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["mb"], 45.0)
+        self.assertEqual(panel["ckmb"], 25.0)
+
+
+class TheLowerBoundIsNotTheReadingTest(unittest.TestCase):
+    """A SECOND ARCHIVED COPY OF THE SAME PANEL, READ BY THE FALLBACK.
+
+    patient_documents 0dcab9e5-de8b-4e8c-b441-0bb62bdb05e7 is the same
+    生化全套 as 62dd3f96, read by Tesseract rather than PaddleOCR, and
+    the fallback did not recover the 结果 column at all — the rows print
+    their name, their reference interval and their unit and nothing
+    else. `re.search` takes the first number it finds, so every one of
+    those rows published the BOTTOM OF THE NORMAL RANGE as this
+    patient's reading: `ck: 50` off 「50-310」, on the patient whose CK
+    is 693, and `ldh: 120`, `alp: 45`, `alt: 9`, `ast: 15`, `ggt: 10`
+    the same way. Six normal-looking numbers, none of them measured.
+
+    `_BOUND_CELL` states the rule for the cell reader — a limit is a
+    reference by default. A flattened row keeps 「50-310」 in one piece,
+    where no cell test can see it.
+    """
+
+    ARCHIVED_TESSERACT_ROWS = """福建医科大学附属第一医院检验报告单
+检验目的  常规生化全套检查
+结果            参考区间               单位        方法
+*# 8 两氨酸氨基转移酶(ALT)                           9-50              U/L
+# 9 天冬氨酸氨基转移酶(AST)                           15-40             U/L
+*# 11 Y-谷氨酰转肽酶(GGT)                                  10-60                UL
+# 12 乳酸脱氧酶(LDH)                                         +      120-250                 U/L
+# 13 碱性磷酸酶(ALP)                                               45-125                  UL
+# 14 肌酸激酶(CK)                                         人     50-310                U/L        速率法
+"""
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_row_with_no_result_column_publishes_nothing(self):
+        panel = self._panel(
+            analyze_fshd_report(self.ARCHIVED_TESSERACT_ROWS, "other", "B.jpeg")
+        )
+        for analyte in ("ck", "ldh", "alp", "alt", "ast", "ggt"):
+            self.assertNotIn(analyte, panel, analyte)
+
+    def test_a_row_that_does_print_a_result_still_reads_it(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "# 14 肌酸激酶(CK)   693   50-310   U/L   速率法",
+                "# 12 乳酸脱氢酶(LDH)   319   120-250   U/L   速率法",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["ck"], 693.0)
+        self.assertEqual(panel["ldh"], 319.0)
+
+    def test_the_reading_is_read_whichever_column_order_prints_it(self):
+        """项目 / 参考区间 / 结果 is an ordinary Chinese column order, and
+        it puts the interval to the LEFT of the reading."""
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK)   50-310   693   U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["ck"], 693.0)
+
+    def test_a_one_sided_limit_is_still_the_reading_when_it_is_all_there_is(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶同工酶(CKMB)   <0.01   U/L")),
+            "other",
+            "B.jpeg",
+        )
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["ckmb"]["field_value"], "<0.01")
+        self.assertIsNone(fields["ckmb"].get("reference_range_raw"))
+
+
 if __name__ == "__main__":
     unittest.main()

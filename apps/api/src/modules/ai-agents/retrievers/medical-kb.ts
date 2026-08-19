@@ -264,6 +264,58 @@ const INGEST_LABEL = /^\s*\[[^\]\n]{0,120}\]\s*\n?/;
 export const stripIngestLabel = (text: string): string => (text ?? '').replace(INGEST_LABEL, '');
 
 /**
+ * The identity of a chunk's TEXT, for deciding whether two hits are the
+ * same passage.
+ *
+ * WHY THIS IS NOT `content.replace(/\s+/g, ' ').trim()`
+ *
+ * Because that key called every row in this corpus distinct. Replaying
+ * both over the live `kb_chunks` (2026-08-19) puts 406 chunks into 190
+ * duplicate groups that the collapsing key had called distinct, 168 of
+ * the groups spanning more than one source file — while the collapsing
+ * key finds 10,241 distinct texts in 10,241 rows, i.e. it drops nothing
+ * at all. The dedup below was a no-op on the corpus it was written for.
+ *
+ * The 22% exact-duplicate redundancy that motivated it was real and is
+ * gone (kb-prune, and the re-chunk). What is left is the same paragraph
+ * reaching the index through two DIFFERENT converters, and two things
+ * make those copies differ in bytes while being the same text:
+ *
+ *   1. The ingest label. `[page 5]` is on the .pdf copy and not on the
+ *      .docx copy of the same document — the pipeline's own annotation,
+ *      which `stripIngestLabel` above exists to keep out of every
+ *      judgement, and which this one key was still reading as though the
+ *      document had said it.
+ *   2. Where the spaces went. The .docx extraction of 文献/the road to
+ *      the target road-2023 says 「of FSHD」 as `ofFSHD` and 「in
+ *      patients」 as `inpatients`; the .pdf of the same document keeps
+ *      both spaces. Collapsing RUNS of whitespace cannot reconcile that,
+ *      because the run on one side is length zero.
+ *
+ * So: strip the label, then ignore whitespace entirely rather than
+ * normalising it. Two passages that differ only in where the spaces
+ * fall are one passage — that is the whole claim, and it is the case
+ * being caught. Nothing else can collide: removing whitespace never
+ * merges texts whose other characters differ, and `isJunk` has already
+ * dropped anything under 30 characters, where a coincidence would have
+ * to live.
+ *
+ * WHAT IT COST TO GET THIS WRONG
+ *
+ * Asked 「FSHD 的 D4Z4 重复单元数和病情严重程度是什么关系？」 against
+ * the live service, the top two hits were the .docx and .pdf copies of
+ * one paragraph — identical at 939 characters once normalised the way
+ * this function does it. That paragraph is the only place in the corpus
+ * that lays out severity by repeat band (1–3 more severe and faster
+ * progressing, 7–10 generally milder), so the model was handed the
+ * ladder twice, in the two highest-ranked slots, and two of the eight
+ * citation cards pointed at the same sentences in two files. The band
+ * numbers are the corpus's; being shown them twice is this key's.
+ */
+export const contentFingerprint = (text: string): string =>
+  stripIngestLabel(text).replace(/\s+/g, '');
+
+/**
  * A saved registry results page, and the day it was saved.
  *
  * WHAT IS WRONG WITH THESE CHUNKS
@@ -651,13 +703,17 @@ export class MedicalKbRetriever implements IRetriever {
      *  over the chunks that survive the trim rather than over every
      *  candidate — the model is told about the ones it can see. */
     const registrySnapshots = new Map<string, string | null>();
-    // The corpus carries the same text under multiple rows — 12,352
-    // rows for 9,596 distinct contents when this was measured, i.e.
-    // 22% redundancy from repeated ingests. Retrieval surfaced them as
-    // separate hits: one observed query returned 12 chunks that were
-    // only 9 distinct texts, so a quarter of both the context budget
-    // and the citation list was spent restating the same paragraph.
-    // Deduping here fixes the symptom for every caller; the corpus
+    // The corpus carries the same text under multiple rows. It was
+    // 12,352 rows for 9,596 distinct contents when this was first
+    // measured — 22% redundancy from repeated ingests, and one observed
+    // query returned 12 chunks that were only 9 distinct texts, so a
+    // quarter of both the context budget and the citation list was spent
+    // restating the same paragraph. Those exact duplicates are gone from
+    // the index now, but the redundancy is not: the same document is
+    // ingested as both .docx and .pdf, and the two converters disagree
+    // about the ingest label and about where the spaces go. See
+    // `contentFingerprint` for what that costs and why the key ignores
+    // both. Deduping here fixes the symptom for every caller; the corpus
     // itself still wants a pass on the ingest side.
     const seenContent = new Set<string>();
 
@@ -671,7 +727,7 @@ export class MedicalKbRetriever implements IRetriever {
         return;
       }
 
-      const fingerprint = content.replace(/\s+/g, ' ').trim();
+      const fingerprint = contentFingerprint(content);
       if (seenContent.has(fingerprint)) {
         duplicates += 1;
         return;

@@ -193,6 +193,35 @@ describe('parseAnswer — pipe blocks', () => {
     ]);
   });
 
+  // 【排版】 asks the model for bold AND asks it to put the 指标 in the
+  // first column, so a bold label is what that paragraph produces —
+  // and `label` was the one field on this type that never saw the
+  // inline pass. 「**D4Z4 重复数**」 reached a live chat bubble with the
+  // asterisks showing.
+  //
+  // The emphasis is dropped rather than carried; see `flattenTable`.
+  // What is pinned here is that the MARKERS do not reach the reader,
+  // whichever way a later change decides to carry the weight.
+  it('parses the label column instead of printing its markers', () => {
+    expect(parseAnswer('| 指标 | 数值 |\n|---|---|\n| **D4Z4 重复数** | 3 次 |')).toEqual([
+      { kind: 'pair', label: 'D4Z4 重复数', spans: [{ text: '3 次' }] },
+    ]);
+    // Every inline construct, not just bold: the label is read with the
+    // same grammar as the value beside it, so a code span keeps its
+    // contents and a link keeps its label rather than its brackets.
+    expect(parseAnswer('| 字段 | 值 |\n|---|---|\n| `d4z4_repeats` | 3 |')).toEqual([
+      { kind: 'pair', label: 'd4z4_repeats', spans: [{ text: '3' }] },
+    ]);
+    expect(parseAnswer('| 来源 | 值 |\n|---|---|\n| [指南](https://x.org) | 3 |')).toEqual([
+      { kind: 'pair', label: '指南', spans: [{ text: '3' }] },
+    ]);
+    // And an escaped marker survives as the character it escapes,
+    // rather than being deleted by a strip-the-syntax pass.
+    expect(parseAnswer('| 指标 | 值 |\n|---|---|\n| 5\\* 分 | 好 |')).toEqual([
+      { kind: 'pair', label: '5* 分', spans: [{ text: '好' }] },
+    ]);
+  });
+
   it('does not split a cell on an escaped pipe', () => {
     expect(parseAnswer('| 项目 | 结果 |\n|---|---|\n| a \\| b | 阴性 |')).toEqual([
       { kind: 'pair', label: 'a | b', spans: [{ text: '阴性' }] },

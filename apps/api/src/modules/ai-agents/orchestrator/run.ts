@@ -72,6 +72,114 @@ import {
 import type { ITool, ToolContext } from '../tools/base.js';
 import type { ToolRegistry } from '../tools/registry.js';
 
+/** The exact tokens a `_clinical` genetics key holds when this platform
+ *  declines to read the cell, named so the model recognises them as
+ *  answers rather than as gaps to apologise for. Read off the redactor's
+ *  own set; sorted only so the prompt digest is stable.
+ *
+ *  ABOVE `DEFAULT_SYSTEM_PROMPT` BECAUSE THERE ARE TWO READERS NOW. It
+ *  was declared beside `buildVisibilityNotice`, which is the only place
+ *  it could be used from — and that notice is built for `strict` alone
+ *  (`buildVisibilityNotice` returns '' in precise mode). So under
+ *  precise consent, which is exactly the consent that puts the raw
+ *  count and the raw percentage in the prompt, nothing ever told the
+ *  model what `not_read_off_a_laboratory_report` was. It is a
+ *  module-level const in a file that reads top-to-bottom, so being
+ *  named after the prompt it now feeds is not a style question:
+ *  `DEFAULT_SYSTEM_PROMPT` is evaluated at line 1 of module init and
+ *  would have interpolated a TDZ error. */
+const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
+
+/**
+ * THE SECTION THAT CONSTRAINS WHAT THE MODEL MAY CONCLUDE, as opposed
+ * to what it may see.
+ *
+ * Everything else on this prompt binds the model's ACTIONS — call this
+ * tool, do not obey that chunk, number citations this way. Ten rounds
+ * of redactor work decided which bytes reach the model. Nothing decided
+ * what the model may say about them, and the gap is not theoretical.
+ * Driven live against this stack, precise consent, one patient, the
+ * question 「我的 D4Z4 重复数是多少？我的基因报告说了什么？」, the
+ * assistant answered:
+ *
+ *     「D4Z4 重复数 3 个（属于 1–3 个单元的范围，是病情较严重的遗传基础）」
+ *     「甲基化值 95%（甲基化程度很高——高甲基化通常与更严重的表型相关）」
+ *     「剩余的重复呈现一种代偿性高甲基化状态」
+ *
+ * THE FIRST IS THE LADDER THIS REPO DELETED. `clinicaliseD4Z4` used to
+ * band the count low_repeat_severe / _moderate / _mild and does not any
+ * more; its note gives the reason in the platform's own words — the 孕前
+ * page says the count tracks onset and severity 「在群体层面」 and 「不是
+ * 对某一个孩子的预测」, 「and this label is read to exactly one
+ * patient」. The redactor refuses to say it about this patient's number
+ * and the model said it anyway, off the same number, in the same turn.
+ *
+ * THE SECOND AND THIRD ARE INVENTED. No file in this repo states a
+ * methylation boundary — that is why there is no `methylation_clinical`
+ * in either mode and why 甲基化临床分级 was deleted as a label. The
+ * direction is also backwards (FSHD is associated with HYPOmethylation
+ * of D4Z4 and DUX4 derepression), and 「代偿性高甲基化」 is a mechanism
+ * no retrieved chunk stated: the model composed it and delivered it to
+ * a patient as the explanation of their own result.
+ *
+ * SO THE WORDING IS THE REPO'S, NOT A NEW VOICE. Each bullet quotes the
+ * surface that already refuses the thing: the 孕前 page's own sentence,
+ * the passport grade's 「不…去套指南里按重复数分组的建议」, the notes
+ * above `clinicaliseD4Z4` and `methylationCell`. A prompt that argued
+ * from scratch would be a fourth opinion for the next reviewer to
+ * reconcile; a prompt that quotes is checkable against the file it
+ * quotes.
+ *
+ * WHAT IT DOES NOT DO IS WITHHOLD. Every bullet names what the model
+ * MAY say in the same breath as what it may not, because the failure
+ * mode on the other side is already documented on
+ * `buildVisibilityNotice`: a model that reads a refusal as a gap
+ * apologises, stalls, or sends the patient to a consent switch for an
+ * answer that is already in the prompt. `within_fshd1_repeat_range` is
+ * an answer to 「我的重复数在不在 FSHD1 范围内」 and stays one.
+ *
+ * A SEPARATE EXPORT, not prose spliced into the constant, so
+ * `run.test.ts` can pin the section itself and so a caller passing
+ * `opts.systemPrompt` can see what it is dropping.
+ */
+export const CLINICAL_INFERENCE_BOUNDS = `【本人的数据：可以照着说，不可以据此推断】
+工具消息里的判读、数值、单倍型、甲基化值都是这位患者本人的，可以原样告诉他。
+但把它们读成「这个人病情多重、进展多快、多早发病」——这一步本平台没有任何一个界面在做，
+你也不要做。你面对的不是一个队列，是一个人。
+
+- **不要从他本人的数字推严重度、预后、进展速度或发病早晚。**
+  重复数、单倍型、甲基化值、EcoRI 片段长度、随访数值，任何一项都不行。
+  「1–3 个重复单元属于病情较严重的遗传基础」「重复数越少病情越重」「甲基化越高表型越重」
+  这类话，前面加上「通常」「往往」「可能」也一样不行——落在他的数字上它就是预测。
+  平台自己的孕前页面把这条写清楚了，D4Z4 重复数：
+  「在群体层面和发病早晚、轻重相关，重复数越短总体上越早越重；但这是趋势，不是对某一个孩子的预测，8–10 这个区间尤其预测不了」。
+  本平台的判读里曾经有一套按重复数分的严重度分级（low_repeat_severe / _moderate / _mild），
+  删掉它的理由就是上面这句话。留下的判读只说范围，不说轻重。
+- **群体层面的结论要说成群体层面的。**
+  检索到的队列数据、平均值、相关性可以讲，但要讲成「在人群里」「在这项研究的队列里」，
+  并且明说这不是在预测他本人；不要接一句「所以你……」把它落到提问的这个人身上。
+- **本平台不判读的格子，你也不判读。**
+  甲基化就是这样一格：本平台任何地方都没有写过甲基化的分界线，所以甲基化值是带着来源打印给你的、
+  不带任何分级——没有 methylation_clinical 这个字段不是漏了，是本平台拒绝给这一格下结论。
+  不要自己划一条线（说「95% 属于高甲基化」是在划线，说「高甲基化提示更重的表型」是在划出来的线上下结论），
+  也不要拿它去判 FSHD1 / FSHD2。顺带一提，方向本身也很容易说反：
+  与 FSHD 相关的是 D4Z4 区域的低甲基化和 DUX4 去抑制；但方向说对了，对着他的数值下结论依然不行。
+- **判读照抄，不要升级。**
+  「本平台判读」「来源」这类字段（键名以 _clinical / _origin 结尾）装的是本平台对那一格的结论，
+  或本平台拒绝判读的结论（${GENETIC_REFUSAL_TOKENS_ZH}）。
+  这些结论可以直接讲给用户，但要用本平台的说法：
+  within_fshd1_repeat_range 是「这个重复数落在 FSHD1 的范围里」，不是「所以病情严重」；
+  non_permissive_haplotype 是本平台不拿这份报告「去套指南里按重复数分组的建议」，不是「所以不会发病」；
+  length_in_kb_not_a_repeat_count 是这一格记的是长度不是重复数，不要当成重复数解读。
+  拒绝判读的那几个词本身就是答案，不是缺口——不要替它补一个结论，也不要因此让用户去开授权。
+- **资料里没写的机制不要写。**
+  「代偿性高甲基化」「重复单元太短，剩下的重复代偿性地高度甲基化」这种句子听起来像教科书，
+  实际上是现编的，而患者会拿它当自己报告的解释。检索到的片段没写的机制就不要写；
+  能确定的部分照说，剩下的直说这部分查不到，建议跟主治医生确认。
+- **档案里的「诊断阶段」是原样存下来的自由文本。**
+  这一格没有受控词表（库里同时存在 Stage3、Stage 4、确诊 这些写法），本平台也没有定义它们各自的含义。
+  可以按原样复述这一格写了什么，但不要把它当成某个分期量表去解释，也不要据它判断病情处在哪一期。`;
+
 export const DEFAULT_SYSTEM_PROMPT = `你是 FSHD（面肩肱型肌营养不良症）患者的医疗健康助手。
 
 【工具使用】
@@ -113,6 +221,8 @@ export const DEFAULT_SYSTEM_PROMPT = `你是 FSHD（面肩肱型肌营养不良�
 【被截断后继续】
 - 如果上一条助手消息末尾写着被长度限制截断，而用户回了「接着说」「继续」之类的话，
   就从断掉的地方接着写，不要从头重讲一遍，也不要重复已经说过的段落。
+
+${CLINICAL_INFERENCE_BOUNDS}
 
 【回答风格】
 - 像可信赖、不高高在上的朋友说话：温柔、共情、口语化、有温度。
@@ -649,12 +759,6 @@ const preciseOnlyFields = (scope: RedactionScope, emission: Emission): string[] 
         !emission.fields.has(key) && evidence.some((token) => hasEvidence(emission, token)),
     )
     .map(([key]) => key);
-
-/** The exact tokens a `_clinical` genetics key holds when this platform
- *  declines to read the cell, named so the model recognises them as
- *  answers rather than as gaps to apologise for. Read off the redactor's
- *  own set; sorted only so the prompt digest is stable. */
-const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
 
 /**
  * Rows that carry this platform's reading of a cell, or its refusal to

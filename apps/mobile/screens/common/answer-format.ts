@@ -54,7 +54,14 @@ export type AnswerBlock =
   | { kind: 'quote'; spans: TextSpan[] }
   | { kind: 'code'; text: string }
   | { kind: 'rule' }
-  /** A table row, flattened to label + value. See `flattenTable`. */
+  /** A table row, flattened to label + value. See `flattenTable`.
+   *
+   *  `label` is PLAIN TEXT, and that is a contract rather than an
+   *  accident of typing — every renderer prints it straight into a
+   *  `<Text>`, so any inline syntax left in it reaches the reader as
+   *  characters. `flattenTable` is the only writer and it strips the
+   *  markup off; see the note there for why the emphasis is dropped
+   *  rather than carried. */
   | { kind: 'pair'; label: string; spans: TextSpan[] };
 
 export interface TextSpan {
@@ -217,7 +224,37 @@ const splitRow = (line: string): string[] => {
  * header: a lone `| TPPA | 阴性 |` vanished, and so did the first row
  * after a blank line inside a table, because the block restarted and
  * ate that row as a header nobody asked for.
+ *
+ * THE LABEL COLUMN GOES THROUGH THE INLINE PASS TOO, AND IT DID NOT.
+ * Every other field this module emits is `TextSpan[]`; `label` is a
+ * string, and it was the raw cell — so the one column the system prompt
+ * asks the model to put the 指标 in was the one column whose Markdown
+ * was never parsed. 「| **D4Z4 重复数** | 3 次 |」 reached the chat bubble
+ * as `**D4Z4 重复数**`, asterisks and all, while the identical
+ * characters one paragraph above rendered bold correctly. Both halves of
+ * that are the prompt's own instructions: 【排版】 asks for bold AND asks
+ * for 第一列放指标名, so a bold 指标 is not an edge case, it is what the
+ * paragraph produces.
+ *
+ * THE EMPHASIS IS DROPPED RATHER THAN CARRIED, and the flattening is why.
+ * A table cell is bold to stand out from its row; once the row is a
+ * label/value pair the label column already carries its own weight and
+ * colour, so the marker has nothing left to distinguish. Keeping it
+ * would mean widening `pair` to a second span list, which every renderer
+ * of this type would have to grow a branch for — a larger change than
+ * the reader gets anything from. What is NOT acceptable is the third
+ * option, which is what shipped: printing the markers.
+ *
+ * `parseSpans` and not a strip-the-markers regex, so the label agrees
+ * with the value beside it about what the syntax MEANT — `\*` unescapes
+ * to a literal asterisk instead of being deleted, a code span keeps its
+ * contents, and a link keeps its label. One inline grammar, read once.
  */
+const plainCell = (cell: string): string =>
+  parseSpans(cell)
+    .map((span) => span.text)
+    .join('');
+
 const flattenTable = (rows: string[][], headerRow: string[] | null): AnswerBlock[] =>
   rows.map((cells) => {
     const [label = '', value = '', ...rest] = cells;
@@ -228,7 +265,7 @@ const flattenTable = (rows: string[][], headerRow: string[] | null): AnswerBlock
       })
       .filter(Boolean);
     const tail = extras.length > 0 ? `（${extras.join('，')}）` : '';
-    return { kind: 'pair' as const, label, spans: parseSpans(`${value}${tail}`) };
+    return { kind: 'pair' as const, label: plainCell(label), spans: parseSpans(`${value}${tail}`) };
   });
 
 /** Decide what a run of pipe lines actually is, then flatten it. */
