@@ -528,6 +528,18 @@ export interface GuardEvidence {
    * nothing else is — see `fabricated_reference_range`.
    */
   recordIntervals: ReadonlySet<string>;
+  /**
+   * The genetics cells this turn knows are THIS PATIENT'S — a cell his
+   * payloads carry a value for, a cell the projection printed, or a cell
+   * the conversation fallback recovered a number for.
+   *
+   * The fact half of the possessive limb of check 1. It is deliberately
+   * NOT 「the cells this file has words for」: 甲基化 in a sentence about
+   * a patient whose record holds no methylation is a sentence about the
+   * concept, and the claim this platform forbids is the one landing on
+   * HIS cell.
+   */
+  patientCells: ReadonlySet<string>;
 }
 
 /**
@@ -636,12 +648,104 @@ const BOUND_CONNECTIVE = '(?:及|或|或者|及其|乃至)?\\s*';
 const BAND_SOURCE = `(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:-|–|—|~|～|到|至)${MEASURE_TAIL}([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?![0-9A-Za-z.])`;
 
 const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
-const INTERVAL_BELOW = new RegExp(
-  `(?:<|≤|<=|小于|低于|不足)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}${BOUND_CONNECTIVE}(?:以下|以内)`,
+
+/**
+ * WHICH SIDE OF THE NUMBER A BOUNDARY WORD PUTS YOU ON.
+ *
+ * THIS IS NOT A LEXICON THE WAY THE REST OF THE FILE'S LISTS ARE, and
+ * the difference decides how it had to be fixed. 「严重」 is a judgement
+ * no fact derives, so that list may be incomplete and fails toward
+ * silence. A BOUNDARY WORD HAS AN ARITHMETIC MEANING: 不低于 11 IS the
+ * set 11, 12, 13…, and there is a right answer and a wrong one. The
+ * previous version got the wrong one, and it got it by pattern rather
+ * than by accident:
+ *
+ *   - the BELOW alternation held 低于, so 「不低于 11 个」 — AT LEAST 11 —
+ *     matched inside the negation and canonicalised to 「<11」;
+ *   - the ABOVE alternation held 超过, so 「不超过 100%」 — AT MOST 100 —
+ *     canonicalised to 「>100」.
+ *
+ * Every downstream reader of `intervalsIn` was then reasoning about the
+ * COMPLEMENT of the band the text stated. `recordIntervals` is the set a
+ * 参考范围 cell is checked against, so a report printing
+ * 「正常参考：不低于 11 个」 entered the turn as 「<11」: the model
+ * reprinting the laboratory's own interval as 「11 个以上」 was flagged as
+ * fabricating it, and an invented 「10 以下」 matched and published. An
+ * inverted bound is worse than a missing one — a missing bound costs a
+ * comparison, an inverted one makes the guard argue for the wrong band.
+ *
+ * SO THE PARSER IS BUILT OUT OF THE GRAMMAR RATHER THAN OUT OF A LIST OF
+ * STRINGS. There are exactly two things to get right and they compose:
+ *
+ *   1. A DIRECTION WORD — 大于 / 高于 / 超过 / 多于 / 超出 point up,
+ *      小于 / 低于 / 少于 point down.
+ *   2. A NEGATOR IN FRONT OF IT — 不 / 未 / 没(有) — which FLIPS the
+ *      direction, because that is what negating a bound does.
+ *
+ * 不足 / 不到 / 不满 / 未满 are written as WHOLE ATOMS rather than left to
+ * rule 2, because they are not negations of a direction word: 足 and 到
+ * are not bounds, and 「不足 11」 is 「<11」 rather than the flip of
+ * anything. They sit in the BELOW list ahead of the negator branch and
+ * the engine reaches them by backtracking off it.
+ *
+ * AND THE SPELT-OUT ≥ AND ≤, which are how a Chinese report and a
+ * Chinese answer write those two symbols. 大于等于 / 大于或等于 /
+ * 小于等于 / 小于或等于 were absent entirely, so a record printing
+ * 「参考值：大于等于 11 个」 contributed NO interval and the same
+ * threshold written 「≥11」 in the answer read as invented. They are the
+ * same grammar as rule 1 with an inclusive tail, so they are written
+ * that way rather than enumerated.
+ *
+ * 至少 / 最少 / 起码 / 至多 / 最多 are the other closed way Chinese opens
+ * an interval and are listed for the same reason.
+ *
+ * INCLUSIVITY IS DELIBERATELY NOT CARRIED INTO THE CANONICAL KEY, which
+ * is the convention this file already had — 「≥11」 and 「>11」 have
+ * always both been 「>11」 — and it is kept because the key exists to
+ * ANSWER ONE QUESTION: did the record print this interval. Splitting
+ * 「≥11」 from 「>11」 would make a record that printed one and an answer
+ * that wrote the other read as a fabrication, which is a true reference
+ * range deleted off a patient's screen for a boundary character. The
+ * DIRECTION is what this file has to get right, and that is what the
+ * parser now gets right.
+ *
+ * IT IS APPLIED SYMMETRICALLY — the record's intervals and the answer's
+ * intervals go through this one function — so a form added here can only
+ * ever add a comparison, never a permission. What it still cannot read
+ * is written down rather than left to be rediscovered: a bound with the
+ * number in front of the direction word (「11 个是下限」), a bound stated
+ * as a word (「十一个以上」), and a negated SUFFIX form (「没有 11 个以上」)
+ * all produce no interval. All three fail toward the record contributing
+ * one interval fewer, which costs a comparison and not a permission.
+ */
+/** 大于等于 / 大于或等于 — the inclusive tail, which changes no direction
+ *  and therefore no key. */
+const OR_EQUAL = '(?:或?等于)?';
+const UP_WORD = '(?:大于|高于|多于|超过|超出)';
+const DOWN_WORD = '(?:小于|低于|少于)';
+/** 不 / 未 / 没 / 没有 — the negator that flips a direction word. */
+const BOUND_NEGATOR = '(?:不|未|没有?)';
+/** Whole atoms: not negations of a direction word, so rule 2 must not
+ *  be allowed to take them apart. */
+const BELOW_ATOM = '(?:不足|不到|不满|未满|至多|最多)';
+const ABOVE_ATOM = '(?:至少|最少|起码)';
+const BELOW_SYMBOL = '(?:<=|=<|<|≤|＜|≦|⩽)';
+const ABOVE_SYMBOL = '(?:>=|=>|>|≥|＞|≧|⩾)';
+const BELOW_PREFIX = `(?:${BELOW_SYMBOL}|${BOUND_NEGATOR}${UP_WORD}${OR_EQUAL}|${DOWN_WORD}${OR_EQUAL}|${BELOW_ATOM})`;
+const ABOVE_PREFIX = `(?:${ABOVE_SYMBOL}|${BOUND_NEGATOR}${DOWN_WORD}${OR_EQUAL}|${UP_WORD}${OR_EQUAL}|${ABOVE_ATOM})`;
+const BOUND_NUMBER = '([0-9]+(?:\\.[0-9]+)?)(?![0-9A-Za-z.])';
+
+/** 「不低于 11」「≥11」「大于等于 11」 — the bound in front of the number. */
+const INTERVAL_BOUND_PREFIX = new RegExp(
+  `(?:(?<below>${BELOW_PREFIX})|(?<above>${ABOVE_PREFIX}))\\s*${BOUND_NUMBER}`,
   'gu',
 );
-const INTERVAL_ABOVE = new RegExp(
-  `(?:>|≥|>=|大于|高于|超过)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}${BOUND_CONNECTIVE}以上`,
+
+/** 「11 个及以上」「10 个以内」 — the bound after the number. See
+ *  `MEASURE_TAIL` and `BOUND_CONNECTIVE` for what may stand between. */
+const INTERVAL_BOUND_SUFFIX = new RegExp(
+  `(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}${BOUND_CONNECTIVE}` +
+    '(?:(?<sbelow>以下|以内|之下|之内)|(?<sabove>以上|之上))',
   'gu',
 );
 
@@ -656,13 +760,15 @@ export const intervalsIn = (text: string): string[] => {
     }
   };
   scan(INTERVAL_BAND, (match) => `${Number(match[1])}~${Number(match[2])}`);
-  scan(INTERVAL_BELOW, (match) => {
-    const value = match[1] ?? match[2];
-    return value === undefined ? null : `<${Number(value)}`;
+  scan(INTERVAL_BOUND_PREFIX, (match) => {
+    const value = Number(match[3]);
+    if (!Number.isFinite(value)) return null;
+    return `${match.groups?.below === undefined ? '>' : '<'}${value}`;
   });
-  scan(INTERVAL_ABOVE, (match) => {
-    const value = match[1] ?? match[2];
-    return value === undefined ? null : `>${Number(value)}`;
+  scan(INTERVAL_BOUND_SUFFIX, (match) => {
+    const value = Number(match[1]);
+    if (!Number.isFinite(value)) return null;
+    return `${match.groups?.sbelow === undefined ? '>' : '<'}${value}`;
   });
   return out;
 };
@@ -848,7 +954,15 @@ const NUMBER_IN_PROSE =
  */
 const BARE_CLASSIFIER_REFERENCE = new RegExp(
   '(?:那|这)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(%|％|kb|KB)?\\s*(?:个|条|段|次|例)?' +
-    '(?=\\s*(?:$|[，,。、；;：:！？!?…—「」『』()（）]|是|就|会|能|算|属|指|意味|代表|说明|到底|究竟|有没有|多|够))',
+    // ...AND THE SENTENCE-FINAL PARTICLES, which is how a patient
+    // actually ends this question. 「那 3 个呢？」「那 3 个吗？」 were
+    // outside the list, so the most natural follow-up there is recovered
+    // no number at all. Admitting them does not loosen the elision test
+    // that makes this list safe to have: 呢 / 吗 / 吧 / 啊 / 呀 / 嘛 are
+    // particles and cannot be the head noun the test exists to exclude —
+    // 「那 2 个孩子呢？」 still has 孩 standing where the lookahead looks.
+    '(?=\\s*(?:$|[，,。、；;：:！？!?…—「」『』()（）]|呢|吗|吧|啊|呀|嘛' +
+    '|是|就|会|能|算|属|指|意味|代表|说明|到底|究竟|有没有|多|够))',
   'gu',
 );
 
@@ -1003,6 +1117,17 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
   }
   const ungradedCells = [...printed].filter((cell) => !graded.has(cell));
 
+  // WHICH CELLS ARE HIS. Both halves of 「the turn holds this cell for
+  // this patient」: a cell his own payloads carry (`onFile`) and a cell
+  // the projection printed. The conversation fallback's cells are added
+  // too — on a follow-up turn that retrieved nothing there is no
+  // projection at all, and that is exactly the turn where the model
+  // writes about 「你的重复数」 with no digit anywhere near it.
+  const patientCells = new Set<string>([...onFile, ...printed]);
+  for (const number of numbers) {
+    if (number.cell !== null) patientCells.add(number.cell);
+  }
+
   // A cell the RECORD holds a value for and the PROMPT does not carry —
   // `onFile` above against the printed rows, which is the only pairing
   // that can tell 「consent withheld it」 from 「there is no such cell」,
@@ -1056,6 +1181,7 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     supportShingles,
     corpusChunkCount: input.corpusTexts.length,
     recordIntervals,
+    patientCells,
   };
 };
 
@@ -1448,6 +1574,62 @@ const clausesOf = (segment: string): string[] =>
 const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
   clausesOf(segment).some((clause) => POSSESSIVE.test(clause) && cellTermsPresent(clause, cell));
 
+/**
+ * CHECK 1 WITHOUT THE DIGIT: THE CLAIM ATTACHED TO HIS CELL BY THE
+ * POSSESSIVE INSTEAD OF BY THE NUMBER.
+ *
+ * Check 1 asks whether the sentence carries one of HIS values or a band
+ * around one, and that is the right question for every sentence that
+ * names a number. It is not how the most direct form of the claim is
+ * written. Driven against the running stack:
+ *
+ *   「你的重复数意味着病情较重」
+ *   「你的这个甲基化水平提示病程进展会比较快」
+ *
+ * — no digit, nothing to inherit from a label or an anaphor, and check 1
+ * had nothing at all to fire on. The reader is named by 你的 rather than
+ * by 3, which is if anything the MORE personal way to say it.
+ *
+ * THE RULE AT THE TOP OF THIS FILE, APPLIED BEFORE WIDENING ANYTHING.
+ * Can a fact this turn holds answer 「is this sentence about this
+ * patient's own cell」? YES, and it is the same fact check 2 is already
+ * built on: `patientCells` — the cells this turn holds for this patient.
+ * A sentence naming 甲基化 for a patient whose record holds no
+ * methylation is a sentence about the concept and this limb never sees
+ * it. So the fact does the work here exactly as the number set does it
+ * one limb up; nothing was added to `SEVERITY_WORD`.
+ *
+ * AND IT IS ASKED OF THE CLAUSE, for the reason the block above
+ * `possessiveAttachedToCell` gives at length: a possessive binds inside
+ * its own clause. The clause is also what keeps the honest sentence
+ * alive —
+ *
+ *   「你的 D4Z4 重复数这一格我读到了，至于病情会不会进展，得看随访」
+ *
+ * has the possessive and the cell in one clause and the severity word in
+ * the next, so nothing in this limb fires; the claim it exists for puts
+ * all three in one clause because that is what makes it a claim.
+ *
+ * The possessive list is a register list like every other one here, it
+ * is used only to WITHHOLD, and it is incomplete by construction: a
+ * phrasing it misses costs a caught violation and never a deleted true
+ * sentence.
+ */
+const possessedCellCarryingTheClaim = (
+  segment: string,
+  cells: ReadonlySet<string>,
+): string | null => {
+  if (cells.size === 0) return null;
+  for (const clause of clausesOf(segment)) {
+    if (!POSSESSIVE.test(clause)) continue;
+    if (!SEVERITY_WORD.test(clause)) continue;
+    for (const cell of cells) {
+      if (cellTermsPresent(clause, cell)) return cell;
+    }
+  }
+  return null;
+};
+
 // ------------------------------------------- check 4: whose absence is it
 
 /**
@@ -1565,10 +1747,45 @@ const DELIVERY_VERB =
 const CELL_ANAPHORA =
   /这一项|这个项目|这项|该项|这一格|这一栏|这个指标|这个数值|这个结果|这部分|这些数值|这一条/u;
 
+/**
+ * WHAT THE DELIVERY VERB HAS TO BE: THE VERB THE ABSENCE MARKER NEGATES,
+ * NOT A WORD SOMEWHERE AFTER IT.
+ *
+ * The block above says twice that the consent wording must not become a
+ * password, and then a 24-CHARACTER WINDOW made it one a third time, by
+ * position instead of by presence. Stating the absence first and
+ * explaining it second is the ordinary order in Chinese:
+ *
+ *   「你的报告里没有甲基化的结果，因为按当前授权没有发给我。」
+ *
+ * The first 没有 is predicated of the DOCUMENT and is false. The second
+ * is predicated of this assistant and is true. They are twelve
+ * characters apart, so the true half's 发给 sat inside the false half's
+ * window and stood the whole check down — the same sentence with the two
+ * clauses swapped was caught, which is not a distinction about meaning.
+ *
+ * A window cannot separate them at any width: shrink it and
+ * 「按当前授权没有完整地发给我」 starts publishing as a violation, widen
+ * it and more of the sentence becomes password. WHAT SEPARATES THEM IS
+ * THE CLAUSE, exactly as it does for the possessive one screen up. 没有
+ * governs the verb in its OWN clause; a verb across the comma belongs to
+ * the next predicate and says nothing about this one. So the delivery
+ * verb is looked for between the marker and the end of its clause, which
+ * is the sentence's own structure rather than a character count, and
+ * every marker in the segment is still resolved on its own.
+ */
 /** Whose absence is the marker AT THIS POSITION predicated of? */
-const absenceAtIsAboutTheReport = (segment: string, marker: number): boolean => {
+const absenceAtIsAboutTheReport = (
+  segment: string,
+  marker: number,
+  markerLength: number,
+): boolean => {
   const head = segment.slice(0, marker);
-  const tail = segment.slice(marker);
+  const afterMarker = segment.slice(marker + markerLength);
+  const boundary = afterMarker.search(CLAUSE_BOUNDARY);
+  // The rest of the marker's OWN clause. `CLAUSE_BOUNDARY` is where a
+  // clause ends; a delivery verb past it is the next predicate's.
+  const tail = boundary < 0 ? afterMarker : afterMarker.slice(0, boundary);
   const lastOf = (pattern: RegExp): number => {
     let best = -1;
     let from = 0;
@@ -1587,8 +1804,8 @@ const absenceAtIsAboutTheReport = (segment: string, marker: number): boolean => 
   if (self > report) return false;
   // 「你的报告里的甲基化数值按当前授权没有发给我」 — the report is the
   // nearest holder, and the absence is still the assistant's. The
-  // delivery verb is what says so.
-  if (DELIVERY_VERB.test(tail.slice(0, 24))) return false;
+  // delivery verb is what says so, and it has to be THIS marker's verb.
+  if (DELIVERY_VERB.test(tail)) return false;
   return true;
 };
 
@@ -1604,7 +1821,7 @@ const absenceIsAboutTheReport = (segment: string): boolean => {
   ABSENCE_MARKER_EVERY.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = ABSENCE_MARKER_EVERY.exec(segment)) !== null) {
-    if (absenceAtIsAboutTheReport(segment, match.index)) {
+    if (absenceAtIsAboutTheReport(segment, match.index, match[0].length)) {
       ABSENCE_MARKER_EVERY.lastIndex = 0;
       return true;
     }
@@ -1672,8 +1889,21 @@ const TEST_MARKER = /检测|检查|化验|测一下|做一个/u;
 // `evidence.recordIntervals`. And like every lexicon in this file it is
 // still incomplete, which is why `buildExcisionNotice` no longer claims
 // otherwise.
+//
+// 正常情况 / 正常人群 joined it the same way, in this round, on the
+// running stack: asked for his value in one sentence and the normal
+// value in the next, the model wrote 「你的 D4Z4 重复数是 3。」 followed by
+// 「正常情况下，这个数值通常大于 10。」 — a threshold this platform never
+// printed, standing one sentence away from his own number, phrased around
+// every entry this list held. It is INCOMPLETE BY CONSTRUCTION and always
+// will be: no fact this turn holds can decide whether a string of Chinese
+// frames an interval as 「what a laboratory calls normal」. It is used
+// ONLY to decide WHERE TO LOOK and therefore only ever to WITHHOLD — a
+// register it misses costs a fabricated range that should have been cut,
+// never a true one deleted — and the fact half (`recordIntervals`) is
+// what decides the violation.
 const REFERENCE_RANGE_CONTEXT =
-  /参考范围|参考值|参考区间|正常范围|正常值|正常区间|正常人|健康人|正常应该|正常应在|临界值|界值|阈值|分界线|诊断范围|诊断区间|正常参考|cut-?off/iu;
+  /参考范围|参考值|参考区间|正常范围|正常值|正常区间|正常人|正常人群|正常情况|健康人|正常应该|正常应在|临界值|界值|阈值|分界线|诊断范围|诊断区间|正常参考|cut-?off/iu;
 
 // ------------------------------------------------------------------ topic clause
 
@@ -1907,6 +2137,35 @@ const BAND_ANAPHORA =
   /这个区间|这一区间|该区间|这个范围|这一范围|该范围|这一?档|这个区段|这一段区间|上面这一/u;
 
 /**
+ * ...AND THE POINTER AT A VALUE, WHICH IS THE COMMONER OF THE TWO.
+ *
+ * The list above is every way of pointing back at a BAND, and it was the
+ * only way of pointing back at anything. A patient's own number is not a
+ * band, and 「你的重复数是 3。这个数值在临床上通常关联着更早的发病年龄。」
+ * — which the running stack writes far more readily than the 这个区间
+ * form — refers back to the VALUE. It names no digit, so
+ * `previousSegmentText` was never consulted and check 1 stood down on
+ * the plainest two-sentence version of the claim there is.
+ *
+ * NO FACT ANSWERS 「is this string an anaphor」 — it is a question about
+ * notation — but the fact is still the half that decides: the anaphor
+ * only causes the PREVIOUS SEGMENT'S text to be read alongside this one,
+ * and check 1 then requires a number in it to be one of HIS. A pointer
+ * at a sentence that named no number of his changes nothing.
+ *
+ * It is a closed grammatical class — a demonstrative over 数值 / 数字 /
+ * 结果 / 读数 / 重复数 — rather than a claim lexicon, and it is
+ * incomplete by construction like every list in this file: a form it
+ * misses costs a caught violation.
+ *
+ * 这一格 / 这一项 are deliberately NOT here. Those point at a FIELD, and
+ * 「甲基化这一格本平台不下结论。」 is the sentence that has to BREAK the
+ * chain rather than extend it — see the test that pins exactly that.
+ */
+const VALUE_ANAPHORA =
+  /这个数值|这一数值|该数值|这个数字|这一数字|该数字|这个结果|这一结果|该结果|这个读数|这个重复数|这个甲基化|这个值|这一数据|这个数据|这个水平|这个(?!数值|数字|数据)数/u;
+
+/**
  * Does the segment name a number of its own?
  *
  * NOT 「does it contain a digit」, which was the first version and was
@@ -1956,6 +2215,9 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
   let labelStack: { indent: number; text: string }[] = [];
   // The sentence before this one, for a 这个区间 that points at it.
   let previousSegmentText = '';
+  // Was the sentence before this one about this patient? See the block
+  // above `rowIsAboutThisPatient` for why check 5 has to ask.
+  let previousAboutPatient = false;
 
   for (const [segmentIndex, segment] of segments.entries()) {
     const text = segment.match;
@@ -1977,7 +2239,10 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     const inherited = labelStack.map((label) => label.text).join(' ');
     // ...plus the sentence immediately before, when this one points back
     // at a band instead of naming it. See BAND_ANAPHORA.
-    const anaphoric = !namesANumber(text) && BAND_ANAPHORA.test(text) ? previousSegmentText : '';
+    const anaphoric =
+      !namesANumber(text) && (BAND_ANAPHORA.test(text) || VALUE_ANAPHORA.test(text))
+        ? previousSegmentText
+        : '';
     // The chain carries: 「你落在 1–3 这一档。这一档在 FSHD1 里最短。
     // 这一档发病更早。」 is three sentences and one referent. Every link
     // needs its own explicit anaphor, so the chain cannot grow through a
@@ -1999,6 +2264,11 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
       labelStack.push({ indent: -1, text: withInherited });
     }
 
+    // Is this segment itself about the patient, for check 5? Read once,
+    // because the carry below is the same question asked of the segment
+    // before it.
+    const aboutThisPatient = rowIsAboutThisPatient(text, evidence);
+
     // ---- 5. A reference interval the record never printed -----------
     if (row) {
       const cells = rowCells(text);
@@ -2011,7 +2281,7 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
           const invented = referenceColumns
             .flatMap((index) => intervalsIn(cells[index] ?? ''))
             .filter((interval) => !evidence.recordIntervals.has(interval));
-          if (invented.length > 0 && rowIsAboutThisPatient(text, evidence)) {
+          if (invented.length > 0 && (aboutThisPatient || previousAboutPatient)) {
             add({
               kind: 'fabricated_reference_range',
               sentence: segment.text.trim(),
@@ -2026,7 +2296,7 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
         const invented = intervalsIn(text).filter(
           (interval) => !evidence.recordIntervals.has(interval),
         );
-        if (invented.length > 0 && rowIsAboutThisPatient(text, evidence)) {
+        if (invented.length > 0 && (aboutThisPatient || previousAboutPatient)) {
           add({
             kind: 'fabricated_reference_range',
             sentence: segment.text.trim(),
@@ -2056,6 +2326,17 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
           sentence: segment.text.trim(),
           because: `这句把「${hit.value}」——${provenance}——和病情轻重、进展或发病早晚绑在了一起。说成「在人群里」也不行：他的数字（或者包住他数字的那一档）一旦被点名，这句话就落在他身上了。`,
         });
+      } else {
+        // ...and the same claim with no digit in it at all, attached to
+        // his cell by 你的 instead. See `possessedCellCarryingTheClaim`.
+        const cell = possessedCellCarryingTheClaim(asserted, evidence.patientCells);
+        if (cell !== null) {
+          add({
+            kind: 'severity_from_patient_number',
+            sentence: segment.text.trim(),
+            because: `这句在同一个小句里把「你的${CELL_LABEL_ZH[cell] ?? cell}」和病情轻重、进展或发病早晚绑在了一起。没有写出数字不代表说的不是他——「你的」已经把这句话安在他本人身上了。`,
+          });
+        }
       }
     }
 
@@ -2133,14 +2414,65 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
         because: `「${CELL_LABEL_ZH[cell] ?? cell}」这一格在他的记录里是有结果的，只是当前授权没有把数值发给你——这是授权造成的看不见，不是报告里没有。说「按当前授权我这边看不到」是对的，说「报告里没有」是错的。`,
       });
     }
+
+    // ONE HOP, AND A TABLE DOES NOT SPEND IT. A row is judged as part of
+    // what introduced it — the same rule `labelStack` follows two screens
+    // up — so the carry set by the lead-in stands for the whole table
+    // rather than being consumed by the header row.
+    if (!row) previousAboutPatient = aboutThisPatient;
   }
 
   return violations;
 };
 
-/** Is this row/sentence about the patient at all? A fabricated interval
- *  in a general encyclopedia table is somebody else's problem; one
- *  standing beside this patient's own value is this file's. */
+/**
+ * Is this row/sentence about the patient at all? A fabricated interval
+ * in a general encyclopedia table is somebody else's problem; one
+ * standing beside this patient's own value is this file's.
+ *
+ * ---------------------------------------------------------------------
+ * AND IT IS ASKED OF THE SEGMENT PLUS THE ONE BEFORE IT, BECAUSE THE
+ * NATURAL FORM PUTS THE VALUE AND THE INVENTED RANGE IN DIFFERENT
+ * SENTENCES.
+ *
+ * Driven against the running stack:
+ *
+ *   「你的 D4Z4 重复数是 3 个。」
+ *   「正常参考范围是 11 个以上。」
+ *
+ * The second sentence is the fabricated laboratory threshold this check
+ * exists for — it is standing beside his value and the patient will
+ * compare their 3 against it — and asked ON ITS OWN it is about nobody:
+ * it names no cell and carries none of his numbers, so this gate refused
+ * it and the invented interval published. Splitting a claim over two
+ * sentences is not an evasion; it is how the language works, and the
+ * same seam is already written up two screens above for the severity
+ * check.
+ *
+ * NO WIDENING OF THE 参考范围 LEXICON WOULD HAVE CLOSED THIS — the
+ * lexicon matched perfectly. What was missing is a fact, and the
+ * document holds it: WHAT THE SENTENCE BEFORE THIS ONE WAS ABOUT. So the
+ * question is asked of the segment and, failing that, of the segment
+ * immediately before it.
+ *
+ * ONE HOP, for the reason the anaphora chain gives: reaching further
+ * back lets any sentence in the answer make any other sentence 「about
+ * this patient」. A TABLE DOES NOT SPEND THE HOP — a row is judged as
+ * part of what introduced it, exactly as `labelStack` already treats it
+ * — so a table of ranges under 「你的重复数是 3 个：」 is judged row by
+ * row rather than let through by its own header.
+ *
+ * WHAT IT COSTS, stated: an encyclopedia interval written in the
+ * sentence after one about this patient is now cut, where before only
+ * the same interval written in the same sentence was. That is the
+ * trade this check has always made — see the 参考范围 block — extended
+ * to one more position, and a patient reading a 「正常范围」 next to
+ * their own value cannot tell the two apart either.
+ *
+ * WHAT IT STILL MISSES, stated: two hops (「你的重复数是 3。这个我读到
+ * 了。正常范围是 11 以上。」) and a range separated from the patient's
+ * value by a paragraph. Both fail toward publication.
+ */
 function rowIsAboutThisPatient(text: string, evidence: GuardEvidence): boolean {
   if (CELL_NAMES.some((cell) => cellTermsPresent(text, cell))) return true;
   return evidence.numbers.some((number) => carriesNumber(text, number.value));

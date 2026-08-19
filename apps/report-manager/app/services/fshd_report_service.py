@@ -442,7 +442,92 @@ MUSCLE_KEYWORDS: Dict[str, Dict[str, Any]] = {
     "soleus": {"keywords": ["比目鱼肌", "soleus"], "region": "ankle"},
     "serratus_anterior": {"keywords": ["前锯肌", "serratus"], "region": "shoulder_girdle"},
     "facial_muscles": {"keywords": ["面肌", "facial"], "region": "face"},
+    # THE THIGH, NAMED MUSCLE BY MUSCLE — WHICH IS HOW A MUSCLE MRI
+    # NAMES IT.
+    #
+    # 股四头肌 and 腘绳肌 are GROUPS, and a radiologist reporting a
+    # 双大腿MRI does not report groups: the report reads 「股外侧肌、
+    # 股中间肌脂肪浸润，股直肌相对保留」, because WHICH heads of the
+    # quadriceps are involved and which are spared is the finding. Every
+    # one of those names fell outside the map, `_muscle_from_sentence`
+    # answered None, and the sentence produced NOTHING AT ALL — no
+    # fatty-infiltration field, no map entry, no trace in the payload
+    # that the page had said anything. On the imaging this disease is
+    # followed by.
+    #
+    # Listing them does not close the class — see `_MUSCLE_TERM` for
+    # what happens to a name that is still not here — but these are the
+    # muscles the standard thigh protocol scores, so they are the ones
+    # worth reading as themselves rather than as unread terms.
+    "rectus_femoris": {"keywords": ["股直肌", "rectus femoris"], "region": "thigh"},
+    "vastus_lateralis": {"keywords": ["股外侧肌", "vastus lateralis"], "region": "thigh"},
+    "vastus_medialis": {"keywords": ["股内侧肌", "vastus medialis"], "region": "thigh"},
+    "vastus_intermedius": {"keywords": ["股中间肌", "vastus intermedius"], "region": "thigh"},
+    "biceps_femoris": {"keywords": ["股二头肌", "biceps femoris"], "region": "thigh"},
+    "semitendinosus": {"keywords": ["半腱肌", "semitendinosus"], "region": "thigh"},
+    "semimembranosus": {"keywords": ["半膜肌", "semimembranosus"], "region": "thigh"},
+    "sartorius": {"keywords": ["缝匠肌", "sartorius"], "region": "thigh"},
+    "gracilis": {"keywords": ["股薄肌", "gracilis"], "region": "thigh"},
+    "adductor_magnus": {"keywords": ["大收肌", "adductor magnus"], "region": "thigh"},
+    "adductor_longus": {"keywords": ["长收肌", "adductor longus"], "region": "thigh"},
+    "adductor_brevis": {"keywords": ["短收肌", "adductor brevis"], "region": "thigh"},
+    "tensor_fasciae_latae": {
+        "keywords": ["阔筋膜张肌", "tensor fasciae latae"],
+        "region": "thigh",
+    },
+    "peroneus": {"keywords": ["腓骨长肌", "腓骨短肌", "peroneus"], "region": "ankle"},
+    "paraspinal": {"keywords": ["竖脊肌", "椎旁肌", "paraspinal"], "region": "trunk"},
+    "abdominal_muscles": {"keywords": ["腹直肌", "腹外斜肌", "腹内斜肌"], "region": "trunk"},
+    "trapezius": {"keywords": ["斜方肌", "trapezius"], "region": "shoulder_girdle"},
+    "latissimus_dorsi": {"keywords": ["背阔肌", "latissimus"], "region": "shoulder_girdle"},
+    "pectoralis_major": {"keywords": ["胸大肌", "pectoralis"], "region": "shoulder_girdle"},
 }
+
+#: A MUSCLE NAMED IN CHINESE, WHATEVER MUSCLE IT IS — the shape the
+#: lexicon above cannot have.
+#:
+#: THE ANSWER TO 「CAN THIS BE GROUNDED IN SOMETHING THE CORPUS ALREADY
+#: HOLDS」 IS NO, AND IT WAS WORTH CHECKING. Every other muscle
+#: vocabulary in this repository is a SUBSET of the map above —
+#: `MUSCLE_GROUP_LABELS` in the API's export labels carries nine coarse
+#: groups, `strengthAliases` in the OCR bridge carries five, and the
+#: app's own list is the same nine. Grounding this reader in any of them
+#: would make it read LESS, not more. There is no anatomical dictionary
+#: in the payload, in the knowledge base, or on the wire.
+#:
+#: SO THE MISS IS MADE LOUD INSTEAD. A Chinese muscle name ends in 肌 —
+#: that is the language, not a list — so a sentence that names an
+#: anatomical term this module does not carry is recognisable AS a
+#: muscle name even when it cannot be identified. Such a sentence now
+#: produces a finding with `muscle_name: null`, the printed term on
+#: `muscle_term`, and a confidence low enough to put it in
+#: `review_queue`; the term is also collected on
+#: `mri_summary.unread_muscle_terms`. An unread muscle is visible; a
+#: skipped sentence was not.
+#:
+#: THE LOOKAHEAD IS WHAT KEEPS 肌 A SUFFIX. 肌力, 肌肉, 肌张力, 肌酶,
+#: 肌电图 and 肌病 all begin with it, and in each of those the character
+#: this pattern anchors on is the head of the NEXT word rather than the
+#: tail of a name.
+_MUSCLE_TERM = re.compile(r"[一-龥]{2,6}肌(?:群)?(?![肉力张电酶酸病炎营腱])")
+
+#: The qualifiers a report prints in front of a muscle name. Stripped so
+#: that 「双侧股直肌」 and 「股直肌」 are one term rather than two.
+_MUSCLE_TERM_QUALIFIERS = re.compile(
+    r"^(?:双侧|两侧|左侧|右侧|对侧|患侧|健侧|以|及|和|与|、|,|其余|部分|余|各|双|左|右)+"
+)
+
+#: TERMS THAT END IN 肌 AND NAME NO MUSCLE. A tissue type (心肌, 骨骼肌)
+#: and a body region (大腿肌群, 下肢肌) are not muscles this module
+#: failed to identify — reporting them as unread would be a false alarm
+#: on every 双大腿MRI ever written, since 「双大腿肌群脂肪浸润」 is the
+#: standard impression line. Anything ending 肌群 is a group by
+#: construction and is refused by shape rather than by name.
+_NOT_A_MUSCLE_NAME: Tuple[str, ...] = (
+    "心肌", "骨骼肌", "平滑肌", "横纹肌",
+    "下肢肌", "上肢肌", "四肢肌", "肢体肌", "全身肌", "躯干肌",
+    "大腿肌", "小腿肌", "近端肌", "远端肌", "肩带肌", "骨盆带肌",
+)
 
 SIDE_KEYWORDS = {
     "left": ["左", "left", " l "],
@@ -757,8 +842,42 @@ _NUMBER_CELL_SOURCE = rf"(?:{_DIGIT_GROUPS}|{_SPACED_DIGIT_GROUPS}|\d+)(?:\.\d+)
 #: because both sides have to be a digit.
 _GROUP_SEPARATOR = re.compile("(?<=\\d)[,\uff0c \u00a0](?=\\d)")
 
+#: EVERY DASH AN INTERVAL IS PRINTED WITH, AND EVERY COMPARATOR A LIMIT
+#: IS PRINTED WITH — ONE GRAMMAR, THE WAY `_NUMBER_SOURCE` IS ONE.
+#:
+#: The interval readers listed the ASCII hyphen, the ASCII tilde and two
+#: of the CJK dashes, and the bound readers listed the four ASCII/维基
+#: comparators. A Chinese laboratory does not type them: an IME gives
+#: 「－」 (U+FF0D, full-width hyphen-minus) for a hyphen keyed in Chinese
+#: mode and 「＜」 (U+FF1C) for a less-than, and an OCR pass hands back
+#: 「–」 (U+2013) for a printed en dash at least as often as it hands
+#: back the ASCII one. Each of those spellings lost the row its
+#: reference interval ENTIRELY — `_ROW_RANGE` did not match, `_ROW_BOUND`
+#: did not match, and `_read_row_reference` returned three Nones.
+#:
+#: AND THE INTERVAL IS NOW WHAT DRIVES THE ABNORMAL COMPARISON. Since
+#: `observations[].reference` started carrying it, a missing interval is
+#: not a missing decoration: `latest_summary.by_analyte…reference_high`
+#: is empty, the read-path comparison that marks a reading above its own
+#: ceiling has nothing to fire on, and a creatine kinase of 693 printed
+#: 「50－310」 reaches a clinician looking exactly like a normal one. It
+#: also costs the READING on the flattened row, because
+#: `extract_numeric_value` refuses a number it can see is an interval
+#: bound — an interval it cannot see is one it cannot refuse, so 50 was
+#: publishable as the patient's own result.
+#:
+#: `-` IS FIRST IN BOTH CLASSES so it is a literal and not a range.
+_RANGE_DASHES = "-~—～－–‐‑‒―−〜﹣"
+_COMPARATORS = "<>≤≥＜＞⩽⩾﹤﹥"
+
+#: The comparators that name a CEILING. Read as a set rather than by
+#: `in "<≤"`, which was a substring test over the two ASCII spellings —
+#: so 「＜25」 was recorded as a LOWER limit of 25 the moment the
+#: full-width spelling started matching at all.
+_UPPER_LIMIT_COMPARATORS: frozenset = frozenset("<≤＜⩽﹤")
+
 #: A whole cell that is one number, with or without a comparator.
-_NUMBER_CELL = re.compile(rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}$")
+_NUMBER_CELL = re.compile(rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}$")
 
 
 def _strip_group_separators(text: str) -> str:
@@ -2022,6 +2141,15 @@ def _extract_text_panel(
         row_value = _read_qualitative_row(vocabulary, field_name, lines, columns)
         if row_value is _AMBIGUOUS_QUALITATIVE:
             continue
+        # THE ROWS THE CLOSED VOCABULARY WAS NEVER GOING TO REACH. A
+        # colour and a consistency are printed in the same two columns
+        # as a 阴性/阳性, in the same order, and were still being read
+        # out of the reference one. See `_read_free_text_row`.
+        free_text = None
+        if row_value is None:
+            free_text = _read_free_text_row(vocabulary, field_name, lines, columns)
+            if free_text is _AMBIGUOUS_QUALITATIVE:
+                continue
         raw_value = None
         for haystack in haystacks:
             raw_value = _extract_named_text(haystack, meta.get("patterns", []))
@@ -2032,6 +2160,15 @@ def _extract_text_panel(
             or _qualitative_polarity(row_value) != _qualitative_polarity(raw_value)
         ):
             raw_value = row_value
+        # THE ROW WINS OUTRIGHT HERE, unlike the qualitative branch
+        # above. There the pattern's answer is kept wherever the two
+        # AGREE IN MEANING, so that a report this module already read
+        # correctly keeps the exact spelling its alternation stopped at;
+        # a free-text cell has no meaning to compare, only a printed
+        # form, and the row reader is the one that read it out of the
+        # right column.
+        elif free_text is not None:
+            raw_value = free_text
         if raw_value is None:
             continue
         if meta.get("normalize_qualitative"):
@@ -2161,6 +2298,215 @@ def _muscle_from_sentence(sentence: str) -> Optional[Tuple[str, str]]:
         if any(keyword.lower() in lowered for keyword in meta["keywords"]):
             return canonical_name, meta["region"]
     return None
+
+
+class _NamedMuscle(NamedTuple):
+    """One muscle a sentence names — identified, or merely recognised."""
+
+    canonical_name: Optional[str] = None
+    region: Optional[str] = None
+    #: The term as the report printed it, set ONLY when the module could
+    #: not identify it. See `_MUSCLE_TERM`.
+    unread_term: Optional[str] = None
+
+
+def _trim_muscle_term(term: str) -> str:
+    """A printed muscle term without the side and the conjunction on its front."""
+    return _MUSCLE_TERM_QUALIFIERS.sub("", term.strip()).strip()
+
+
+def _names_no_muscle(term: str) -> bool:
+    """`term` ends in 肌 and is a region or a tissue, not a muscle."""
+    return term.endswith("肌群") or term in _NOT_A_MUSCLE_NAME
+
+
+def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
+    """EVERY muscle the sentence names, identified where it can be.
+
+    TWO THINGS CHANGED HERE AND THEY ARE THE SAME THING.
+
+    IT READS EVERY MUSCLE, NOT THE FIRST. `_muscle_from_sentence`
+    returns on its first hit, and a radiology sentence names muscles in
+    a LIST — 「右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润」 is one
+    sentence (a Chinese enumeration comma is not a sentence break), so
+    two of its three muscles were dropped without trace. WHICH muscles
+    are involved and which are spared IS the finding on this modality;
+    a map holding one of them is a different report.
+
+    AND IT RECOGNISES A MUSCLE IT CANNOT IDENTIFY. See `_MUSCLE_TERM`:
+    a term this module does not carry comes back with no canonical name
+    and the printed term instead, so the caller can publish it as unread
+    rather than publish nothing.
+
+    A term OVERLAPPING a name the lexicon already matched is that same
+    muscle under its qualifiers — 「双侧股直肌」 covers 股直肌 — and is
+    not reported twice.
+    """
+    lowered = sentence.lower()
+    hits: List[Tuple[int, _NamedMuscle]] = []
+    claimed: List[Tuple[int, int]] = []
+    for canonical_name, meta in MUSCLE_KEYWORDS.items():
+        for keyword in meta["keywords"]:
+            token = keyword.lower().strip()
+            if not token:
+                continue
+            # EVERY occurrence is claimed, not the first. A name printed
+            # twice in one clause would otherwise have its second
+            # printing fall through to `_MUSCLE_TERM` and be reported as
+            # an UNREAD muscle — a false alarm on a muscle this module
+            # had just identified.
+            spans = [(m.start(), m.end()) for m in re.finditer(re.escape(token), lowered)]
+            if not spans:
+                continue
+            claimed.extend(spans)
+            hits.append((spans[0][0], _NamedMuscle(canonical_name, meta["region"], None)))
+            break
+    seen_terms: set = set()
+    for match in _MUSCLE_TERM.finditer(sentence):
+        if any(start < match.end() and match.start() < end for start, end in claimed):
+            continue
+        term = _trim_muscle_term(match.group())
+        if not term or _names_no_muscle(term) or term in seen_terms:
+            continue
+        seen_terms.add(term)
+        hits.append((match.start(), _NamedMuscle(None, None, term)))
+    # In the order the report printed them, which is the order a reader
+    # of `mri_map` is looking at the sentence in.
+    return [muscle for _, muscle in sorted(hits, key=lambda hit: hit[0])]
+
+
+#: HOW A CHINESE MUSCLE MRI SAYS ONE SIDE IS WORSE.
+#:
+#: The reader carried four spellings — 左侧较重, 左侧更重 and the two
+#: English ones — and a Chinese radiologist writes 「右侧著」, 「以右侧为
+#: 著」, 「右侧较左侧明显」 or 「左右不对称」. FSHD IS CHARACTERISTICALLY
+#: ASYMMETRIC: this is the descriptor that distinguishes it from the
+#: limb-girdle dystrophies it is confused with, and every one of those
+#: spellings produced `asymmetry: none` — which is not 「we did not
+#: read it」, it is the report's own signature finding contradicted.
+#:
+#: IT IS NOT GROUNDABLE EITHER, AND IT DOES NOT NEED A LIST. There is no
+#: descriptor vocabulary in the payload — the wire holds this module's
+#: own two tokens and nothing to read them from. What it has instead is
+#: COMPOSITION: 「side + (optional comparison) + emphasis word」 is the
+#: grammar all of these are built out of, so the two patterns below
+#: cover the phrasings nobody has written down yet, which a list of four
+#: could not.
+#:
+#: THE COMPARISON IS TRIED FIRST, because it is the only form in which
+#: the OTHER side is also named — 「右侧脂肪浸润较左侧明显」 mentions 左侧
+#: second, and an emphasis reader scanning for 「左侧…明显」 would find it
+#: and answer with the wrong side. The lookbehind on the emphasis
+#: pattern refuses a side that a comparison word introduces for the same
+#: reason.
+_ASYMMETRY_EMPHASIS_WORDS = "著|重|明显|显著|突出|严重"
+_ASYMMETRY_COMPARISON = re.compile(
+    rf"([左右])侧[^,\n]{{0,12}}?[较比]([左右对健])侧[^,\n]{{0,8}}?"
+    rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
+)
+_ASYMMETRY_SIDE_EMPHASIS = re.compile(
+    rf"(?<![较比于和与及])([左右])侧?(?:受累|病变|改变)?[为更较]?"
+    rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
+)
+
+#: THE STUDY SAYS IT IS ASYMMETRIC AND DOES NOT SAY WHICH SIDE. 「左右不
+#: 对称」 and a bare 「不对称」 are the commonest asymmetry sentences on a
+#: Chinese muscle MRI and neither names a heavier side.
+_ASYMMETRY_MARKERS: Tuple[str, ...] = (
+    "不对称", "欠对称", "不完全对称", "非对称", "asymmetr",
+)
+
+#: RECORDED RATHER THAN DISCARDED, and spelled the way this file already
+#: spells 「the report said so and did not say which」 — see
+#: `abnormal_unspecified` in `_WORD_FLAG_CELLS`. Rounding it down to
+#: `none` would publish 「左右对称」 off a report that said the opposite.
+ASYMMETRY_UNSPECIFIED = "asymmetric_unspecified"
+
+
+#: WHAT A MUSCLE MRI SAYS ABOUT A MUSCLE. Keyed by the field each
+#: descriptor is published under. The `_build_field` calls in
+#: `_extract_mri` spell the same three names as literals on purpose —
+#: see the note there — so this table is the reader's half only.
+_MRI_DESCRIPTORS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("fatty_infiltration", ("脂肪浸润", "脂肪变", "脂肪替代", "fatty")),
+    ("inflammatory_change", ("炎性改变", "炎症", "水肿", "edema")),
+    ("atrophy", ("萎缩", "atrophy")),
+)
+
+
+class _MriClause(NamedTuple):
+    """One clause of a radiology sentence: what it names, what it says.
+
+    `descriptors` holds the FIELD NAMES the clause asserts, which is
+    what keeps this reader and `_extract_mri`'s writer from drifting.
+    """
+
+    muscles: Tuple[_NamedMuscle, ...] = ()
+    descriptors: Tuple[str, ...] = ()
+
+
+def _mri_clauses(sentence: str) -> List[_MriClause]:
+    """`sentence` split where a radiologist changes subject.
+
+    THE TWO COMMAS ARE NOT THE SAME COMMA. 「、」 is the enumeration
+    comma and separates the muscles INSIDE one statement —
+    「股外侧肌、股中间肌脂肪浸润」 is one finding about two muscles. 「，」
+    (folded to 「,」 by `_normalize_text`) separates the statements, and
+    a radiologist uses it to say what is NOT involved as often as what
+    is: 「…脂肪浸润,股直肌相对保留」. Reading the descriptor against the
+    whole sentence published that spared muscle as infiltrated, which is
+    the opposite of what the page says, on the modality this disease is
+    followed by.
+    """
+    return [
+        _read_mri_clause(part)
+        for part in re.split(r"[,]", sentence)
+        if part and part.strip()
+    ]
+
+
+def _read_mri_clause(clause: str) -> _MriClause:
+    """The muscles a clause names and the descriptors it asserts of them.
+
+    A CLAUSE THAT SAYS THE THING WAS NOT FOUND ASSERTS NOTHING.
+    「未见明显脂肪浸润」 contains 脂肪浸润, and a substring test on it
+    published `fatty_infiltration: yes` off a sentence stating the
+    opposite. `_ABSENCE_MARKERS` is the list this file already keeps for
+    that question; the clause is the right scope for it, because
+    「…脂肪浸润,未见炎性改变」 asserts one and denies the other.
+    """
+    stripped = clause.strip()
+    lowered = stripped.lower()
+    denies = any(marker in lowered for marker in _ABSENCE_MARKERS) or "相对保留" in stripped
+    descriptors: Tuple[str, ...] = ()
+    if not denies:
+        descriptors = tuple(
+            field_name
+            for field_name, keywords in _MRI_DESCRIPTORS
+            if any(keyword.lower() in lowered for keyword in keywords)
+        )
+    return _MriClause(tuple(_muscles_in_sentence(stripped)), descriptors)
+
+
+def _read_asymmetry(sentence: str) -> str:
+    """Which side this sentence says is worse, or that it only says they differ."""
+    lowered = sentence.lower()
+    if "left greater than right" in lowered:
+        return "left_gt_right"
+    if "right greater than left" in lowered:
+        return "right_gt_left"
+    comparison = _ASYMMETRY_COMPARISON.search(sentence)
+    if comparison and (
+        comparison.group(2) in "对健" or comparison.group(1) != comparison.group(2)
+    ):
+        return "left_gt_right" if comparison.group(1) == "左" else "right_gt_left"
+    if not comparison:
+        emphasis = _ASYMMETRY_SIDE_EMPHASIS.search(sentence)
+        if emphasis:
+            return "left_gt_right" if emphasis.group(1) == "左" else "right_gt_left"
+    if any(marker in lowered for marker in _ASYMMETRY_MARKERS):
+        return ASYMMETRY_UNSPECIFIED
+    return "none"
 
 
 #: WHERE A HEADING MAY START. The head of its line, a space, an opening
@@ -3229,7 +3575,7 @@ _LENGTH_UNIT_AFTER = _cjk_safe_compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
 #: reference in words as often as in symbols, and — see `_cjk_safe` —
 #: they are matched without `\b`, which would never fire against CJK.
 _BOUND_BEFORE_VALUE = re.compile(
-    r"(?:[<>≤≥⩽⩾]|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
+    rf"(?:[{_COMPARATORS}]|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
     r"|大于|小于|超过|多于|少于|至少|最多)\s*$"
 )
 
@@ -4254,92 +4600,133 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
 def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     sentences = _extract_sentences("\n".join(lines))
     mri_map: List[Dict[str, Any]] = []
+    unread_terms: List[str] = []
 
     for sentence in sentences:
-        muscle = _muscle_from_sentence(sentence)
-        if not muscle:
-            continue
-        canonical_name, body_region = muscle
-        lowered = sentence.lower()
         side = _canonical_side(sentence)
-        fatty = "yes" if any(keyword in sentence for keyword in ["脂肪浸润", "脂肪变", "fatty"]) else None
-        inflammation = "yes" if any(keyword in sentence for keyword in ["炎性改变", "炎症", "edema"]) else None
-        atrophy = "yes" if any(keyword in sentence for keyword in ["萎缩", "atrophy"]) else None
-
-        asymmetry = "none"
-        if "左侧较重" in sentence or "左侧更重" in sentence or "left greater than right" in lowered:
-            asymmetry = "left_gt_right"
-        elif "右侧较重" in sentence or "右侧更重" in sentence or "right greater than left" in lowered:
-            asymmetry = "right_gt_left"
-
-        if not any([fatty, inflammation, atrophy]) and asymmetry == "none":
+        # THE ASYMMETRY BELONGS TO THE SENTENCE, THE DESCRIPTORS TO THE
+        # CLAUSE. 「右侧较重」 is printed as a clause of its own about the
+        # muscles the clause before it named, so it is read whole;
+        # 「脂肪浸润」 is printed against the muscles standing beside it,
+        # and reading THAT against the whole sentence is what put
+        # 「双侧股外侧肌、股中间肌脂肪浸润,股直肌相对保留」 on record as a
+        # fatty infiltration of the very muscle the radiologist wrote
+        # down as SPARED. See `_mri_clauses`.
+        asymmetry = _read_asymmetry(sentence)
+        clauses = [
+            clause for clause in _mri_clauses(sentence) if clause.muscles and clause.descriptors
+        ]
+        if not clauses:
+            # NOTHING SURVIVED THE SPLIT, so the sentence is read whole:
+            # a report that names the muscle in one clause and its
+            # finding in the next keeps behaving exactly as it did.
+            whole = _read_mri_clause(sentence)
+            if whole.muscles and (whole.descriptors or asymmetry != "none"):
+                clauses = [whole]
+        if not clauses:
             continue
 
-        item = {
-            "region": body_region,
-            "muscle_name": canonical_name,
-            "side": side,
-            "fatty_infiltration": fatty,
-            "inflammatory_change": inflammation,
-            "atrophy": atrophy,
-            "asymmetry": asymmetry,
-            "source_text": sentence,
-            "confidence": 0.8 if asymmetry != "none" else 0.86,
-        }
-        mri_map.append(item)
+        for clause in clauses:
+            fatty = "yes" if "fatty_infiltration" in clause.descriptors else None
+            inflammation = "yes" if "inflammatory_change" in clause.descriptors else None
+            atrophy = "yes" if "atrophy" in clause.descriptors else None
+            for muscle in clause.muscles:
+                canonical_name = muscle.canonical_name
+                body_region = muscle.region
+                # AN UNREAD MUSCLE IS PUBLISHED AS UNREAD. Below the
+                # 0.75 `review_queue` threshold on purpose: the
+                # descriptor was read off the page and the anatomy was
+                # not, and a reader has to be able to see which half is
+                # which. See `_MUSCLE_TERM`.
+                confidence = (
+                    0.7
+                    if canonical_name is None
+                    else (0.8 if asymmetry != "none" else 0.86)
+                )
+                item: Dict[str, Any] = {
+                    "region": body_region,
+                    "muscle_name": canonical_name,
+                    "side": side,
+                    "fatty_infiltration": fatty,
+                    "inflammatory_change": inflammation,
+                    "atrophy": atrophy,
+                    "asymmetry": asymmetry,
+                    "source_text": sentence,
+                    "confidence": confidence,
+                }
+                extra: Dict[str, Any] = {
+                    "muscle_name": canonical_name,
+                    "region": body_region,
+                }
+                if muscle.unread_term:
+                    item["muscle_term"] = muscle.unread_term
+                    item["muscle_name_unread"] = True
+                    extra["muscle_term"] = muscle.unread_term
+                    extra["muscle_name_unread"] = True
+                    if muscle.unread_term not in unread_terms:
+                        unread_terms.append(muscle.unread_term)
+                mri_map.append(item)
 
-        if fatty:
-            _append_field(
-                fields,
-                _build_field(
-                    "fatty_infiltration",
-                    fatty,
-                    side=side,
-                    body_region=body_region,
-                    source_text=sentence,
-                    confidence=item["confidence"],
-                    extra={"muscle_name": canonical_name, "region": body_region},
-                ),
-            )
-        if inflammation:
-            _append_field(
-                fields,
-                _build_field(
-                    "inflammatory_change",
-                    inflammation,
-                    side=side,
-                    body_region=body_region,
-                    source_text=sentence,
-                    confidence=item["confidence"],
-                    extra={"muscle_name": canonical_name, "region": body_region},
-                ),
-            )
-        if atrophy:
-            _append_field(
-                fields,
-                _build_field(
-                    "atrophy",
-                    atrophy,
-                    side=side,
-                    body_region=body_region,
-                    source_text=sentence,
-                    confidence=item["confidence"],
-                    extra={"muscle_name": canonical_name, "region": body_region},
-                ),
-            )
-        if asymmetry != "none":
-            _append_field(
-                fields,
-                _build_field(
-                    "asymmetry",
-                    asymmetry,
-                    side=side,
-                    body_region=body_region,
-                    source_text=sentence,
-                    confidence=0.8,
-                    extra={"muscle_name": canonical_name, "region": body_region},
-                ),
-            )
+                # THE THREE CALLS ARE WRITTEN OUT, NOT LOOPED. The
+                # allowlist parity test on the API side reads this
+                # module's field names by scraping `_build_field("…"`
+                # literals out of the source — see
+                # `allowlist.parity.test.ts` — so a name that only ever
+                # exists as a loop variable disappears from the
+                # inventory the model's own field allowlist is checked
+                # against, and the cell silently stops being renderable.
+                if fatty:
+                    _append_field(
+                        fields,
+                        _build_field(
+                            "fatty_infiltration",
+                            fatty,
+                            side=side,
+                            body_region=body_region,
+                            source_text=sentence,
+                            confidence=confidence,
+                            extra=dict(extra),
+                        ),
+                    )
+                if inflammation:
+                    _append_field(
+                        fields,
+                        _build_field(
+                            "inflammatory_change",
+                            inflammation,
+                            side=side,
+                            body_region=body_region,
+                            source_text=sentence,
+                            confidence=confidence,
+                            extra=dict(extra),
+                        ),
+                    )
+                if atrophy:
+                    _append_field(
+                        fields,
+                        _build_field(
+                            "atrophy",
+                            atrophy,
+                            side=side,
+                            body_region=body_region,
+                            source_text=sentence,
+                            confidence=confidence,
+                            extra=dict(extra),
+                        ),
+                    )
+                if asymmetry != "none":
+                    _append_field(
+                        fields,
+                        _build_field(
+                            "asymmetry",
+                            asymmetry,
+                            side=side,
+                            body_region=body_region,
+                            source_text=sentence,
+                            confidence=min(0.8, confidence),
+                            extra=dict(extra),
+                        ),
+                    )
 
     report_impression = _extract_block_after_header(
         lines,
@@ -4365,6 +4752,11 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
     normalized_summary["mri_summary"] = {
         "report_impression": report_impression,
         "affected_regions": list(dict.fromkeys(item["region"] for item in mri_map if item["region"])),
+        # THE ANATOMY THIS MODULE COULD NOT NAME, listed rather than
+        # dropped. Empty on a report whose every muscle is in the map,
+        # which is what makes a non-empty list mean something. See
+        # `_MUSCLE_TERM`.
+        "unread_muscle_terms": unread_terms,
     }
 
 
@@ -5640,6 +6032,50 @@ def _unit_token_spans(line: str) -> Tuple[Tuple[int, int], ...]:
     )
 
 
+@lru_cache(maxsize=1024)
+def _unit_digit_spans(line: str) -> Tuple[Tuple[int, int], ...]:
+    """Where on `line` a UNIT SPELLS ITSELF WITH DIGITS.
+
+    THE HAEMATOLOGY UNIT CONTAINS A 10. 「10^9/L」, 「10*9/L」 and the
+    printed 「×10⁹/L」 are the 单位 cell of the first three rows of every
+    血常规, and 「cmH2O」 is the 单位 of a respiratory pressure — and
+    `_LAB_NUMBER` sees a number wherever there are digits. `_ROW_RANGE`
+    was the only thing this scan refused, so on the column order
+    项目 / 单位 / 结果 — which is how a laboratory prints its table
+    whenever the 单位 column is placed beside the analyte's own name —
+    the first number after the name is INSIDE THE UNIT. Measured on a
+    synthetic 血常规 in that order, 「白细胞计数(WBC) 10^9/L 6.69
+    3.5-9.5」 published `wbc: 10`: a white cell count of 10 is a mild
+    leucocytosis a clinician acts on, and 6.69 — the reading the
+    laboratory printed — was nowhere in the payload. The cell-per-line
+    layout loses it the same way, one cell at a time.
+
+    THE SHAPE, NOT THE HEADER. `_unit_token_spans` and
+    `_method_name_spans` make the same statement about an analyte's
+    NAME being read out of a unit or a method column; this is the same
+    statement about its READING. It needs no column order because a
+    unit that spells itself with digits is recognisable on its own —
+    which is what the section on `_TableColumns` calls determination
+    (1), and why the numeric readers need nothing from the header.
+
+    `_CELL_NUMBER_THEN_UNIT` IS WHAT KEEPS A READING GLUED TO ITS UNIT
+    READABLE. 「693U/L」 is unit-shaped to `_is_unit_cell` as surely as
+    「10^9/L」 is, and the difference between them is exactly the split
+    that regex already draws: a number followed by something that
+    STARTS a unit is a reading with its unit attached, and a number
+    followed by 「^9/L」 is not. A token that splits keeps its number.
+    """
+    spans: List[Tuple[int, int]] = []
+    for token in re.finditer(r"\S+", line):
+        cell = token.group()
+        if not any(character.isdigit() for character in cell):
+            continue
+        if not _is_unit_cell(cell) or _CELL_NUMBER_THEN_UNIT.match(cell):
+            continue
+        spans.append((token.start(), token.end()))
+    return tuple(spans)
+
+
 #: THE LABORATORY'S OWN VERDICT ON THE ROW, which the captured snippet
 #: has always contained and nothing ever read. See `_read_row_flag`.
 #:
@@ -5713,19 +6149,19 @@ _WORD_FLAG_CELLS: Dict[str, Optional[str]] = {
 #: scan starting or ending in the middle of a number, so 「1.41 1.2-1.6」
 #: reads the interval and not 「41 1」.
 _ROW_RANGE = re.compile(
-    rf"(?<![\d.])({_NUMBER_SOURCE})\s*[-~—～]\s*({_NUMBER_SOURCE})(?![\d.])"
+    rf"(?<![\d.])({_NUMBER_SOURCE})\s*[{_RANGE_DASHES}]\s*({_NUMBER_SOURCE})(?![\d.])"
 )
 
 #: A number on a row, with whatever unit is glued to its right. THE
 #: GROUPED SPELLING IS ONE NUMBER — see `_NUMBER_SOURCE`; without it this
 #: scan stopped at the first group and published 「3,250」 as 3.
-_LAB_NUMBER = re.compile(rf"([<>≤≥]?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/\-]+)?")
+_LAB_NUMBER = re.compile(rf"([{_COMPARATORS}]?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/\-]+)?")
 
 #: A ONE-SIDED reference limit — 「<25」, 「>1.04」. Recorded as one-sided
 #: rather than dropped: an upper limit with no lower one is the whole of
 #: what a CKMB or a cholesterol row prints, and dropping it leaves the
 #: reading with nothing to be abnormal against.
-_ROW_BOUND = re.compile(rf"([<>≤≥])\s*({_NUMBER_SOURCE})(?![\d.])")
+_ROW_BOUND = re.compile(rf"([{_COMPARATORS}])\s*({_NUMBER_SOURCE})(?![\d.])")
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:
@@ -5799,7 +6235,7 @@ def _read_row_reference(
         if (_canonical_number(raw) or raw) == reading:
             continue
         limit = _safe_float(bound.group(2))
-        if bound.group(1) in "<≤":
+        if bound.group(1) in _UPPER_LIMIT_COMPARATORS:
             return raw, None, limit
         return raw, limit, None
     return None, None, None
@@ -5842,14 +6278,24 @@ def _unit_from_row(row_text: str, value: Optional[str]) -> Optional[str]:
     no unit at all, and the panel path then shipped whatever unit was
     hard-coded in the definition or none. This reads the cell.
 
-    To the right of the reading, because that is where a unit column
-    sits and because the cells to its LEFT are the analyte's own name.
+    To the right of the reading FIRST, because that is where a 单位
+    column usually sits. THEN TO THE LEFT, because it does not always:
+    项目 / 单位 / 结果 / 参考区间 puts it between the analyte's name and
+    the reading, and a right-only scan came back with nothing at all on
+    that order — the white cell count of a 血常规 printed that way
+    shipped as a bare 6.69 with the report's own ×10⁹/L dropped. The
+    analyte's own name is not among the cells searched: `row_text` is
+    built from the row SEGMENT, which has the name taken off its front.
+    Nearest-first on the left, so the cell adjacent to the reading wins.
+
     A flag, a bare number, a bound and an interval are each excluded by
     name: 「98」 is unit-shaped to `_UNIT_CELL` on its own, and so is
     「H」.
     """
     tokens = row_text.split()
-    for token in tokens[_reading_ends_at(tokens, value) :]:
+    end = _reading_ends_at(tokens, value)
+    to_the_left = list(reversed(tokens[: max(end - 1, 0)])) if end else []
+    for token in list(tokens[end:]) + to_the_left:
         cell = token.strip()
         if not cell or _is_row_flag_cell(cell):
             continue
@@ -5920,15 +6366,20 @@ def _extract_lab_value(
         if whole_cell is not None:
             return whole_cell, None
 
+        # THE SPANS THIS ROW'S READING CANNOT BE IN: the two ends of a
+        # printed interval, and the digits a unit spells itself with.
+        # See `_unit_digit_spans` for the count a 「10^9/L」 cell was
+        # published as.
         reserved = [match.span() for match in _ROW_RANGE.finditer(line)]
+        reserved.extend(_unit_digit_spans(line))
 
-        def outside_the_interval(span: Tuple[int, int]) -> bool:
+        def is_a_reading(span: Tuple[int, int]) -> bool:
             return not any(start <= span[0] and end >= span[1] for start, end in reserved)
 
         candidates = [
-            match for match in _LAB_NUMBER.finditer(line) if outside_the_interval(match.span(1))
+            match for match in _LAB_NUMBER.finditer(line) if is_a_reading(match.span(1))
         ]
-        bare = [match for match in candidates if match.group(1)[0] not in "<>≤≥"]
+        bare = [match for match in candidates if match.group(1)[0] not in _COMPARATORS]
         chosen = next(iter(bare or candidates), None)
         if chosen is None:
             return None, None
@@ -5964,7 +6415,8 @@ def _extract_lab_value(
     def is_reference_range(line: str) -> bool:
         return bool(
             re.fullmatch(
-                rf"[<>]?{_NUMBER_CELL_SOURCE}\s*[-~]\s*[<>]?{_NUMBER_CELL_SOURCE}"
+                rf"[{_COMPARATORS}]?{_NUMBER_CELL_SOURCE}\s*[{_RANGE_DASHES}]\s*"
+                rf"[{_COMPARATORS}]?{_NUMBER_CELL_SOURCE}"
                 r"(?:\s*[A-Za-z/%μµ·/\-]+)?",
                 line.strip(),
             )
@@ -6078,6 +6530,17 @@ def _extract_lab_value(
                 continue
 
             if raw_value is None:
+                # THE 单位 COLUMN CAN BE PRINTED BEFORE THE 结果 COLUMN,
+                # and this scan only ever looked for a unit AFTER it had
+                # a reading — so on 项目 / 单位 / 结果 the unit cell was
+                # passed over here and `_unit_from_row` then looked to
+                # the right of the reading, where there is nothing. The
+                # count shipped bare: 6.69 rather than 6.69×10⁹/L, which
+                # is the difference this file already argues at
+                # `_UNIT_CHARS`.
+                if unit is None and is_unit_only(candidate):
+                    unit = candidate
+                    continue
                 candidate_value, candidate_unit = extract_numeric_value(search_segment(candidate))
                 if candidate_value is not None and not is_reference_range(candidate):
                     raw_value = candidate_value
@@ -6605,6 +7068,160 @@ def _read_qualitative_row(
 
 
 # --------------------------------------------------------------------
+# The FREE-TEXT row: 淡黄色 under 参考区间 and 深黄色 under 结果
+
+#: A PRINTED FREE-TEXT READING: letters, and nothing else.
+#:
+#: 黄色, 淡黄色, 清亮, 微浊, 软便, 糊状 — the whole of what the four
+#: free-text rows of a 尿常规 and a 粪便常规 can say. The class is a
+#: SHAPE and not a vocabulary of colours on purpose: this file has spent
+#: several rounds learning what a closed list of Chinese words costs
+#: (see `MUSCLE_KEYWORDS`), and a colour nobody listed is exactly the
+#: reading a laboratory prints when something is wrong. Punctuation is
+#: what it excludes — a 「:」 left over from 「透明度: 微浊」 is not a
+#: reading, and neither is a clause with a comma in it.
+_FREE_TEXT_VALUE_CELL = re.compile(r"^[一-龥A-Za-z]{1,6}$")
+
+
+def _is_free_text_value_cell(cell: str) -> bool:
+    """`cell` could be a free-text row's printed reading.
+
+    EVERYTHING THAT IS SOMETHING ELSE IS REFUSED BY NAME, because the
+    positive test is only a shape: a flag cell (`正常`, `异常`), a unit,
+    a number or interval in any of its printed forms, an assay method,
+    and a column heading are each a cell of the same table and none of
+    them is a reading. `_is_qualitative_value_cell` is the sibling test
+    for the closed 阴性/阳性 vocabulary and owns those cells; this one
+    covers the rows that vocabulary was never going to reach.
+    """
+    stripped = cell.strip()
+    if not stripped or not _FREE_TEXT_VALUE_CELL.match(stripped):
+        return False
+    if _is_row_flag_cell(stripped) or _is_qualitative_value_cell(stripped):
+        return False
+    if _is_unit_cell(stripped) or _CJK_UNIT_CELL.match(stripped):
+        return False
+    if _NUMERIC_DATA_CELL.match(stripped) or _names_a_method(stripped):
+        return False
+    return stripped not in _TABLE_HEADER_CELLS and not _is_header_row(stripped)
+
+
+def _read_free_text_row(
+    vocabulary: Dict[str, List[str]],
+    field_name: str,
+    lines: List[str],
+    columns: _TableColumns,
+) -> Any:
+    """`field_name`'s printed reading, off its own ROW. See `_read_qualitative_row`.
+
+    THE 参考区间-READ-AS-结果 FIX LANDED ONLY FOR THE CLOSED QUALITATIVE
+    VOCABULARY. `_read_qualitative_row` recognises a cell by asking
+    `_is_qualitative_value_cell`, which knows 阴性, 阳性, 未检出 and the
+    signs — and the free-text rows of the same two panels say none of
+    those. 尿颜色, 尿透明度, 粪便颜色 and 粪便性状 therefore kept the
+    behaviour the round before them removed everywhere else: the pattern
+    takes the first cell after the name, and on 项目 / 参考区间 / 结果
+    that cell is the laboratory's REFERENCE. A urine printed
+    「颜色 淡黄色 深黄色」 published 淡黄色 — the value a healthy sample
+    should take, presented as this patient's own — and a stool printed
+    「颜色 黄褐色 黑色」 published 黄褐色, which is a melaena reported as
+    an ordinary stool on the row a patient checks by eye.
+
+    THE ROW ENDS AT THE NEXT ANALYTE THE PANEL ITSELF DECLARES, which is
+    the one boundary available here. `_ends_the_row` cannot be reused:
+    it asks `_looks_like_analyte`, and 「淡黄色」 is a short CJK cell with
+    no digits, so the boundary would fall on the very cell being read.
+    The panel's own definitions are what this reader has instead — a
+    vocabulary that is not hand-written here but declared by the caller,
+    so a row added to either panel bounds its neighbours automatically.
+
+    Returns the cell, `None` where no row was found or nothing on it
+    could be a reading (the caller falls back to its patterns), or
+    `_AMBIGUOUS_QUALITATIVE` where the row was found and this platform
+    cannot say which of its cells is the patient's.
+    """
+    keywords = [word.lower().strip() for word in vocabulary.get(field_name, ()) if word and word.strip()]
+    if not keywords:
+        return None
+    competing = _competing_analyte_keywords(vocabulary, field_name)
+    #: EVERY OTHER ROW THIS PANEL DECLARES, as the row boundary.
+    #: `competing` is the containment rule and holds only the names that
+    #: this analyte's own name is a substring of — a different question,
+    #: and one that leaves 透明度 out of 颜色's boundary.
+    others = tuple(
+        word.lower().strip()
+        for other, words in vocabulary.items()
+        if other != field_name
+        for word in words
+        if word and word.strip()
+    )
+
+    def ends_the_row(cell: str) -> bool:
+        stripped = cell.strip()
+        if not stripped:
+            return False
+        lowered = stripped.lower()
+        return bool(
+            any(name in lowered for name in others)
+            or _is_header_row(stripped)
+            or _is_header_only(stripped)
+            or _ROW_INDEX_CELL.match(stripped)
+            or _starts_no_row(stripped)
+        )
+
+    for index, line in enumerate(lines):
+        span = _analyte_match_span(line.lower(), keywords, competing)
+        if span is None or _starts_no_row(line):
+            continue
+        cells: List[str] = []
+        for cell in _row_segment_after_name(line, span[1]).split():
+            if ends_the_row(cell):
+                break
+            cells.append(cell)
+        for offset in range(1, 5):
+            next_index = index + offset
+            if next_index >= len(lines):
+                break
+            candidate = lines[next_index].strip()
+            if not candidate:
+                continue
+            if ends_the_row(candidate):
+                break
+            cells.append(candidate)
+        candidates = [cell for cell in cells if _is_free_text_value_cell(cell)]
+        if not candidates:
+            continue
+        return _pick_free_text_cell(candidates, columns)
+    return None
+
+
+def _pick_free_text_cell(candidates: List[str], columns: _TableColumns) -> Any:
+    """Which of a free-text row's cells is the PATIENT'S, not the reference.
+
+    THE HEADER IS THE ONLY THING THAT CAN ANSWER IT. A colour and a
+    colour are the same shape; `_pick_qualitative_cell` has a second
+    determination available to it — no laboratory prints 阳性 as the
+    value a healthy result should take — and there is no equivalent
+    reading of 「淡黄色」. So this is determination (2) of the section
+    above and nothing else, with the same exception taken for the same
+    reason: where every cell on the row says the same thing, the choice
+    cannot change what is published.
+
+    Anything else — two different readings and no header — is a row this
+    platform cannot read, and it is published as unread rather than as
+    whichever cell came first.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    precedes = columns.result_precedes("reference")
+    if precedes is not None:
+        return candidates[0] if precedes else candidates[-1]
+    if len({cell.strip() for cell in candidates}) == 1:
+        return candidates[0]
+    return _AMBIGUOUS_QUALITATIVE
+
+
+# --------------------------------------------------------------------
 # The row that contradicts itself
 
 
@@ -6706,11 +7323,11 @@ _VALUE_CELL = re.compile(rf"^{_NUMBER_CELL_SOURCE}$")
 #: A bound is therefore a REFERENCE by default, and is accepted as the
 #: value only when the row prints no bare number at all — which is what
 #: keeps a genuinely one-sided result such as 「<0.01」 readable.
-_BOUND_CELL = re.compile(rf"^[<>≤≥]\s*{_NUMBER_CELL_SOURCE}$")
+_BOUND_CELL = re.compile(rf"^[{_COMPARATORS}]\s*{_NUMBER_CELL_SOURCE}$")
 
 #: A reference range rather than a result.
 _RANGE_CELL = re.compile(
-    rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}\s*[-~—～]\s*{_NUMBER_CELL_SOURCE}$"
+    rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}\s*[{_RANGE_DASHES}]\s*{_NUMBER_CELL_SOURCE}$"
 )
 
 #: WHAT A PRINTED UNIT IS MADE OF, AND IT IS NOT ONLY ASCII.
@@ -6840,8 +7457,8 @@ def _is_unit_cell(cell: str) -> bool:
 #: defence that checks a value against its own reference could not fire
 #: on that row either.
 _NUMERIC_DATA_CELL = re.compile(
-    rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}"
-    rf"(?:\s*[-~—～]\s*[<>≤≥]?\s*{_NUMBER_CELL_SOURCE})?"
+    rf"^[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*[{_RANGE_DASHES}]\s*[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE})?"
     rf"\s*(?:[A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
 )
 
@@ -6850,8 +7467,8 @@ _NUMERIC_DATA_CELL = re.compile(
 #: keeps 「10^9/L」 whole — that is a unit, not a 10 with a unit of
 #: 「^9/L」.
 _CELL_NUMBER_THEN_UNIT = re.compile(
-    rf"^([<>≤≥]?\s*{_NUMBER_CELL_SOURCE}"
-    rf"(?:\s*[-~—～]\s*[<>≤≥]?\s*{_NUMBER_CELL_SOURCE})?)"
+    rf"^([{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*[{_RANGE_DASHES}]\s*[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE})?)"
     rf"\s*([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
 )
 
@@ -7068,16 +7685,25 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
         )
         unit = None
         if value is not None:
-            after = cells[cells.index(value) + 1 :]
+            at = cells.index(value)
             # A ONE-LETTER FLAG IS UNIT-SHAPED, and on 项目 / 结果 / 提示
             # / 单位 it is the cell immediately after the reading — so
             # 「H」 was published as the unit of every analyte this reader
             # exists to cover, and the laboratory's own unit, sitting one
             # cell further right, was never reached.
+            #
+            # AND THE 单位 COLUMN IS NOT ALWAYS TO THE RIGHT. On
+            # 项目 / 单位 / 结果 it sits between the name and the reading,
+            # so a right-only scan published every row of that table
+            # without its unit. Searched after the right-hand cells and
+            # nearest-first, which is the same order `_unit_from_row`
+            # uses on the other reader of this layout.
+            after = cells[at + 1 :]
+            before = list(reversed(cells[:at]))
             unit = next(
                 (
                     cell
-                    for cell in after
+                    for cell in after + before
                     if _is_unit_cell(cell) and not _is_row_flag_cell(cell)
                 ),
                 None,
@@ -7346,15 +7972,35 @@ def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]])
     #: this report flagged. 「一份报告里同一个指标出现两次」 is the
     #: complaint `_GENETICS_CELL_NAME_WORDS` closes for the genetics
     #: cells; this is the laboratory half of it.
+    #: AND THE TWO SIDES OF THAT COMPARISON WERE SPELLED DIFFERENTLY.
+    #: `row["value"]` leaves `extract_lab_table_rows` CANONICAL — the
+    #: separators that group a printed number are folded away, which is
+    #: the whole point of `_canonical_number` — while `source_text` is
+    #: the row exactly as the laboratory printed it. So 「3250」 was
+    #: looked for inside 「*14肌酸激酶(CK) 3,250 ↑ 50-310 U/L」 and never
+    #: found, and the guard that exists to stop one creatine kinase
+    #: being published twice let precisely the grouped readings through:
+    #: `ck: 3250` and `table_肌酸激酶_ck: 3250`, both on `observations`,
+    #: both in `latest_summary.by_analyte`, and the SAME analyte named
+    #: twice in `abnormal_list` — on the readings large enough to need a
+    #: thousands separator, which on this disease's panel are the muscle
+    #: enzymes. The row snippets are folded the same way before the
+    #: comparison so that both spellings of one number match.
     published_rows = [
-        str(field.get("source_text") or "")
-        for field in fields
-        if field.get("source_text")
+        (raw, _strip_group_separators(raw))
+        for raw in (
+            str(field.get("source_text") or "")
+            for field in fields
+            if field.get("source_text")
+        )
     ]
     existing_names = {str(f.get("field_name") or "").lower() for f in fields}
 
     def already_published(name: str, value: str) -> bool:
-        return any(name in row and value in row for row in published_rows)
+        return any(
+            (name in raw or name in folded) and (value in raw or value in folded)
+            for raw, folded in published_rows
+        )
 
     for row in extract_lab_table_rows(lines):
         printed_name = str(row["name"]).lower()

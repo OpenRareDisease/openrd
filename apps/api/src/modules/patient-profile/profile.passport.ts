@@ -1766,6 +1766,47 @@ const BLOOD_DOC_TYPES = [
   'abdominal_ultrasound',
 ] as const;
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE ANALYTES, AND WHY THE LIST HAS TO REACH AS WIDE AS THE TYPE LIST
+ * ABOVE.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * These two lists are read TOGETHER — `latestDocByTypesWithFields` picks
+ * the document by type AND by field, and `buildMonitoringSummary` prints
+ * this list off whatever it picked. So a class named above whose own
+ * analytes are absent from here is not merely unprinted: no document of
+ * that class can ever be picked, `latestBloodDocumentId` stays null, and
+ * `buildMonitoringItem` reads that as `absent` — 「本平台没有该类报告的
+ * 记录」 in the referral pack, 「还没有上传过肺功能、心脏或血检报告」 on
+ * the summary card, 缺失 on the share page and in the markdown export.
+ *
+ * MEASURED, on a synthetic 入院常规 printing 血常规 and 尿常规 under
+ * their own headings — the commonest laboratory page in this archive.
+ * The parser classifies it `blood_routine`, splits the sections and
+ * reads both panels (`_split_blood_and_urine_sections` in
+ * fshd_report_service.py); the payload reaches the phone with a WBC of
+ * 14.2 carrying the laboratory's own ↑ against 3.5-9.5, and 我的档案 →
+ * 血常规 shows it. The passport, on the same profile in the same
+ * request, said the patient had no blood report at all — because this
+ * list held six 生化/肌酶 cells and not one row of a blood count. A
+ * patient hands a clinician a passport denying a panel they uploaded,
+ * with a flagged white cell count on it.
+ *
+ * WHICH CELLS, AND NOT INVENTED HERE. Each block below is exactly the
+ * set the app's own 检查结果 screen prints for that panel — see
+ * `buildMetricSection` in apps/mobile/lib/report-insights.ts — which is
+ * also the parser's `CRITICAL_FIELDS` for the class. The phone and the
+ * passport are two renderings of one payload and a clinician may be
+ * shown either, so they name the same cells.
+ *
+ * 尿常规, 感染筛查, 粪便 and 腹部超声 are on the type list above WITHOUT
+ * analytes here on purpose, and that is not this defect: they are there
+ * as possible CARRIERS of a blood analyte — the reason that list is ten
+ * classes wide — not as panels this row reports on. A urine sediment
+ * count is not a blood result and must not print as one; a 尿常规 that
+ * really does print a CK still qualifies through the CK row.
+ */
 const BLOOD_METRICS: MonitoringMetricSpec[] = [
   { keys: ['creatineKinase', 'creatine_kinase', 'CK', 'ck'], label: 'CK' },
   { keys: ['myoglobin', 'Mb', 'mb'], label: 'Mb' },
@@ -1773,6 +1814,22 @@ const BLOOD_METRICS: MonitoringMetricSpec[] = [
   { keys: ['CKMB', 'ckmb'], label: 'CKMB' },
   { keys: ['creatinine'], label: 'Cr' },
   { keys: ['uricAcid', 'uric_acid'], label: 'UA' },
+  // 血常规. One spelling each, because one spelling is what the parser
+  // writes (`_extract_blood_routine`, all-lowercase analyte names) — an
+  // alias nothing can mint is a key advertised and never filled.
+  { keys: ['wbc'], label: 'WBC' },
+  { keys: ['hgb'], label: 'HGB' },
+  { keys: ['plt'], label: 'PLT' },
+  // 甲功
+  { keys: ['ft3'], label: 'FT3' },
+  { keys: ['ft4'], label: 'FT4' },
+  { keys: ['tsh'], label: 'TSH' },
+  // 凝血. `d_dimer` is the one name here with an underscore in it, so it
+  // is the one with a camel twin on the payload.
+  { keys: ['pt'], label: 'PT' },
+  { keys: ['aptt'], label: 'APTT' },
+  { keys: ['fibrinogen'], label: 'Fib' },
+  { keys: ['dDimer', 'd_dimer'], label: 'D-二聚体' },
 ];
 
 const BLOOD_ANALYTE_KEYS = BLOOD_METRICS.flatMap((metric) => metric.keys);

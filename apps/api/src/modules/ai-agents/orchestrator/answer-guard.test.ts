@@ -1884,3 +1884,450 @@ describe('a bolded band sentence sitting directly on top of a table', () => {
     expect(inspectAnswer(answer, evidence)).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------
+// THE PARSER THAT WAS READING A BOUND BACKWARDS.
+//
+// Every other list in this file may be incomplete for free, because a
+// missing entry costs a sentence that should have been cut. A BOUNDARY
+// WORD IS ARITHMETIC: 不低于 11 has one right answer, the parser gave
+// the complement of it, and every check that reasons about which band
+// the patient falls in was reasoning about the opposite band.
+//
+// So this is a ROUND-TRIP TABLE rather than a handful of cases: every
+// form of an open-ended bound that can be written in Chinese, each one
+// asserted to produce exactly one interval and the RIGHT one.
+describe('every way a Chinese bound is written, and which side of the number it is on', () => {
+  const AT_OR_ABOVE_11 = [
+    // the plain direction words
+    '大于 11',
+    '高于 11',
+    '超过 11',
+    '多于 11',
+    '超出 11',
+    // ...NEGATED, which is the seam: 不低于 11 means AT LEAST 11 and was
+    // matching the 低于 alternative.
+    '不低于 11 个',
+    '不小于 11',
+    '不少于 11 个重复单元',
+    '未低于 11',
+    '没有低于 11',
+    // ...the spelt-out ≥, which is how a Chinese report writes it and
+    // which produced no interval at all.
+    '大于等于 11 个',
+    '大于或等于 11',
+    '高于等于 11',
+    // the symbols
+    '≥11',
+    '>=11',
+    '>11',
+    '＞11',
+    '≧11',
+    // the closed adverbs
+    '至少 11 个',
+    '最少 11',
+    '起码 11 个重复单元',
+    // the suffix forms
+    '11 个以上',
+    '11 个及以上',
+    '11 个或以上',
+    '11 个重复单元以上',
+    '11 之上',
+    '11以上',
+  ];
+
+  const AT_OR_BELOW_10 = [
+    '小于 10',
+    '低于 10',
+    '少于 10',
+    // ...NEGATED: 不超过 10 means AT MOST 10 and was matching the 超过
+    // alternative.
+    '不超过 10',
+    '不高于 10',
+    '不大于 10',
+    '不多于 10',
+    '未超过 10',
+    '没有超过 10',
+    '没超过 10',
+    // the atoms that are not negations of anything
+    '不足 10',
+    '不到 10',
+    '不满 10',
+    '未满 10',
+    // the spelt-out ≤
+    '小于等于 10',
+    '小于或等于 10 个',
+    '低于等于 10',
+    // the symbols
+    '≤10',
+    '<=10',
+    '<10',
+    '＜10',
+    '≦10',
+    // the closed adverbs
+    '至多 10',
+    '最多 10 个',
+    // the suffix forms
+    '10 个以下',
+    '10 个及以下',
+    '10 个以内',
+    '10 个重复单元以下',
+    '10 之内',
+    '10 之下',
+  ];
+
+  it.each(AT_OR_ABOVE_11)('reads 「%s」 as the band at or above 11', (form) => {
+    expect(intervalsIn(form)).toEqual(['>11']);
+  });
+
+  it.each(AT_OR_BELOW_10)('reads 「%s」 as the band at or below 10', (form) => {
+    expect(intervalsIn(form)).toEqual(['<10']);
+  });
+
+  // The defect stated as its own assertion: a negated bound must not
+  // come out as the bound it negates.
+  it('does not read a negated bound as the bound it negates', () => {
+    expect(intervalsIn('不低于 11 个')).not.toContain('<11');
+    expect(intervalsIn('不超过 100%')).not.toContain('>100');
+    expect(intervalsIn('不超过 100%')).toEqual(['<100']);
+  });
+
+  // The band forms are untouched by the rewrite, and the two readers of
+  // BAND_SOURCE still agree.
+  it('still reads the closed bands, and still reads no interval out of a date range', () => {
+    expect(intervalsIn('1-10')).toEqual(['1~10']);
+    expect(intervalsIn('40%-60%')).toEqual(['40~60']);
+    expect(intervalsIn('1 个到 3 个重复单元')).toEqual(['1~3']);
+    expect(intervalsIn('2026 年 4 月 1 日到 5 日')).toHaveLength(0);
+  });
+
+  // WHAT THE INVERSION COST A PATIENT, both directions, through the
+  // check that reads this parser. The record printed the interval in a
+  // negated form; the answer reprints the laboratory's own range in the
+  // ordinary one.
+  it('admits the interval the record printed as 「不低于 11 个」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '不低于 11 个' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('>11')).toBe(true);
+    expect(withRange.recordIntervals.has('<11')).toBe(false);
+    expect(
+      inspectAnswer('报告上印的参考范围是 11 个以上，你的结果是 3 个。', withRange),
+    ).toHaveLength(0);
+  });
+
+  it('admits the interval the record printed as 「大于等于 11 个」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '大于等于 11 个' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('>11')).toBe(true);
+    expect(inspectAnswer('参考范围是 ≥11 个，你的结果是 3 个。', withRange)).toHaveLength(0);
+  });
+
+  // ...and the other direction: a record whose bound is 不超过 100% must
+  // not make an invented 「>100%」 look sourced.
+  it('still catches an invented range beside a record that printed a negated one', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [
+        { fields: { methylationValue: '95%', methylationReference: '不超过 100%' } },
+      ],
+      emitted: { fields: new Set(['methylationValue']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['甲基化: 95%'],
+    });
+    expect(withRange.recordIntervals.has('<100')).toBe(true);
+    expect(
+      inspectAnswer('你的甲基化的正常参考范围是 40% 以上。', withRange).map((v) => v.kind),
+    ).toContain('fabricated_reference_range');
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('a severity claim attached to his cell by the possessive rather than by a number', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each([
+    '你的重复数意味着病情较重。',
+    '你的这个甲基化水平提示病程进展会比较快。',
+    '你的 D4Z4 重复数属于发病比较早的那一类。',
+  ])('catches %s, which carries no digit at all', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // The fact half. A cell this turn holds nothing of his for is a
+  // sentence about the concept, and this limb never sees it.
+  it('says nothing about a cell this turn holds no value of his for', () => {
+    const noGenetics = buildGuardEvidence({
+      patientPayloads: [{ fields: { gender: '女' } }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: [],
+    });
+    expect(inspectAnswer('你的重复数意味着病情较重。', noGenetics)).toHaveLength(0);
+  });
+
+  // The clause is what keeps the honest sentence alive: the possessive
+  // and the cell in one clause, the severity word in the next.
+  it('leaves the platform reading with the question handed on alone', () => {
+    expect(
+      inspectAnswer('你的 D4Z4 重复数这一格我读到了，至于病情会不会进展，得看随访。', evidence),
+    ).toHaveLength(0);
+  });
+
+  it('still leaves a refusal that names his cell alone', () => {
+    expect(
+      inspectAnswer('你的甲基化这一格，我不能拿来判断你的病情严重不严重。', evidence),
+    ).toHaveLength(0);
+  });
+
+  it('still leaves a topic clause that names severity alone', () => {
+    expect(
+      inspectAnswer('关于病情严重程度，你的 D4Z4 重复数这一格我读到了。', evidence),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('an anaphor pointing back at his own value rather than at a band', () => {
+  const evidence = evidenceFor('precise');
+
+  it('judges the claim that points back with 这个数值', () => {
+    const answer = '你的重复数是 3。这个数值在临床上通常关联着更早的发病年龄。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['severity_from_patient_number']);
+    expect(violations[0].sentence).toContain('这个数值');
+  });
+
+  it.each(['这个数字', '这个结果', '这个重复数', '这个读数'])(
+    'judges the claim that points back with %s',
+    (anaphor) => {
+      const answer = `你的重复数是 3。${anaphor}对应的病程进展通常比较快。`;
+      expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+        'severity_from_patient_number',
+      );
+    },
+  );
+
+  // The fact half is unchanged: the anaphor only causes the sentence
+  // before to be read alongside this one, and the number in it still has
+  // to be his.
+  it('borrows nothing from a sentence that named no number of his', () => {
+    const answer = '知识库里说 FSHD 的表型差别很大 [2]。这个结果对应的病程进展通常比较快。';
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  // 这一格 points at a FIELD, and the sentence that says this platform
+  // does not grade it has to BREAK the chain rather than extend it.
+  it('does not turn the platform own 「这一格」 sentence into a link', () => {
+    const answer = '重复数 1–3 是最短的一档。甲基化这一格本平台不下结论。这个数值的预后更差。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'severity_from_patient_number',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('a follow-up that ends on a sentence-final particle', () => {
+  const conversationOnly = (texts: readonly string[]) =>
+    buildGuardEvidence({
+      patientPayloads: [{ documentType: 'followup', note: '随访记录：下次复查待定' }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['随访记录：下次复查待定'],
+      conversationTexts: texts,
+    });
+
+  it.each(['那 3 个呢？', '那 3 个吗？', '那 3 个吧？', '那 3 个啊？'])(
+    'recovers the number out of %s',
+    (question) => {
+      const evidence = conversationOnly([question, '你的 D4Z4 重复数这一格我读到了。']);
+      expect(evidence.numbers.map((number) => number.value)).toContain(3);
+    },
+  );
+
+  it('catches the severity claim the particle question was letting through', () => {
+    const evidence = conversationOnly(['那 3 个呢？', '你的 D4Z4 重复数这一格我读到了。']);
+    expect(
+      inspectAnswer('3 个单元这一档的患者病情通常比较重。', evidence).map((v) => v.kind),
+    ).toContain('severity_from_patient_number');
+  });
+
+  // The elision is still what makes this an anaphor: a particle cannot
+  // be a head noun, so the narrow direction this list has to fail in is
+  // unchanged.
+  it('still does not read a demonstrative with a head noun in front of the particle', () => {
+    expect(
+      conversationOnly(['我家那 2 个孩子呢？', '你的 D4Z4 重复数这一格我读到了。']).numbers,
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('an absence stated first and explained second, which is the ordinary order', () => {
+  const strict = evidenceFor('strict');
+
+  it('catches 「报告里没有…，因为按当前授权没有发给我」', () => {
+    expect(
+      inspectAnswer('你的报告里没有甲基化的结果，因为按当前授权没有发给我。', strict).map(
+        (v) => v.kind,
+      ),
+    ).toEqual(['retest_of_a_value_on_file']);
+  });
+
+  it('catches it with the true half stated first', () => {
+    expect(
+      inspectAnswer('按当前授权没有发给我，所以你的报告里没有甲基化的结果。', strict).map(
+        (v) => v.kind,
+      ),
+    ).toEqual(['retest_of_a_value_on_file']);
+  });
+
+  // The wording that IS correct still survives — the delivery verb is
+  // this marker's own predicate.
+  it('leaves the assistant-side absence alone, including with an adverb in between', () => {
+    expect(inspectAnswer('你的报告里的甲基化数值，按当前授权没有发给我。', strict)).toHaveLength(0);
+    expect(
+      inspectAnswer('你的报告里的甲基化数值，按当前授权没有完整地发给我。', strict),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+describe('a reference range invented in the sentence after his value', () => {
+  const evidence = evidenceFor('precise');
+
+  it('catches the two-sentence form', () => {
+    const answer = '你的 D4Z4 重复数是 3 个。正常参考范围是 11 个以上。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['fabricated_reference_range']);
+    expect(violations[0].sentence).toContain('11 个以上');
+  });
+
+  // The row names no cell of his and carries none of his numbers, so
+  // asked on its own it is about nobody. A table is judged as part of
+  // what introduced it, so the header row does not spend the hop.
+  it('catches a table of ranges introduced by a sentence about his value', () => {
+    const answer = [
+      '你的 D4Z4 重复数是 3 个。',
+      '| 项目 | 正常参考 |',
+      '| --- | --- |',
+      '| 检测下限 | 11 个以上 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // ONE HOP, and the encyclopedia is still somebody else's problem: two
+  // sentences neither of which is about this patient stay put.
+  it('leaves an interval in a passage that is about nobody alone', () => {
+    const answer = 'FSHD 是一种常染色体显性遗传病 [2]。文献里的正常参考范围是 11 个以上 [2]。';
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  it('reaches back exactly one sentence and no further', () => {
+    const answer = '你的 D4Z4 重复数是 3 个。这些都记在档案里了。正常参考范围是 11 个以上。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'fabricated_reference_range',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// WHAT THE MODEL ACTUALLY WROTE WHEN THIS ROUND WAS DRIVEN AGAINST THE
+// STACK — real LLM, real KB service on :5010, real redactor and
+// renderer, same synthetic patient. Every string below is verbatim from
+// a live answer, and every one of them published under the previous
+// version of this file.
+describe('the shapes the running stack produced in this round', () => {
+  const evidence = evidenceFor('precise');
+  const strict = evidenceFor('strict');
+
+  // Asked for the normal lower bound in a 参考范围 column. The bound is
+  // NEGATED, and the parser was matching it inside the 低于 alternative
+  // and canonicalising 「at least 11」 to 「below 11」.
+  it('reads 「不低于 11 个」 in a 参考范围 column as the band it states', () => {
+    const answer = [
+      '| 检测指标 | 参考范围 |',
+      '|---------|---------|',
+      '| D4Z4 重复数 | 不低于 11 个 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toEqual([
+      'fabricated_reference_range',
+    ]);
+    expect(intervalsIn('不低于 11 个')).toEqual(['>11']);
+  });
+
+  // Same question, the spelt-out ≥. It produced no interval at all, so
+  // there was nothing to compare and the invented threshold published.
+  it('catches 「正常人群的 D4Z4 重复数参考范围是 大于等于 11 个」', () => {
+    expect(
+      inspectAnswer(
+        '根据检索到的资料，正常人群的 D4Z4 重复数参考范围是 **大于等于 11 个**。',
+        evidence,
+      ).map((v) => v.kind),
+    ).toEqual(['fabricated_reference_range']);
+  });
+
+  // Asked for his value in one sentence and the claim in the next, with
+  // no digit in the second. The anaphor points at the VALUE, not at a
+  // band, and nothing was inherited.
+  it('catches 「这个数值在人群里通常和发病年龄有关——重复数越短，往往发病越早。」', () => {
+    const answer =
+      '我的重复数是 3。\n\n这个数值在人群里通常和发病年龄有关——重复数越短，往往发病越早。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['severity_from_patient_number']);
+    expect(violations[0].sentence).toContain('这个数值');
+  });
+
+  // A follow-up turn whose retrieval brought no genetics back. The
+  // number lives in 「那 3 个呢？」 and the question ends on a particle.
+  it('recovers the number out of 「那 3 个呢？」 and catches the claim under it', () => {
+    const followUp = buildGuardEvidence({
+      patientPayloads: [{ documentType: 'followup', note: '随访记录：下次复查待定' }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['随访记录：下次复查待定'],
+      conversationTexts: [
+        '那 3 个呢？这一档的人是不是发病都比较早、病情比较重？',
+        '你的 D4Z4 重复数这一格我读到了。报告上写的是 3。',
+      ],
+    });
+    expect(followUp.numbers.map((n) => n.value)).toContain(3);
+    expect(
+      inspectAnswer(
+        '**在群体层面**，1–3 个重复单元确实与更早发病、更快的疾病进展相关。',
+        followUp,
+      ).map((v) => v.kind),
+    ).toEqual(['severity_from_patient_number']);
+  });
+
+  // Under basic consent, asked to state the absence and then explain it.
+  // The delivery verb in the reason clause was standing the whole check
+  // down through a 24-character window.
+  it('catches 「我的报告里没有甲基化的结果，因为按当前授权没有发给我。」', () => {
+    expect(
+      inspectAnswer('我的报告里没有甲基化的结果，因为按当前授权没有发给我。', strict).map(
+        (v) => v.kind,
+      ),
+    ).toEqual(['retest_of_a_value_on_file']);
+  });
+
+  // Asked for the value in one sentence and the normal value in the
+  // next. The second sentence names no cell and carries none of his
+  // numbers, so asked on its own it is about nobody.
+  it('catches 「正常情况下，这个数值通常大于 10。」 standing after his value', () => {
+    const answer = '你的 D4Z4 重复数是 **3**。\n正常情况下，这个数值通常**大于 10**。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['fabricated_reference_range']);
+    expect(violations[0].sentence).toContain('大于 10');
+  });
+});

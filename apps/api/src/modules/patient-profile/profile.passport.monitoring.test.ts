@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { BASELINE_PROVENANCE_KEY } from './baseline-provenance.js';
+import { buildPassportSharePage } from './passport-share.html.js';
 import { applyGeneticReportAutofill } from './profile.autofill.js';
 import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
+import { buildReferralPack } from './referral-pack.js';
 
 const ADMIN_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -1161,5 +1163,166 @@ describe('最近日期：这一天是化验室写的，还是我们收到文件�
     expect(summary.diagnosis.latestSourceDate).toBe('2019-03-11');
     expect(summary.diagnosis.freshness.basis).toBe('report');
     expect(summary.diagnosis.freshness.label).toBe('过期');
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 一页两段的入院常规：手机上读得出，护照上说「没有」。
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * An 入院常规 printout carries 血常规 and 尿常规 under their own
+ * headings, and the parser reads both off it — `_classify_report` lands
+ * on `blood_routine` (the page prints haemoglobin and platelets, so the
+ * specimen rule that rescues a pure urine report cannot fire) and
+ * `_split_blood_and_urine_sections` runs both extractors. The payload
+ * reaches the phone with a WBC carrying the laboratory's own ↑ and the
+ * interval it was read against, and 我的档案 → 血常规 shows it.
+ *
+ * The passport's 血检指标 row is built by picking a document that is
+ * BOTH of a listed class AND carrying a listed analyte. `blood_routine`
+ * was on the class list from the start; not one row of a blood count was
+ * on the analyte list, which held six 生化/肌酶 cells. So no document
+ * could be picked, `latestBloodDocumentId` stayed null, and
+ * `buildMonitoringItem` read that as `absent` — 「本平台没有该类报告的
+ * 记录」 in the referral pack a neurologist reads, 缺失 on the share
+ * page a clinician opens, 还没有上传过…血检报告 on the summary card and
+ * the same absence in the markdown export handed across a desk.
+ *
+ * All four surfaces are asserted here, because all four made the claim
+ * and each renders the slot in its own words.
+ */
+describe('入院常规（血常规＋尿常规同页）：护照不能说这份报告不存在', () => {
+  const NOW_2026 = new Date('2026-06-01T00:00:00.000Z');
+
+  /** SYNTHETIC. Every reading invented; the shape is what
+   *  `buildFields` writes — the value, its flag and its interval. */
+  const admissionPanel = {
+    id: 'd-admission',
+    documentType: 'blood_panel',
+    title: null,
+    fileName: 'admission.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 1,
+    storageUri: 'local://admission',
+    status: 'parsed',
+    uploadedAt: '2026-05-13T00:00:00.000Z',
+    checksum: null,
+    submissionId: null,
+    ocrPayload: {
+      extractedText: '合成医院 入院常规 血常规 尿常规',
+      fields: {
+        documentType: 'blood_panel',
+        classifiedType: 'blood_routine',
+        reportTypeLabel: '血常规报告',
+        reportTime: '2026-05-12',
+        wbc: '14.2 10^9/L',
+        wbcFlag: 'high',
+        wbcReference: '3.5-9.5',
+        hgb: '121 g/L',
+        hgbReference: '115-150',
+        plt: '232 10^9/L',
+        pltReference: '125-350',
+        urineProtein: '+1',
+        urineOccultBlood: '阴性',
+      },
+    },
+  };
+
+  const profile = () => base({ documents: [admissionPanel] } as never);
+
+  it('槽位状态是 present，不是 absent', () => {
+    const item = itemFor(profile(), 'blood');
+    expect(item?.state).toBe('present');
+    expect(item?.available).toBe(true);
+    expect(item?.latestDocumentId).toBe('d-admission');
+  });
+
+  it('实验室自己标的异常跟着数值一起印出来', () => {
+    // The one thing a clinician opens this row to see. 「WBC 14.2」 in
+    // the same words a normal count would print is the defect the
+    // flag/interval pair was added for.
+    const summary = itemFor(profile(), 'blood')?.summary ?? '';
+    expect(summary).toContain('WBC 14.2 10^9/L');
+    expect(summary).toContain('偏高');
+    expect(summary).toContain('参考区间 3.5-9.5');
+  });
+
+  it('尿常规的行不会当成血检读数印出来', () => {
+    // The page carries both panels. 血检指标 reports on the blood one;
+    // a urine sediment reading published as a blood result is the
+    // defect the parser's own specimen rule exists to prevent, and it
+    // must not be reintroduced from this end.
+    const summary = itemFor(profile(), 'blood')?.summary ?? '';
+    expect(summary).not.toContain('尿');
+  });
+
+  it('核心摘要卡不再说「还没有上传过…血检报告」', () => {
+    const card = buildClinicalPassportSummary(profile(), NOW_2026).summaryCards.find(
+      (c) => c.key === 'monitoring',
+    );
+    expect(card?.summary).not.toContain('还没有上传过');
+    expect(card?.ready).toBe(true);
+  });
+
+  it('markdown 导出的系统监测一节印的是读数和报告日期', () => {
+    const markdown = buildClinicalPassportExport(
+      buildClinicalPassportSummary(profile(), NOW_2026),
+    ).markdown;
+    const section = markdown.split('## 系统监测')[1]?.split('\n## ')[0] ?? '';
+    expect(section).toContain('WBC 14.2 10^9/L');
+    expect(section).toContain('2026-05-12 报告日期');
+  });
+
+  it('转诊包不说「本平台没有该类报告的记录」', () => {
+    const slot = buildReferralPack(profile(), NOW_2026).monitoring.find(
+      (item) => item.key === 'blood',
+    );
+    expect(slot?.state).toBe('present');
+    expect(slot?.statement).not.toContain('没有该类报告的记录');
+    expect(slot?.statement).toContain('WBC 14.2 10^9/L');
+  });
+
+  it('分享页的检查结果一节印的是读数，不是缺失', () => {
+    const html = buildPassportSharePage(buildClinicalPassportSummary(profile(), NOW_2026), {
+      expiresAt: '2026-06-08T00:00:00.000Z',
+    });
+    expect(html).toContain('WBC 14.2 10^9/L');
+    expect(html).not.toContain('暂无可自动读取的血检结果');
+  });
+
+  /**
+   * The same defect, one class over. 甲功 and 凝血 are on the class list
+   * too and had no analytes on the reading list either, so a patient
+   * whose only laboratory upload is one of those got the same denial.
+   * 尿常规 / 感染筛查 / 粪便 / 腹部超声 stay off the reading list on
+   * purpose — they are on the class list as possible carriers of a blood
+   * analyte, not as panels this row reports on.
+   */
+  it.each([
+    [
+      'thyroid_function',
+      { tsh: '6.8 mIU/L', tshFlag: 'high', tshReference: '0.55-4.78' },
+      'TSH 6.8 mIU/L',
+    ],
+    ['coagulation', { aptt: '44.1 s', apttFlag: 'high', apttReference: '25-38' }, 'APTT 44.1 s'],
+  ] as const)('%s 也读得出来', (classifiedType, fields, expected) => {
+    const item = itemFor(
+      base({
+        documents: [
+          {
+            ...admissionPanel,
+            id: `d-${classifiedType}`,
+            ocrPayload: {
+              extractedText: '合成医院 检验报告单',
+              fields: { classifiedType, reportTime: '2026-05-12', ...fields },
+            },
+          },
+        ],
+      } as never),
+      'blood',
+    );
+    expect(item?.state).toBe('present');
+    expect(item?.summary).toContain(expected);
   });
 });

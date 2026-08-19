@@ -5020,5 +5020,411 @@ class AProvidedFlagCellIsNotTheRowsUnitTest(unittest.TestCase):
 
 
 
+class TheUnitColumnIsNotTheReadingTest(unittest.TestCase):
+    """「10^9/L」 CONTAINS A 10, AND THE ROW SCAN TOOK IT.
+
+    The candidate filter refused a number that is one end of a printed
+    interval and nothing else — so on the column order 项目 / 单位 /
+    结果, where the 单位 cell sits between the analyte's name and its
+    reading, the first number after the name is INSIDE THE UNIT. A white
+    cell count of 10 is a mild leucocytosis a clinician acts on, and the
+    laboratory's own 6.69 was nowhere in the payload.
+
+    The unit column being on the wrong side cost the unit as well: both
+    unit readers only ever looked to the RIGHT of the reading.
+    """
+
+    def _fields(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood.jpeg")
+        return result["fshd"], {
+            item["field_name"]: item for item in result["fshd"]["structured_fields"]
+        }
+
+    def test_the_flattened_row_reads_past_its_own_unit(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            "白细胞计数(WBC) 10^9/L 6.69 3.5-9.5",
+            "血红蛋白量(HGB) g/L 155 130-175",
+        )
+        panel = fshd["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["hgb"], 155.0)
+        self.assertEqual(fields["wbc"]["unit"], "10^9/L")
+        self.assertEqual(fields["wbc"]["reference_range_raw"], "3.5-9.5")
+
+    def test_the_cell_per_line_layout_loses_neither(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目",
+            "单位",
+            "结果",
+            "参考区间",
+            "白细胞计数(WBC)",
+            "10^9/L",
+            "6.69",
+            "3.5-9.5",
+        )
+        self.assertEqual(fshd["normalized_summary"]["lab_panel"]["wbc"], 6.69)
+        self.assertEqual(fields["wbc"]["unit"], "10^9/L")
+
+    def test_the_printed_haematology_unit_behaves_the_same_way(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            "血小板计数(PLT) ×10⁹/L 249 125-350",
+        )
+        self.assertEqual(fshd["normalized_summary"]["lab_panel"]["plt"], 249.0)
+        self.assertEqual(fields["plt"]["unit"], "×10⁹/L")
+
+    def test_a_reading_glued_to_its_own_unit_is_still_a_reading(self):
+        """「693U/L」 is unit-shaped too, and the split is what tells them apart."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693U/L 50-310",
+        )), "other", "biochem.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["ck"]["field_value"], "693")
+        self.assertEqual(fields["ck"]["unit"], "U/L")
+
+    def test_a_pressure_unit_spelled_with_a_digit_is_not_a_reading_either(self):
+        rows = extract_lab_table_rows([
+            "最大吸气压",
+            "cmH2O",
+            "58",
+            "≥60",
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["value"], "58")
+        self.assertEqual(rows[0]["unit"], "cmH2O")
+
+
+class TheFreeTextRowIsNotItsOwnReferenceTest(unittest.TestCase):
+    """THE 参考区间-AS-结果 FIX LANDED ONLY FOR 阴性/阳性.
+
+    `_read_qualitative_row` recognises a verdict cell through a closed
+    vocabulary, and the free-text rows of the same two panels — 尿颜色,
+    尿透明度, 粪便颜色, 粪便性状 — say none of those words. So on the
+    column order the round before this one existed to fix, they went on
+    publishing the laboratory's reference as the patient's result: a
+    stool printed 「颜色 黄褐色 黑色」 reported a melaena as an ordinary
+    stool, on the row a patient checks by eye.
+    """
+
+    def _panel(self, rows, name="urine.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_header_says_which_colour_is_the_patients(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "颜色(COL) 淡黄色 深黄色",
+            "透明度(CLA) 清亮 微浊",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_the_ordinary_order_is_unchanged(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 结果 参考区间",
+            "颜色(COL) 深黄色 淡黄色",
+            "透明度(CLA) 微浊 清亮",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_the_cell_per_line_layout_reads_the_same_column(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目",
+            "参考区间",
+            "结果",
+            "颜色",
+            "淡黄色",
+            "深黄色",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+
+    def test_the_stool_panel_reads_the_same_way(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 大便常规",
+            "项目 参考区间 结果",
+            "颜色(COL) 黄褐色 黑色",
+            "性状(CHA) 软便 稀便",
+        ], "stool.jpeg")
+        self.assertEqual(panel["stool_color"], "黑色")
+        self.assertEqual(panel["stool_consistency"], "稀便")
+
+    def test_two_readings_and_no_header_publish_nothing(self):
+        """A colour and a colour are the same shape; nothing else can say which."""
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色(COL) 淡黄色 深黄色",
+        ])
+        self.assertNotIn("urine_color", panel)
+
+    def test_one_reading_on_the_row_is_unchanged(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色(COL) 淡黄色",
+            "透明度: 微浊",
+        ])
+        self.assertEqual(panel["urine_color"], "淡黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_a_unit_or_a_flag_on_the_row_is_not_a_colour(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果 提示",
+            "颜色(COL) 淡黄色 深黄色 异常",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+
+
+class AnIntervalPrintedWithOrdinaryPunctuationIsStillAnIntervalTest(unittest.TestCase):
+    """A CHINESE IME DOES NOT TYPE AN ASCII HYPHEN.
+
+    The interval and bound readers listed the ASCII forms and two of the
+    CJK dashes. 「50－310」 (full-width hyphen-minus), 「120–250」 (en
+    dash) and 「＜25」 (full-width less-than) each lost the row its
+    reference ENTIRELY — and the interval is what the abnormal
+    comparison now runs on, so losing it silently removes the mark from
+    a reading that is above its own ceiling.
+    """
+
+    def _fields(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "enzyme.jpeg")
+        return {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+
+    def test_the_full_width_hyphen_is_an_interval(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK) 693 ↑ 50－310 U/L",
+        )
+        self.assertEqual(fields["ck"]["reference_low"], 50.0)
+        self.assertEqual(fields["ck"]["reference_high"], 310.0)
+
+    def test_the_en_dash_is_an_interval(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "乳酸脱氢酶(LDH) 319 ↑ 120–250 U/L",
+        )
+        self.assertEqual(fields["ldh"]["reference_low"], 120.0)
+        self.assertEqual(fields["ldh"]["reference_high"], 250.0)
+
+    def test_the_full_width_comparator_is_a_ceiling_and_not_a_floor(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌红蛋白(MB) 15 ＜25 ng/mL",
+        )
+        self.assertEqual(fields["mb"]["field_value"], "15")
+        self.assertEqual(fields["mb"]["reference_high"], 25.0)
+        self.assertIsNone(fields["mb"].get("reference_low"))
+
+    def test_the_interval_bound_is_still_not_read_as_the_reading(self):
+        """The refusal runs off the same class, so it moves with it."""
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "# 14 肌酸激酶(CK) 人 50－310 U/L 速率法",
+        )
+        self.assertNotIn("ck", fields)
+
+    def test_the_cell_reader_reads_the_same_punctuation(self):
+        rows = extract_lab_table_rows([
+            "肌酸激酶(CK)",
+            "693",
+            "50－310",
+            "U/L",
+        ])
+        self.assertEqual(rows[0]["value"], "693")
+        self.assertEqual(rows[0]["reference"], "50－310")
+
+
+class EveryMuscleTheSentenceNamesIsReadTest(unittest.TestCase):
+    """THE PATTERN OF WHICH MUSCLES ARE INVOLVED IS THE FINDING.
+
+    The reader stopped at the first muscle in the map and skipped every
+    sentence naming none — and a Chinese enumeration comma is not a
+    sentence break, so 「右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润」
+    published one muscle out of three. Worse, a thigh report naming the
+    quadriceps heads individually — which is how a 双大腿MRI is written —
+    matched nothing at all and produced no field, no map entry and no
+    trace that the page had said anything.
+    """
+
+    def _summary(self, *body):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+        ) + body)
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        return result["fshd"]
+
+    def test_every_muscle_in_one_sentence_is_read(self):
+        fshd = self._summary(
+            "影像所见: 右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润。"
+        )
+        names = {item["muscle_name"] for item in fshd["normalized_summary"]["mri_map"]}
+        self.assertEqual(
+            names,
+            {"gastrocnemius_medial_head", "tibialis_anterior", "extensor_digitorum_longus"},
+        )
+
+    def test_the_individually_named_thigh_muscles_are_read(self):
+        fshd = self._summary(
+            "影像所见: 双侧股外侧肌、股中间肌脂肪浸润,股直肌相对保留。"
+        )
+        names = {item["muscle_name"] for item in fshd["normalized_summary"]["mri_map"]}
+        self.assertEqual(names, {"vastus_lateralis", "vastus_intermedius"})
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["affected_regions"], ["thigh"]
+        )
+
+    def test_a_muscle_the_lexicon_does_not_carry_is_published_as_unread(self):
+        fshd = self._summary("影像所见: 双侧梨状肌及闭孔外肌脂肪浸润。")
+        summary = fshd["normalized_summary"]["mri_summary"]
+        self.assertEqual(summary["unread_muscle_terms"], ["梨状肌", "闭孔外肌"])
+        entries = fshd["normalized_summary"]["mri_map"]
+        self.assertTrue(all(item["muscle_name"] is None for item in entries))
+        self.assertTrue(all(item["muscle_name_unread"] for item in entries))
+        self.assertEqual(
+            {item["muscle_term"] for item in entries}, {"梨状肌", "闭孔外肌"}
+        )
+        # LOUD, NOT SILENT: the descriptor was read and the anatomy was
+        # not, and the queue a reviewer reads is where that is visible.
+        queued = {item["field_name"] for item in fshd["review_queue"]}
+        self.assertIn("fatty_infiltration", queued)
+
+    def test_a_report_whose_muscles_are_all_known_reports_nothing_unread(self):
+        fshd = self._summary("影像所见: 双侧股四头肌脂肪浸润。")
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["unread_muscle_terms"], []
+        )
+
+    def test_a_muscle_group_or_a_tissue_is_not_an_unread_muscle(self):
+        """「双大腿肌群」 is a region and 「肌肉萎缩」 is not a name at all."""
+        fshd = self._summary(
+            "影像所见: 双大腿肌群脂肪浸润。",
+            "影像所见: 双侧下肢肌肉萎缩。",
+        )
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["unread_muscle_terms"], []
+        )
+
+
+class TheAsymmetryAChineseMriActuallyWritesTest(unittest.TestCase):
+    """FSHD IS CHARACTERISTICALLY ASYMMETRIC, AND FOUR SPELLINGS WERE READ.
+
+    The reader knew 左侧较重, 左侧更重 and the two English phrasings. A
+    Chinese radiologist writes 「右侧著」, 「以右侧为著」, 「右侧较左侧明显」
+    or 「左右不对称」, and every one of those produced `asymmetry: none`
+    — the report's own signature finding, contradicted rather than left
+    unread.
+    """
+
+    def _asymmetry(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+            f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_emphasis_spellings_name_a_side(self):
+        self.assertEqual(self._asymmetry("右侧著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("以右侧为著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧受累更重"), "left_gt_right")
+
+    def test_the_comparison_names_the_heavier_side_and_not_the_other_one(self):
+        self.assertEqual(self._asymmetry("右侧较左侧明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("右侧改变较对侧明显"), "right_gt_left")
+
+    def test_a_study_that_only_says_it_is_asymmetric_says_so(self):
+        self.assertEqual(self._asymmetry("左右不对称"), "asymmetric_unspecified")
+        self.assertEqual(self._asymmetry("双侧受累不对称"), "asymmetric_unspecified")
+
+    def test_the_spellings_already_read_are_unchanged(self):
+        self.assertEqual(self._asymmetry("左侧较重"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧更重"), "right_gt_left")
+
+    def test_a_symmetric_study_is_not_made_asymmetric(self):
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+        self.assertEqual(self._asymmetry("双侧信号明显增高"), "none")
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+
+
+class OneRowIsPublishedOnceTest(unittest.TestCase):
+    """THE DUPLICATE GUARD COMPARED A FOLDED NUMBER AGAINST A PRINTED ONE.
+
+    `extract_lab_table_rows` leaves its reading canonical — 「3,250」 is
+    published as 3250 — and the guard looked for that folded spelling
+    inside the row snippet a canonical extractor had captured, which
+    still carries the separator. So it never matched, and the readings
+    large enough to need a thousands separator — on this disease's panel,
+    the muscle enzymes — were published TWICE: once under the canonical
+    key and once under `table_*`, both in `observations`, both in
+    `latest_summary.by_analyte`, and the same creatine kinase named
+    twice in `abnormal_list`.
+    """
+
+    def _names(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "enzyme.jpeg")
+        return [item["field_name"] for item in result["fshd"]["structured_fields"]]
+
+    def test_a_grouped_reading_is_not_published_twice(self):
+        names = self._names(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)",
+            "3,250",
+            "↑",
+            "50-310",
+            "U/L",
+        )
+        self.assertEqual(names.count("ck"), 1)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+
+    def test_the_same_analyte_appears_once_in_the_abnormal_list(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)",
+            "3,250",
+            "↑",
+            "50-310",
+            "U/L",
+        )), "other", "enzyme.jpeg")
+        abnormal = [item["analyte_name"] for item in result["latest_summary"]["abnormal_list"]]
+        self.assertEqual(abnormal, ["ck"])
+
+    def test_a_row_no_canonical_extractor_read_is_still_published(self):
+        names = self._names(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "血清淀粉样蛋白A",
+            "3,250",
+            "mg/L",
+        )
+        self.assertTrue(any(name.startswith("table_") for name in names))
+
 if __name__ == "__main__":
     unittest.main()

@@ -91,8 +91,10 @@ import type { RedactionMode, RedactionScope } from './allowlist.js';
 import {
   HARD_DELETE_KEYS_LOWER,
   OCR_FIELDS_SAFE_KEYS_PRECISE,
+  OCR_FLAG_SUFFIX,
   OCR_MEASURED_ANALYTE_KEYS,
   OCR_NON_RESULT_KEYS,
+  OCR_REFERENCE_SUFFIX,
   PROMPT_ALLOWLIST,
   REPORT_IMPRESSION_CHANNEL_ENABLED,
   REPORT_IMPRESSION_KEYS,
@@ -2201,9 +2203,12 @@ const projectOcrFields = (
    *  caller so a regression in the extractor is visible rather than
    *  silently absorbed here. */
   const droppedUntrusted: string[] = [];
-  /** Cells this projection has no name for. Counted, not listed, for
-   *  the reason the counter's own note at the bottom gives. */
-  let notRecognised = 0;
+  /** The ROWS this projection has no name for. Held as a set of row
+   *  identities rather than as a tally, because the unit the sentence
+   *  claims is 检查项 and one 检查项 arrives here as up to three keys —
+   *  see `rowIdentity`. Counted, not listed, for the reason the
+   *  counter's own note at the bottom gives. */
+  const notRecognisedRows = new Set<string>();
 
   // The extractor writes every lab field twice — `stoolColor` and
   // `stool_color`, `trustAb` and `trust_ab` — and both spellings are on
@@ -2358,15 +2363,74 @@ const projectOcrFields = (
     value === null || value === undefined || value === '';
 
   /**
+   * WHICH ROW A KEY BELONGS TO — the analyte's own spelling, with the
+   * two sibling suffixes taken off and the snake/camel difference
+   * flattened.
+   *
+   * A LABORATORY ROW IS THREE KEYS. `writeReading` in
+   * services/ocr/embedded-report-ocr.ts writes the value under both
+   * spellings and then `<camel>Flag` and `<camel>Reference` beside it —
+   * the marker the laboratory printed and the interval it was reached
+   * against, which is the whole point of that change. So a single row
+   * the allowlist has no name for arrives here as `left_qb`, `leftQb`,
+   * `leftQbFlag` and `leftQbReference`; the snake/camel join eats one of
+   * them and three keys reach the counter.
+   *
+   * `${key}${suffix}` as well as the camel spelling, because a payload
+   * on disk can carry a snake-keyed sibling — `pickLabReading` in
+   * profile.passport.ts reads both for the same reason.
+   *
+   * A SIBLING WHOSE VALUE KEY IS MISSING STILL NAMES ITS ROW. A stored
+   * payload holding `leftQbFlag` and no `leftQb` is one row the
+   * laboratory ran and this platform cannot name; it is counted once,
+   * under the stem, which is what it would have been counted as had the
+   * value survived.
+   */
+  const rowIdentity = (key: string): string => {
+    for (const suffix of [OCR_FLAG_SUFFIX, OCR_REFERENCE_SUFFIX]) {
+      if (key.length > suffix.length && key.endsWith(suffix)) {
+        return toCamel(key.slice(0, -suffix.length));
+      }
+    }
+    return toCamel(key);
+  };
+
+  /**
+   * IS THIS KEY THE MARKER OR THE INTERVAL BESIDE A MEASURED ANALYTE,
+   * rather than the analyte's own cell.
+   *
+   * Asked of `OCR_MEASURED_ANALYTE_KEYS` and not of the suffix alone: a
+   * cell of some other kind that happens to end in the word is not one
+   * of these two, and the two are minted only off the camel spelling of
+   * a measured analyte — see `analyteSiblingLabels` in allowlist.ts,
+   * which is where the same pair of keys is derived for the renderer.
+   */
+  const isAnalyteSibling = (key: string): boolean =>
+    [OCR_FLAG_SUFFIX, OCR_REFERENCE_SUFFIX].some(
+      (suffix) =>
+        key.length > suffix.length &&
+        key.endsWith(suffix) &&
+        OCR_MEASURED_ANALYTE_KEYS.has(key.slice(0, -suffix.length)),
+    );
+
+  /**
    * DENY-BY-DEFAULT, SAID OUT LOUD. See `OCR_NON_RESULT_KEYS` in
    * allowlist.ts for what is excluded from this count and why, and the
    * counter's own note at the bottom of this function for what the
    * silence cost.
+   *
+   * AND IT COUNTS 检查项, WHICH IS WHAT ITS SENTENCE SAYS IT COUNTS.
+   * 「本平台没有收录名称、因此没有发出的检查项个数」 is a number the model
+   * repeats to a patient, so its unit has to be the one the words claim:
+   * tests, not keys. See `rowIdentity` for why one test is up to three
+   * keys, and what the tally read before — a 生化 page with a single
+   * unnamed row on it, flagged and with the laboratory's interval
+   * printed beside it, told the model three tests were withheld.
    */
   const countIfResult = (key: string, value: unknown): void => {
     if (isEmpty(value)) return;
     if (OCR_NON_RESULT_KEYS.has(key)) return;
-    notRecognised += 1;
+    notRecognisedRows.add(rowIdentity(key));
   };
 
   for (const [key, value] of Object.entries(rawFields)) {
@@ -2463,6 +2527,34 @@ const projectOcrFields = (
         // wrong on the report type, because even `classifiedType` was
         // gone.
         out[key] = value;
+      } else if (isAnalyteSibling(key)) {
+        // NEITHER SIBLING IS ONE OF THIS PATIENT'S MEASUREMENTS, AND THE
+        // COUNTER SAYS 测量值.
+        //
+        // `numericValuesWithheld` renders as 「按当前授权扣下的测量值个
+        // 数」 — see `OCR_BOOKKEEPING_LABELS_ZH` in render.ts — so its
+        // unit is the numbers the laboratory MEASURED ON THIS PATIENT.
+        // A row's flag is the laboratory's verdict and its reference
+        // interval is the same printed range for everyone who ever had
+        // that test; neither is a reading off this patient, and neither
+        // was ever the patient's to withhold.
+        //
+        // Measured, on one synthetic 肌酶 row written the way the bridge
+        // writes it — `ck`, `creatineKinase`, `ckFlag`, `ckReference`:
+        // strict mode published the flag, withheld the one number the
+        // laboratory measured, and told the model 「按当前授权扣下的测量
+        // 值个数: 2」. The interval was the second. One CK, two withheld
+        // measurements, in the blob a model answers a patient out of —
+        // and the note on `compareToReferenceInterval` above already
+        // writes that arithmetic out (「the interval is a measurement so
+        // it goes into `numericValuesWithheld`」) as part of what made a
+        // strict blob unreadable, without the count itself being fixed.
+        //
+        // NOTHING GOES SILENT HERE. The flag publishes on the branch
+        // above in both modes, and where the row carries no flag the
+        // `_vs_reference` token minted just below says what the interval
+        // supported. What stops happening is a range that is not about
+        // this patient being counted as a number taken away from them.
       } else {
         withheldNumeric += 1;
       }
@@ -2504,7 +2596,7 @@ const projectOcrFields = (
     // rather than answer as though the fields did not exist.
     out.fieldsDroppedAsUnsafe = droppedUntrusted.length;
   }
-  if (notRecognised > 0) {
+  if (notRecognisedRows.size > 0) {
     /**
      * ══════════════════════════════════════════════════════════════════
      * THE THIRD COUNTER, AND THE ONE THAT WAS MISSING.
@@ -2533,12 +2625,15 @@ const projectOcrFields = (
      * fourteen more and this platform cannot name them」 is the whole of
      * what the model needs in order not to assert the report is empty.
      *
-     * AND IT COUNTS RESULTS, NOT ROWS. `OCR_NON_RESULT_KEYS` in
+     * AND IT COUNTS RESULTS, NOT BOOKKEEPING. `OCR_NON_RESULT_KEYS` in
      * allowlist.ts is what it excludes and why — a count that includes
      * this pipeline's own bookkeeping is a number the model repeats to a
      * patient, and a wrong one.
+     *
+     * AND IT COUNTS TESTS, NOT KEYS, which is the other way the same
+     * number could be wrong — see `rowIdentity` and `countIfResult`.
      */
-    out.fieldsNotRecognised = notRecognised;
+    out.fieldsNotRecognised = notRecognisedRows.size;
   }
   return out;
 };

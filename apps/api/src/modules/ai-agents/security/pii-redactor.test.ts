@@ -2872,8 +2872,14 @@ describe('the two spellings of one analyte are joined', () => {
     const inner = project(CK_ROW, 'strict');
     const markers = Object.keys(inner).filter((key) => key.endsWith('Flag'));
     expect(markers.sort()).toEqual(['ckFlag', 'mbFlag']);
-    // Two rows, two numbers and two intervals — not four of each.
-    expect(inner.numericValuesWithheld).toBe(4);
+    // TWO ROWS, TWO NUMBERS. This read 4 while the join was the only
+    // thing being tested — two values plus their two intervals — and the
+    // counter it reads renders as 「按当前授权扣下的测量值个数」. An
+    // interval is the same printed range for everyone who ever had the
+    // test; it is not one of this patient's measurements and was never
+    // theirs to withhold. See the 「the withheld-measurement count is a
+    // count of measurements」 block below.
+    expect(inner.numericValuesWithheld).toBe(2);
   });
 
   it('the count the model sees is the number of rows the laboratory ran', () => {
@@ -3008,6 +3014,160 @@ describe('a cell nothing can name is counted rather than dropped in silence', ()
       'precise',
     );
     expect(inner.fieldsNotRecognised).toBe(1);
+  });
+
+  /**
+   * THE UNIT IS 检查项, AND ONE 检查项 IS THREE KEYS.
+   *
+   * `writeReading` in services/ocr/embedded-report-ocr.ts writes the
+   * value under both spellings and then `<camel>Flag` and
+   * `<camel>Reference` beside it — the laboratory's marker and the
+   * interval it was read against. The snake/camel join eats one of the
+   * four; the other three each incremented the tally. So a 生化 page
+   * carrying ONE row this platform has no name for, flagged and with its
+   * interval printed, rendered as 「本平台没有收录名称、因此没有发出的
+   * 检查项个数: 3」 — three tests withheld where the laboratory ran one,
+   * in the blob a model answers a patient out of.
+   */
+  it.each(['strict', 'precise'] as const)(
+    'one unnamed row that arrived with its flag and its interval counts once — %s',
+    (mode) => {
+      const inner = project(
+        {
+          classifiedType: 'biochemistry',
+          table_xue_qing_dian_fen_mei: '82 U/L',
+          tableXueQingDianFenMei: '82 U/L',
+          tableXueQingDianFenMeiFlag: 'high',
+          tableXueQingDianFenMeiReference: '25-125',
+        },
+        mode,
+      );
+      expect(inner.fieldsNotRecognised).toBe(1);
+    },
+  );
+
+  it('the number the model is shown is the number of tests', () => {
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: {
+          fields: {
+            fields: {
+              classifiedType: 'biochemistry',
+              table_xue_qing_dian_fen_mei: '82 U/L',
+              tableXueQingDianFenMei: '82 U/L',
+              tableXueQingDianFenMeiFlag: 'high',
+              tableXueQingDianFenMeiReference: '25-125',
+            },
+          },
+        },
+      } as unknown as RetrievedChunk,
+      { mode: 'strict' },
+    );
+    expect(content).toContain('本平台没有收录名称、因此没有发出的检查项个数: 1');
+  });
+
+  it('a sibling whose value key never arrived still names its own row', () => {
+    // An archived payload can hold the marker without the number. That
+    // is one row the laboratory ran and this platform cannot name —
+    // counted once, under the stem, not zero and not twice.
+    const inner = project(
+      {
+        classifiedType: 'biochemistry',
+        tableXueQingDianFenMeiFlag: 'high',
+        tableXueQingDianFenMeiReference: '25-125',
+      },
+      'precise',
+    );
+    expect(inner.fieldsNotRecognised).toBe(1);
+  });
+
+  it('two unnamed rows are still two', () => {
+    // The join must not go the other way and collapse distinct rows.
+    const inner = project(
+      {
+        classifiedType: 'diaphragm_ultrasound',
+        left_qb: '12.4',
+        leftQb: '12.4',
+        leftQbFlag: 'low',
+        right_qb: '11.8',
+        rightQb: '11.8',
+      },
+      'precise',
+    );
+    expect(inner.fieldsNotRecognised).toBe(2);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 「扣下的测量值个数」 COUNTS THIS PATIENT'S MEASUREMENTS.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `numericValuesWithheld` renders as 「按当前授权扣下的测量值个数」. A
+ * row's reference interval is the same printed range for everyone who
+ * ever had that test and its flag is the laboratory's verdict; neither
+ * is a number measured on this patient, and neither was ever theirs to
+ * withhold. Strict mode counted the interval anyway, so one CK row told
+ * the model two measurements had been taken away.
+ */
+describe('the withheld-measurement count is a count of measurements', () => {
+  const project = (fields: Record<string, unknown>, mode: RedactionMode) => {
+    const { fields: out } = redactFields({ fields }, { scope: 'reports', mode });
+    return (out.fields ?? out.fields_clinical) as Record<string, unknown>;
+  };
+
+  /** SYNTHETIC, and written the way `writeReading` writes it. */
+  const CK_ROW = {
+    classifiedType: 'muscle_enzyme',
+    ck: '693 U/L',
+    creatineKinase: '693 U/L',
+    ckFlag: 'high',
+    ckReference: '50-310',
+  };
+
+  it('one measured row is one withheld measurement, not two', () => {
+    const inner = project(CK_ROW, 'strict');
+    expect(inner.numericValuesWithheld).toBe(1);
+  });
+
+  it('the laboratory’s own verdict still reaches the model', () => {
+    // The flag is not counted BECAUSE it is published, not instead of
+    // being published. Dropping it silently would be the other defect.
+    const { content } = renderChunkForPrompt(
+      {
+        id: 'c1',
+        source: 'patient_reports',
+        content: '',
+        metadata: { fields: { fields: CK_ROW } },
+      } as unknown as RetrievedChunk,
+      { mode: 'strict' },
+    );
+    expect(content).toContain('肌酸激酶 CK 异常标记');
+    expect(content).toContain('按当前授权扣下的测量值个数: 1');
+  });
+
+  it('two measured rows are two', () => {
+    const inner = project(
+      {
+        classifiedType: 'muscle_enzyme',
+        ck: '693 U/L',
+        ckReference: '50-310',
+        ldh: '319 U/L',
+        ldhReference: '120-250',
+      },
+      'strict',
+    );
+    expect(inner.numericValuesWithheld).toBe(2);
+  });
+
+  it('precise mode still publishes the interval itself', () => {
+    // Nothing here changes what a precise-consent patient's blob holds.
+    const inner = project(CK_ROW, 'precise');
+    expect(inner.ckReference).toBe('50-310');
+    expect(inner).not.toHaveProperty('numericValuesWithheld');
   });
 });
 
