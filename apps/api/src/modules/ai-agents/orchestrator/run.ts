@@ -34,6 +34,17 @@
  * answer round is the same call that may ask for more.
  */
 
+import {
+  buildExcisionNotice,
+  buildGuardEvidence,
+  buildRegenerationDirective,
+  EMPTY_AFTER_EXCISION_FALLBACK,
+  redactViolations,
+  inspectAnswer,
+  isSubstantiveRewrite,
+  localiseWireTokens,
+  type ClinicalGuardState,
+} from './answer-guard.js';
 import { isPreambleOnly, scrubToolCallMarkup, StreamingAnswerScrubber } from './answer-text.js';
 import { withCompanionToolCalls } from './companion-tools.js';
 import {
@@ -41,6 +52,7 @@ import {
   CHUNK_BEGIN,
   CHUNK_END,
   CitationIndex,
+  PERSONAL_SOURCES,
   RETRIEVAL_FAILURE_CODES,
   type BuiltContext,
 } from './context-builder.js';
@@ -172,6 +184,10 @@ export const CLINICAL_INFERENCE_BOUNDS = `【本人的数据：可以照着说�
   non_permissive_haplotype 是本平台不拿这份报告「去套指南里按重复数分组的建议」，不是「所以不会发病」；
   length_in_kb_not_a_repeat_count 是这一格记的是长度不是重复数，不要当成重复数解读。
   拒绝判读的那几个词本身就是答案，不是缺口——不要替它补一个结论，也不要因此让用户去开授权。
+  另外，这些值是本平台内部的写法（permissive_haplotype、within_fshd1_repeat_range、
+  not_read_off_a_laboratory_report、numericValuesWithheld、genetic_report 这类），
+  **不要原样打给用户**，也不要自己猜它们是什么意思——用中文把它说出来就行
+  （「允许型单倍型」「这个重复数落在 FSHD1 的范围里」）。
 - **资料里没写的机制不要写。**
   「代偿性高甲基化」「重复单元太短，剩下的重复代偿性地高度甲基化」这种句子听起来像教科书，
   实际上是现编的，而患者会拿它当自己报告的解释。检索到的片段没写的机制就不要写；
@@ -882,14 +898,42 @@ export const buildVisibilityNotice = (
     );
   }
 
-  // Asked of the printed row, not of the blob key. `fields_clinical`
-  // is in `fieldsUsed` for any report row carrying an OCR object at
-  // all, and the counter itself is written only when it is above zero —
-  // so this sentence used to explain a row that was not in the prompt,
-  // on reports with no measurements and on reports whose blob projected
-  // to nothing.
-  if (emission.ocrKeys.has('numericValuesWithheld')) {
-    lines.push('', 'numericValuesWithheld 是被扣下的测量值个数，不是解析失败。');
+  // AN ABSENCE PRODUCED BY CONSENT MUST NOT READ AS AN ABSENCE OF THE
+  // FINDING, and it did.
+  //
+  // Asked of the printed rows, not of the blob key: `fields_clinical` is
+  // in `fieldsUsed` for any report row carrying an OCR object at all,
+  // and the counter itself is written only when it is above zero — so
+  // this used to explain a row that was not in the prompt, on reports
+  // with no measurements and on reports whose blob projected to nothing.
+  //
+  // WHAT IT USED TO SAY WAS TRUE AND NOT ENOUGH. 「不是解析失败」 rules
+  // out one wrong reading and leaves the other one open, and the model
+  // took it: driven live at basic consent over a report whose OCR blob
+  // carries methylationValue: '95%', strict swept the number into
+  // `numericValuesWithheld: 1` and the assistant told the patient
+  // 「但是，这里面没有甲基化的结果」 — then listed four indications for
+  // ordering a methylation test they had already had. The count is
+  // evidence that a measurement EXISTS; it was being read as evidence
+  // that one does not.
+  //
+  // The profile scope says the same thing per cell rather than as a
+  // count (`methylation_withheld` under 甲基化数值), so both shapes raise
+  // this paragraph — a patient must not be sent to repeat a test on
+  // either scope. See PROFILE_WITHHELD_KEYS in pii-redactor.ts.
+  const withheldRows = [
+    ...(emission.ocrKeys.has('numericValuesWithheld') ? ['numericValuesWithheld'] : []),
+    ...[...emission.fields].filter((key) => key.endsWith('_withheld')),
+  ];
+  if (withheldRows.length > 0) {
+    lines.push(
+      '',
+      `上面的 ${withheldRows.join('、')} 说的是：这些数值在他的记录里是**有的**，` +
+        '只是按当前授权没有发给你——不是报告里没有这一项，也不是解析失败，更不是他没做过这项检查。',
+      '所以不要说「报告里没有甲基化结果」「你的报告没有测这一项」，' +
+        '也不要建议他再去做一次已经做过的检查。用户要的确实是这些原始数值本身时，' +
+        '再说明可以在「我的 › 隐私设置」里开启精确数值授权。',
+    );
   }
   lines.push('', '任何情况下都不要凭空推测数值，也不要把 strict 说成是报告本身的问题。');
 
@@ -1347,6 +1391,39 @@ export class Orchestrator {
       );
     }
 
+    // ---- The clinical output guard ---------------------------------
+    //
+    // POSITIONED LAST, for the same reason the redactor is: everything
+    // above can still change the text — the retry replaces it whole, the
+    // scrubber cuts markup out of it — and a check that runs before the
+    // last edit is a check on a draft. Everything BELOW this point only
+    // prefixes server-written notices onto the text, never rewrites it.
+    //
+    // It may regenerate, which is another LLM call and therefore has to
+    // land before `answerCutOff` and before the usage is totalled: the
+    // answer the patient reads is the one whose finish reason and token
+    // count the audit row must describe.
+    let guardState: ClinicalGuardState | undefined;
+    if (answerText) {
+      const guarded = await this.applyClinicalGuard({
+        answer: answerText,
+        executed: allExecuted,
+        context,
+        messages: round2Messages,
+        stream: Boolean(opts.streamFinalAnswer),
+        requestId: input.requestId,
+        signal: input.signal,
+        emit,
+      });
+      answerText = guarded.answer;
+      guardState = guarded.state;
+      if (guarded.regenerated) {
+        finalFinishReason = guarded.finishReason;
+        finalUsage = addUsage(finalUsage, guarded.usage);
+        round2Messages = guarded.messages;
+      }
+    }
+
     // Cut off only counts when there IS an answer to be cut off. On the
     // fallback path `answerTruncated` already says the run produced
     // nothing usable, and stacking a second warning on an apology tells
@@ -1372,6 +1449,7 @@ export class Orchestrator {
       redactionMode,
       truncated,
       answerCutOff,
+      clinicalGuard: guardState,
       failures: context.failures,
       executed: allExecuted,
       context,
@@ -1407,6 +1485,226 @@ export class Orchestrator {
       );
     }
     return text;
+  }
+
+  /**
+   * THE LAST PASS OVER WHAT LEAVES THE SERVER TOWARD THE PATIENT.
+   *
+   * `answer-guard.ts` holds the checks and the reasoning; this is the
+   * wiring, and the only decisions here are which of the run's facts
+   * each check is asked of:
+   *
+   *   - the PATIENT'S OWN NUMBERS come from the raw retriever payloads
+   *     (`chunk.metadata.fields` on a `PERSONAL_SOURCES` chunk), not
+   *     from the rendered rows. Raw is deliberately the wider set: a
+   *     value strict withheld is one the model could still have carried
+   *     in from replayed history, and a number the model never saw is
+   *     one it cannot have written into a sentence anyway, so the extra
+   *     entries cost nothing and close a case the projection cannot see.
+   *   - WHAT THIS PLATFORM SAID about those cells comes from
+   *     `readEmission` — the same reading of the same tool messages the
+   *     visibility notice is built from, so the two can never disagree
+   *     about which cells carry a reading.
+   *   - WHAT A SOURCE STATES comes from the non-patient chunks' own
+   *     text, before the renderer touches it.
+   *
+   * The remedy is one regeneration and then excision; see
+   * `buildExcisionNotice` for why those two and not a refusal.
+   */
+  private async applyClinicalGuard(args: {
+    answer: string;
+    executed: readonly ExecutedToolCall[];
+    context: BuiltContext;
+    messages: LlmMessage[];
+    stream: boolean;
+    requestId: string;
+    signal?: AbortSignal;
+    emit: (event: OrchestratorEvent) => void;
+  }): Promise<{
+    answer: string;
+    state: ClinicalGuardState | undefined;
+    regenerated: boolean;
+    finishReason: LlmFinishReason;
+    usage: LlmUsage | undefined;
+    messages: LlmMessage[];
+  }> {
+    const patientPayloads: Record<string, unknown>[] = [];
+    const corpusTexts: string[] = [];
+    for (const call of args.executed) {
+      if (!call.retrieval) continue;
+      const personal = PERSONAL_SOURCES.has(call.retrieval.retrieverId);
+      for (const chunk of call.retrieval.chunks) {
+        if (personal) {
+          const fields = chunk.metadata?.fields;
+          if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
+            patientPayloads.push(fields as Record<string, unknown>);
+          }
+        } else if (chunk.content) {
+          corpusTexts.push(chunk.content);
+        }
+      }
+    }
+    const evidence = buildGuardEvidence({
+      patientPayloads,
+      emitted: readEmission(args.context.fieldsUsed, args.context.toolMessages),
+      corpusTexts,
+    });
+
+    const first = localiseWireTokens(args.answer);
+    const localisedTokens = [...first.tokens];
+    const violations = inspectAnswer(first.text, evidence);
+    if (violations.length === 0) {
+      // Nothing to report unless the localisation actually rewrote
+      // something — a guard state on a clean run reads like a finding.
+      const state: ClinicalGuardState | undefined =
+        localisedTokens.length > 0
+          ? { violations: [], action: 'localised', localisedTokens }
+          : undefined;
+      return {
+        answer: first.text,
+        state,
+        regenerated: false,
+        finishReason: 'unknown',
+        usage: undefined,
+        messages: args.messages,
+      };
+    }
+
+    this.logger.warn(
+      {
+        requestId: args.requestId,
+        // Kinds and counts only. The offending SENTENCE is model prose
+        // built over this patient's own numbers, and the application log
+        // is not where patient-derived content belongs — the same rule
+        // the retry path states one screen up.
+        kinds: violations.map((violation) => violation.kind),
+      },
+      'clinical output guard fired; regenerating once',
+    );
+
+    // One regeneration, streamed into the emptied bubble exactly as the
+    // preamble retry is. Bounded at one for the same reason: a loop is
+    // what the round ceiling exists to prevent, and the excision below
+    // is a floor that always terminates.
+    if (args.stream) args.emit({ type: 'answer_reset', text: '' });
+    const retryMessages: LlmMessage[] = [
+      ...args.messages,
+      { role: 'assistant', content: args.answer },
+      { role: 'system', content: buildRegenerationDirective(violations) },
+    ];
+
+    let regenerated: {
+      text: string;
+      finishReason: LlmFinishReason;
+      usage: LlmUsage | undefined;
+    } | null = null;
+    try {
+      const round = await this.askRound({
+        messages: retryMessages,
+        tools: undefined,
+        stream: args.stream,
+        requestId: args.requestId,
+        signal: args.signal,
+        emit: args.emit,
+      });
+      const text = scrubToolCallMarkup(round.content ?? '').text;
+      if (text && !isPreambleOnly(text)) {
+        regenerated = { text, finishReason: round.finishReason, usage: round.usage };
+      }
+    } catch (error) {
+      // A regeneration that throws must not turn a recoverable answer
+      // into a 500. Falling through to the excision keeps the patient's
+      // question answered and keeps the forbidden sentence out.
+      this.logger.warn(
+        {
+          requestId: args.requestId,
+          error: scrubErrorDetail(error instanceof Error ? error.message : String(error)),
+        },
+        'clinical output guard regeneration failed; excising instead',
+      );
+    }
+
+    // What excision alone would have left. Computed here because it is
+    // both the fallback answer and the yardstick the rewrite is measured
+    // against — see `isSubstantiveRewrite`.
+    const excisedFirst = redactViolations(first.text, violations);
+
+    if (regenerated) {
+      const second = localiseWireTokens(regenerated.text);
+      for (const token of second.tokens) {
+        if (!localisedTokens.includes(token)) localisedTokens.push(token);
+      }
+      const remaining = inspectAnswer(second.text, evidence);
+      if (remaining.length === 0 && isSubstantiveRewrite(second.text, excisedFirst)) {
+        if (!args.stream) args.emit({ type: 'answer_reset', text: second.text });
+        return {
+          answer: second.text,
+          state: { violations, action: 'regenerated', localisedTokens },
+          regenerated: true,
+          finishReason: regenerated.finishReason,
+          usage: regenerated.usage,
+          messages: retryMessages,
+        };
+      }
+      if (remaining.length === 0) {
+        // Clean, and a stub. Publishing it would leave the patient
+        // reading a compliant non-answer to a question about their own
+        // report; the excised first answer still answers it.
+        this.logger.warn(
+          { requestId: args.requestId, rewriteChars: second.text.length },
+          'clinical output guard regeneration came back clean but stunted; excising the first answer instead',
+        );
+        const body = excisedFirst.trim() ? excisedFirst : EMPTY_AFTER_EXCISION_FALLBACK;
+        const answer = `${buildExcisionNotice(violations)}\n\n---\n\n${body}`;
+        args.emit({ type: 'answer_reset', text: answer });
+        return {
+          answer,
+          state: { violations, action: 'excised', localisedTokens },
+          regenerated: false,
+          finishReason: 'unknown',
+          usage: regenerated.usage,
+          messages: args.messages,
+        };
+      }
+      // The second answer is the one the patient would have read, so it
+      // is the one the excision operates on and the one the audit
+      // records.
+      const excised = redactViolations(second.text, remaining);
+      const body = excised.trim() ? excised : EMPTY_AFTER_EXCISION_FALLBACK;
+      const answer = `${buildExcisionNotice(remaining)}\n\n---\n\n${body}`;
+      this.logger.warn(
+        { requestId: args.requestId, kinds: remaining.map((v) => v.kind) },
+        'clinical output guard fired again after regeneration; excised and told the patient',
+      );
+      // Non-empty `answer_reset` in BOTH branches, deliberately. A
+      // streaming client has the regenerated text on screen and this
+      // replaces it; a non-streaming one has nothing and this is how the
+      // text arrives. See the note on `answer_reset` in types.ts.
+      args.emit({ type: 'answer_reset', text: answer });
+      return {
+        answer,
+        state: { violations: remaining, action: 'excised', localisedTokens },
+        regenerated: true,
+        finishReason: regenerated.finishReason,
+        usage: regenerated.usage,
+        messages: retryMessages,
+      };
+    }
+
+    // The regeneration produced nothing usable. Excise the first
+    // answer — it is the only answer there is, and it is still mostly
+    // the patient's.
+    const body = excisedFirst.trim() ? excisedFirst : EMPTY_AFTER_EXCISION_FALLBACK;
+    const answer = `${buildExcisionNotice(violations)}\n\n---\n\n${body}`;
+    args.emit({ type: 'answer_reset', text: answer });
+    return {
+      answer,
+      state: { violations, action: 'excised', localisedTokens },
+      regenerated: false,
+      finishReason: 'unknown',
+      usage: undefined,
+      messages: args.messages,
+    };
   }
 
   /**
@@ -1629,6 +1927,7 @@ export class Orchestrator {
     redactionMode: ReturnType<typeof redactionModeForConsent>;
     truncated?: boolean;
     answerCutOff?: boolean;
+    clinicalGuard?: ClinicalGuardState;
     failures?: { corpus: boolean; personal: boolean };
     executed: ExecutedToolCall[];
     context: BuiltContext;
@@ -1718,6 +2017,7 @@ export class Orchestrator {
       answer: args.finalAnswer,
       ...(args.truncated ? { answerTruncated: true } : {}),
       ...(args.answerCutOff ? { answerCutOff: true } : {}),
+      ...(args.clinicalGuard ? { clinicalGuard: args.clinicalGuard } : {}),
       ...(retrievalFailure ? { retrievalFailure } : {}),
       citations: args.context.citations,
       toolCalls,

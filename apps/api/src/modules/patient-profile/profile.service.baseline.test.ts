@@ -122,7 +122,18 @@ describe('getBaselineByUserId', () => {
     expect(documentSql).toContain('jsonb_build_object');
     expect(documentSql).toContain("'fields'");
     expect(documentSql).toContain("'extractedText'");
-    expect(documentSql).not.toContain('aiExtraction');
+    // NOT 「the word aiExtraction never appears」, which is what stood
+    // here and is a stricter promise than the one that matters. The
+    // reading guard needs the reference interval the report printed
+    // beside each analyte, and that interval lives in `aiExtraction`
+    // — so the projection now reaches INTO the blob for two numbers
+    // per analyte. What must not happen is the blob being selected as
+    // a key and serialised to the phone, and that is what this asserts:
+    // no `'aiExtraction'` key on the built object.
+    expect(documentSql).not.toMatch(/'aiExtraction'\s*,/);
+    expect(documentSql).toContain("'analyteReferences'");
+    expect(documentSql).toContain('reference_low');
+    expect(documentSql).toContain('reference_high');
   });
 
   it('selects the columns the picker needs, id and status included', async () => {

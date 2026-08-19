@@ -6,6 +6,7 @@
  * pulling each other in.
  */
 
+import type { ClinicalGuardState } from './answer-guard.js';
 import type { LlmUsage } from '../llm/base.js';
 import type { Citation, ConsentLevel } from '../retrievers/base.js';
 import type { RedactionMode } from '../security/allowlist.js';
@@ -143,6 +144,20 @@ export interface OrchestratorRunResult {
    * a state and offer a "continue" affordance.
    */
   answerCutOff?: boolean;
+  /**
+   * The clinical output guard did something to this answer.
+   *
+   * Absent on a run where it found nothing and rewrote nothing, which is
+   * the ordinary case — a present-but-empty object reads like a finding.
+   * When present it carries the violations it caught, whether the
+   * regeneration cleared them (`regenerated`) or the sentences had to be
+   * removed and reported to the patient (`excised`), and which wire
+   * tokens were localised on the way out. The audit row is the only
+   * place the offending sentence is kept: it is model prose built over
+   * this patient's own numbers, so it belongs in the access-controlled,
+   * consent-scoped trail and not in the application log.
+   */
+  clinicalGuard?: ClinicalGuardState;
   /** Set when at least one retrieval class hard-failed. Absent on a
    *  healthy run. */
   retrievalFailure?: RetrievalFailureState;

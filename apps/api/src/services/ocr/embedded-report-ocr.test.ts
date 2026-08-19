@@ -554,8 +554,17 @@ describe('one cell on the report, one row on the prompt', () => {
     expect(promptRowsFor(fields, 'precise')).toEqual([
       // The bridge's own two, written from the parser's classification
       // and the uploader's declared type rather than off any cell.
-      'documentType: genetic_report',
-      'classifiedType: genetic_report',
+      //
+      // 基因报告 and not `genetic_report`: the VALUE of a document-type
+      // key is localised on its way into the prompt (see
+      // `DOCUMENT_TYPE_VALUE_LABELS` in security/render.ts), because a
+      // snake_case English token under a Chinese label in an otherwise
+      // Chinese prompt had the model inventing its own translation.
+      // What this test is actually about — one cell on the report
+      // producing exactly one row on the prompt — is untouched by that:
+      // the keys and the row count are the same either way.
+      'documentType: 基因报告',
+      'classifiedType: 基因报告',
       'haplotype: 4qA',
       'haplotype_clinical: permissive_haplotype',
       'd4z4RepeatOther: 22',
@@ -565,8 +574,8 @@ describe('one cell on the report, one row on the prompt', () => {
       'd4z4Repeats_clinical: within_fshd1_repeat_range',
     ]);
     expect(promptRowsFor(fields, 'strict')).toEqual([
-      'documentType: genetic_report',
-      'classifiedType: genetic_report',
+      'documentType: 基因报告',
+      'classifiedType: 基因报告',
       'haplotype_clinical: permissive_haplotype',
       'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
       'd4z4Repeats_clinical: within_fshd1_repeat_range',
@@ -582,8 +591,8 @@ describe('one cell on the report, one row on the prompt', () => {
   it('renders a stated subtype exactly once, in both modes', () => {
     const fields = fieldsFor(SUBTYPE_STATED_WITH_A_COUNT);
     expect(promptRowsFor(fields, 'precise')).toEqual([
-      'documentType: genetic_report',
-      'classifiedType: genetic_report',
+      'documentType: 基因报告',
+      'classifiedType: 基因报告',
       'diagnosisType: FSHD1',
       'haplotype: 4qA',
       'haplotype_clinical: permissive_haplotype',
@@ -596,8 +605,8 @@ describe('one cell on the report, one row on the prompt', () => {
     // The subtype survives strict beside the readings and NOT beside a
     // second copy of itself: it is a classification, not a measurement.
     expect(promptRowsFor(fields, 'strict')).toEqual([
-      'documentType: genetic_report',
-      'classifiedType: genetic_report',
+      'documentType: 基因报告',
+      'classifiedType: 基因报告',
       'diagnosisType: FSHD1',
       'haplotype_clinical: permissive_haplotype',
       'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
@@ -637,5 +646,166 @@ describe('one cell on the report, one row on the prompt', () => {
   it('prefers a hand-corrected subtype over an archived spelling', () => {
     const corrected = { geneticType: 'FSHD1', diagnosisType: 'FSHD2' };
     expect(pickReading(corrected, GENETIC_FIELD_KEYS.geneticType)).toBe('FSHD2');
+  });
+});
+
+/**
+ * THE LABORATORY PANEL, WHICH IS THE OTHER HALF OF THIS BRIDGE.
+ *
+ * The genetics cells above were minted twice; the muscle-damage panel
+ * had the opposite defect — one cell, one key, and the key overwritten
+ * with a worse copy of itself. `normalized_summary.lab_panel` holds the
+ * BARE FLOAT, and the block that copied eight of its entries into
+ * `fields` ran AFTER the structured-field loop had already written the
+ * same cells with the unit the laboratory printed.
+ *
+ * The fixtures are shaped like `analyze_fshd_report`'s real output for a
+ * 心肌酶谱 and a 血常规 in the ordinary cell-per-line OCR layout — a
+ * structured field per row carrying `unit`, `abnormal_flag` and
+ * `reference_range_raw`, and a `lab_panel` of bare floats beside them.
+ */
+const labAnalysis = (
+  structuredFields: Array<Record<string, unknown>>,
+  labPanel: Record<string, unknown>,
+): ParserCase => ({
+  reportText: '示例市中心医院 检验报告单',
+  analysis: {
+    fshd: {
+      report_type: 'biochemistry',
+      report_type_confidence: 0.9,
+      review_queue: [],
+      structured_fields: structuredFields,
+      normalized_summary: { lab_panel: labPanel },
+    },
+  },
+});
+
+/** 「肌酸激酶(CK) 693 ↑ 50-310 U/L」 beside an albumin the same page
+ *  printed unflagged, and a platelet count whose unit starts with a
+ *  digit. */
+const A_FLAGGED_MUSCLE_ENZYME_PANEL = labAnalysis(
+  [
+    {
+      field_name: 'ck',
+      field_value: '693',
+      normalized_value: 693,
+      unit: 'U/L',
+      confidence: 0.93,
+      abnormal_flag: 'high',
+      reference_range_raw: '50-310',
+      reference_low: 50,
+      reference_high: 310,
+    },
+    {
+      field_name: 'uric_acid',
+      field_value: '520',
+      normalized_value: 520,
+      unit: 'umol/L',
+      confidence: 0.93,
+      abnormal_flag: 'high',
+      reference_range_raw: '208-428',
+    },
+    {
+      field_name: 'alb',
+      field_value: '42',
+      normalized_value: 42,
+      unit: 'g/L',
+      confidence: 0.93,
+      reference_range_raw: '40-55',
+    },
+    {
+      field_name: 'plt',
+      field_value: '249',
+      normalized_value: 249,
+      unit: '10^9/L',
+      confidence: 0.93,
+      reference_range_raw: '125-350',
+    },
+  ],
+  { ck: 693, uric_acid: 520, alb: 42, plt: 249 },
+);
+
+describe('the muscle-damage panel keeps its unit', () => {
+  /**
+   * MEASURED: `ck: 「693」` and `ldh: 「319」` where the parser had
+   * produced 「693U/L」 and 「319U/L」, on a payload whose every analyte
+   * NOT on the eight-key list kept its unit. The eight cells a clinician
+   * reads an FSHD patient's muscle damage off were the eight that
+   * reached 我的档案, the passport, the exports and the model prompt as
+   * unitless numbers, beside neighbours reading 「42g/L」.
+   */
+  it('does not overwrite the unit-bearing value with the bare float', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.ck).toBe('693U/L');
+    expect(fields.uricAcid).toBe('520umol/L');
+    // The alias the app's blood card reads is the same string.
+    expect(fields.creatineKinase).toBe('693U/L');
+  });
+
+  it('renders every analyte on the report the same way', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.alb).toBe('42g/L');
+  });
+
+  it('separates a unit that starts with a digit', () => {
+    // 「24910^9/L」 is one string in which the first five characters are
+    // two different numbers.
+    expect(fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL).plt).toBe('249 10^9/L');
+  });
+
+  /** The panel is still the answer where the parse produced an entry
+   *  and no structured field to render — the one state in which the
+   *  bare float is the best this bridge has. */
+  it('still answers from the panel when no structured field carries the cell', () => {
+    const fields = fieldsFor(labAnalysis([], { ck: 693 }));
+    expect(fields.ck).toBe('693');
+  });
+});
+
+describe('what the laboratory said about the row', () => {
+  /**
+   * The parser reads the flag and the reference interval off the row and
+   * writes both onto the structured field; `observations[]` and
+   * `latest_summary.by_analyte` carry them, and `ocr_payload.fields` —
+   * the only one of the three any patient-facing screen reads — carried
+   * the number alone.
+   *
+   * THESE KEYS ARE CARRIED AND NOT YET RENDERED. `ReportInsightMetric`
+   * in apps/mobile/lib/report-insights.ts is `{ label, value, date }`
+   * and has no member that can hold a flag, and
+   * `OCR_FIELDS_SAFE_KEYS_PRECISE` does not list them so they reach no
+   * model prompt in either mode. Both are stated in the comment on the
+   * structured-field loop; this suite asserts the half that is this
+   * file's to keep true.
+   */
+  it('carries the flag and the interval the row printed', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.ckFlag).toBe('high');
+    expect(fields.ckReference).toBe('50-310');
+  });
+
+  it('camelises the sibling keys with the cell they belong to', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.uricAcidFlag).toBe('high');
+    expect(fields.uricAcidReference).toBe('208-428');
+  });
+
+  /** ONE SPELLING. Every other cell in the loop is written under both
+   *  the snake and the camel name because both are already on disk;
+   *  these two are new, so there is no snake twin for
+   *  `projectOcrFields` to have to collapse. */
+  it('writes one spelling of each and no snake twin', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.ck_flag).toBeUndefined();
+    expect(fields.uric_acid_flag).toBeUndefined();
+    expect(fields.uric_acid_reference).toBeUndefined();
+  });
+
+  it('mints no flag for a row the laboratory did not flag', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.albFlag).toBeUndefined();
+    // The interval is still carried: a row can print one without being
+    // abnormal, and that is what the reading is normal AGAINST.
+    expect(fields.albReference).toBe('40-55');
   });
 });

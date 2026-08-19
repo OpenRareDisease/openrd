@@ -315,6 +315,34 @@ const statusChipTone = (status: string) => {
 
 /** Pipeline status → what the patient should read. `parsed` /
  *  `parse_failed` are our state machine's vocabulary, not theirs. */
+/**
+ * 性别, BACK IN CHINESE.
+ *
+ * `patientSex` is not the report's own word. The report said 「男」; the
+ * parser (`_parse_patient_info` in fshd_report_service.py) matched it
+ * and stored `male`, and this page printed `male` under 性别 — on a page
+ * where every other value is Chinese, to a patient reading a Chinese
+ * report that had the right word on it in the first place. A round trip
+ * out of the language and back with the meaning intact and only the
+ * wording lost.
+ *
+ * The parser falls THROUGH for anything it does not recognise (its last
+ * branch is `else raw_sex`), so this must fall through too: an
+ * unmatched value is the report's own text, and printing it is right.
+ * That is also why this is a lookup and not a boolean — mapping the
+ * unknown case onto one of the two would state a sex nobody read.
+ *
+ * Beside `formatStatusLabel` because it is the same bug that comment
+ * already describes: an English enum painted into a Chinese row.
+ */
+const SEX_LABELS: Record<string, string> = {
+  male: '男',
+  female: '女',
+};
+
+const formatSexLabel = (value?: string): string | undefined =>
+  value === undefined ? undefined : (SEX_LABELS[value.trim().toLowerCase()] ?? value);
+
 const formatStatusLabel = (status: string): string => {
   switch (status) {
     case 'parsed':
@@ -767,7 +795,7 @@ export default function ReportDetailScreen() {
       { label: '标本', value: pickField(fields, ['specimen']) },
       { label: '送检医生', value: pickField(fields, ['orderingDoctor', 'ordering_doctor']) },
       { label: '患者姓名', value: pickField(fields, ['patientName']) },
-      { label: '性别', value: pickField(fields, ['patientSex']) },
+      { label: '性别', value: formatSexLabel(pickField(fields, ['patientSex'])) },
       { label: '年龄', value: pickField(fields, ['patientAge']) },
     ];
 

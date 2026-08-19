@@ -767,3 +767,160 @@ describe('系统监测卡片：读 state，不读摘要字符串', () => {
     expect(card?.summary).not.toContain('未能自动读出');
   });
 });
+
+/** A parsed report of a given class carrying exactly these fields.
+ *  Local to the two describes below; the `unparsedDoc` further up is
+ *  the opposite fixture (text, no fields) and is scoped to its own. */
+const parsedDoc = (
+  documentType: string,
+  fields: Record<string, string>,
+  at: { id?: string; uploadedAt?: string } = {},
+) => ({
+  id: at.id ?? `d-${documentType}`,
+  documentType,
+  title: null,
+  fileName: 'scan.pdf',
+  mimeType: 'application/pdf',
+  fileSizeBytes: 1,
+  storageUri: 'local://scan',
+  status: 'parsed',
+  uploadedAt: at.uploadedAt ?? '2026-03-03T00:00:00.000Z',
+  checksum: null,
+  submissionId: null,
+  ocrPayload: { fields: { classifiedType: documentType, ...fields } },
+});
+
+/**
+ * A VALUE ON THIS PANEL IS NEVER A BARE NUMBER.
+ *
+ * 心脏 and 肺功能 were built by joining `pickField` results with a slash
+ * — a POSITIONAL join, where the name of each value lived only in the
+ * order of the array and nothing was printed. An echocardiogram
+ * therefore reached a clinician as 「窦性心律 / 各房室内径正常 / 58 / 430」:
+ * an ejection fraction and a QTc as two anonymous numbers.
+ *
+ * The join was positional AND gap-closing, which is the worse half.
+ * `filter(Boolean)` removes a metric that did not parse, so a report
+ * with no LVEF printed 「窦性心律 / 430」 and a reader with no way to see
+ * that a slot had vanished reads the QTc as the ejection fraction. An
+ * EF of 43% is a referral; a QTc of 430 ms is normal.
+ */
+describe('心肺面板：每个数值都带名字和单位', () => {
+  const doc = parsedDoc;
+
+  it('心脏：LVEF 和 QTc 都被命名，不再是两个裸数字', () => {
+    const item = itemFor(
+      base({
+        documents: [
+          doc('ecg', {
+            ecgSummary: '窦性心律',
+            echoSummary: '各房室内径正常',
+            LVEF: '58',
+            QTc: '430',
+          }),
+        ],
+      } as never),
+      'cardiac',
+    );
+    expect(item?.summary).toContain('LVEF 58%');
+    expect(item?.summary).toContain('QTc 430 ms');
+    // The shape that made the numbers anonymous.
+    expect(item?.summary).not.toContain('/ 58 /');
+  });
+
+  it('心脏：缺一项时剩下的那项不会顶替它的位置', () => {
+    const item = itemFor(
+      base({ documents: [doc('ecg', { ecgSummary: '窦性心律', QTc: '430' })] } as never),
+      'cardiac',
+    );
+    // 430 is a QTc and says so, on a report carrying no ejection
+    // fraction at all.
+    expect(item?.summary).toContain('QTc 430 ms');
+    expect(item?.summary).not.toContain('LVEF');
+  });
+
+  it('报告本身带了单位时不会重复追加', () => {
+    const item = itemFor(
+      base({ documents: [doc('ecg', { LVEF: '58%', QTc: '430 ms' })] } as never),
+      'cardiac',
+    );
+    expect(item?.summary).toContain('LVEF 58%');
+    expect(item?.summary).not.toContain('58%%');
+  });
+
+  /** The parser reads 「限制性通气功能障碍」 off a Chinese report and
+   *  stores `restrictive`; printing that back to the patient is this
+   *  platform translating a Chinese report into English for a Chinese
+   *  reader. */
+  it('肺功能：通气模式用中文，不是 wire enum', () => {
+    const item = itemFor(
+      base({
+        documents: [
+          doc('pulmonary_function', { ventilatoryPattern: 'restrictive', fvcPredPct: '62' }),
+        ],
+      } as never),
+      'respiratory',
+    );
+    expect(item?.summary).toContain('限制性通气功能障碍');
+    expect(item?.summary).not.toContain('restrictive');
+    expect(item?.summary).toContain('FVC 占预计值 62%');
+  });
+
+  it('肺功能：没收录的取值原样透出，不吞掉', () => {
+    const item = itemFor(
+      base({
+        documents: [doc('pulmonary_function', { ventilatoryPattern: 'something_new' })],
+      } as never),
+      'respiratory',
+    );
+    expect(item?.summary).toContain('something_new');
+  });
+});
+
+/**
+ * THE 血检指标 ROW IS BUILT FROM A DOCUMENT THAT HAS BLOOD IN IT.
+ *
+ * `latestBlood` picked the newest document among ten classified types —
+ * one of which is 腹部超声 — and the row was built from that ONE
+ * document with no fallback. So an abdominal ultrasound uploaded after
+ * a biochemistry panel took the slot, produced no CK, and blanked the
+ * row. Worse than blank: a document id HAD been found, so `state` came
+ * out `unreadable`, and the passport went from printing the patient's
+ * real CK to telling a reader their panel could not be read. The panel
+ * was fine and still on file.
+ */
+describe('血检指标：挑的是真的有血检值的那份报告', () => {
+  const doc = (
+    id: string,
+    documentType: string,
+    uploadedAt: string,
+    fields: Record<string, string>,
+  ) => parsedDoc(documentType, fields, { id, uploadedAt });
+
+  const panel = doc('d-blood', 'biochemistry', '2026-03-01T00:00:00.000Z', {
+    creatineKinase: '980 U/L',
+    LDH: '310 U/L',
+  });
+  const ultrasound = doc('d-us', 'abdominal_ultrasound', '2026-03-05T00:00:00.000Z', {
+    impressionText: '肝胆胰脾未见明显异常',
+  });
+
+  it('后传的腹部超声不会清空前面的生化结果', () => {
+    const item = itemFor(base({ documents: [panel, ultrasound] } as never), 'blood');
+    expect(item?.summary).toContain('CK 980 U/L');
+    expect(item?.summary).toContain('LDH 310 U/L');
+    // And the state must not accuse the panel of being unreadable.
+    expect(item?.state).toBe('present');
+  });
+
+  it('腹部超声本身带 CK 时仍然算数', () => {
+    // The type list is broad on purpose; the filter is on the FIELD, so
+    // breadth is kept rather than traded away.
+    const usWithCk = doc('d-us2', 'abdominal_ultrasound', '2026-03-05T00:00:00.000Z', {
+      creatineKinase: '640 U/L',
+    });
+    expect(itemFor(base({ documents: [usWithCk] } as never), 'blood')?.summary).toContain(
+      'CK 640 U/L',
+    );
+  });
+});

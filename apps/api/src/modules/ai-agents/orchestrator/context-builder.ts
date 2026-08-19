@@ -22,7 +22,12 @@ import { renderChunkForPrompt } from '../security/render.js';
 /** Sources whose contribution counts as "personal data". When any of
  *  these appear, the orchestrator surfaces a "本回答用到了你的..."
  *  hint to the UI and the audit row carries usedPersonalData=true. */
-const PERSONAL_SOURCES = new Set([
+/** Exported because `answer-guard.ts` has to split this turn's chunks
+ *  the same way: a patient chunk's raw payload is where their own
+ *  measurements are, and a corpus chunk's text is what a mechanism claim
+ *  has to be supported by. Splitting them a second time by hand is how
+ *  the two halves drift. */
+export const PERSONAL_SOURCES = new Set([
   'patient_profile',
   'patient_reports',
   // Followup trends are as personal as it gets — the answer quotes the

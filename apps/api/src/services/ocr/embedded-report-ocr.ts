@@ -35,6 +35,22 @@ interface StructuredField {
   muscle_name?: unknown;
   body_region?: unknown;
   region?: unknown;
+  /**
+   * WHAT THE LABORATORY SAID ABOUT THE ROW, WHICH IS NOT THE NUMBER.
+   *
+   * The parser writes both of these onto a field the moment the row it
+   * came off printed them (`_build_field` in
+   * apps/report-manager/app/services/fshd_report_service.py), and until
+   * now this bridge dropped both on the floor. See the flag paragraph
+   * on the structured-field loop in `buildFields`.
+   *
+   * `reference_low` / `reference_high` are deliberately absent: they are
+   * the parsed halves of `reference_range_raw`, this file has no reader
+   * that computes on them, and `observations[].reference` already
+   * carries them typed for the ones that do.
+   */
+  abnormal_flag?: unknown;
+  reference_range_raw?: unknown;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,7 +85,15 @@ const formatStructuredValue = (field: StructuredField) => {
   const unit = toStringField(field.unit);
   if (!base) return undefined;
   if (unit && !base.includes(unit)) {
-    return `${base}${unit}`;
+    // A UNIT THAT STARTS WITH A DIGIT NEEDS THE SPACE. Gluing was safe
+    // while every unit that reached here began with a letter — 「693」 +
+    // 「U/L」 — and a haematology panel prints 「10^9/L」, so a platelet
+    // count of 249 rendered 「24910^9/L」: one string in which the first
+    // five characters are two different numbers. The parser reads the
+    // unit column off the row now (`_unit_from_row`), so this is the
+    // first shape in which those units arrive at all.
+    const separator = /^[0-9.]/.test(unit) ? ' ' : '';
+    return `${base}${separator}${unit}`;
   }
   return base;
 };
@@ -302,12 +326,62 @@ export const buildFields = (
     fields.orderingDoctor = orderingDoctor;
   }
 
+  /**
+   * THE FLAG AND THE REFERENCE INTERVAL STOPPED AT `observations`.
+   *
+   * The parser reads both off the row — 「*14肌酸激酶(CK) 693 ↑ 50-310
+   * U/L」 — and writes them onto the structured field. `observations[]`
+   * and `latest_summary.by_analyte` carry them. `ocr_payload.fields`,
+   * which is the ONLY one of the three any patient-facing screen reads,
+   * carried the number alone: 我的档案 → 血液/生化 renders a CK of 693
+   * as an ordinary 「693U/L」, in the same colour as a normal one, with
+   * nothing on the card saying the laboratory flagged it or what it was
+   * flagged against.
+   *
+   * ONE SPELLING, NOT TWO. Every other cell in this loop is written
+   * under both the snake and the camel name because both are already on
+   * disk in stored payloads; these two are new, so they get the one
+   * spelling every reader on this platform starts its alias list with,
+   * and there is no snake/camel pair for `projectOcrFields` to have to
+   * collapse. See the EcoRI note above for what a second spelling of one
+   * cell costs.
+   *
+   * THE CONSUMING SHAPE HAS TO CHANGE FOR THIS TO REACH A PATIENT, AND
+   * IT IS IN ANOTHER LANE'S FILE — DO NOT ASSUME IT HAS. `buildMetric`
+   * in apps/mobile/lib/report-insights.ts builds a `ReportInsightMetric`
+   * of `{ label, value, date }`, and no member of that type can hold a
+   * flag, so every screen that renders one drops these keys on the
+   * floor today. What that file needs:
+   *
+   *   - `ReportInsightMetric` gains `flag?: 'high' | 'low' | null` and
+   *     `reference?: string | null`;
+   *   - `buildMetric` resolves them off the SAME document it resolved
+   *     the value from — `pickField(doc.ocrPayload?.fields, keys.map(k
+   *     => `${k}Flag`))` — never off `latestDocForField` a second time,
+   *     or a flag from one report can land beside a value from another;
+   *   - the metric renderers on 我的档案 and 临床护照 show the direction
+   *     and the interval beside the number.
+   *
+   * Until that lands these keys are carried and unread, which is the
+   * state this half of the fix can reach on its own: the payload now
+   * CONTAINS what the laboratory said, and no screen invents it.
+   */
   for (const field of structuredFields) {
     const fieldName = toStringField(field.field_name);
     const valueText = formatStructuredValue(field);
     if (!fieldName || !valueText) continue;
+    const camelName = toCamelCase(fieldName);
     fields[fieldName] = valueText;
-    fields[toCamelCase(fieldName)] = valueText;
+    fields[camelName] = valueText;
+
+    const abnormalFlag = toStringField(field.abnormal_flag);
+    if (abnormalFlag) {
+      fields[`${camelName}Flag`] = abnormalFlag;
+    }
+    const referenceRange = toStringField(field.reference_range_raw);
+    if (referenceRange) {
+      fields[`${camelName}Reference`] = referenceRange;
+    }
   }
 
   const geneticSummary = toRecord(normalizedSummary?.genetic_summary);
@@ -529,8 +603,34 @@ export const buildFields = (
 
   const labPanel = toRecord(normalizedSummary?.lab_panel);
   if (labPanel) {
+    /**
+     * THE UNIT WAS STRIPPED FROM EXACTLY THE ANALYTES THIS DISEASE IS
+     * MONITORED BY.
+     *
+     * `normalized_summary.lab_panel` holds the BARE FLOAT — the unit
+     * lives on the structured field, which the loop above has already
+     * rendered through `formatStructuredValue` with the unit attached.
+     * This block then wrote the float over it. Measured on a synthetic
+     * 心肌酶谱 and a synthetic 生化全套: `ck: 「693」` and `ldh: 「319」`
+     * where the parser had produced 「693U/L」 and 「319U/L」, on a
+     * payload whose `alb`, `globulin`, `sodium` and `calcium` — every
+     * analyte NOT on this list — kept theirs. So the eight cells a
+     * clinician reads an FSHD patient's muscle damage off were the
+     * eight that reached 我的档案, the passport, the exports and the
+     * model prompt as unitless numbers, beside neighbours that read
+     * 「42g/L」.
+     *
+     * This is the clobber shape `CANONICAL_GENETIC_CELLS` was written
+     * for, on the muscle-damage panel: one cell, one key, and the
+     * spelling that carries the laboratory's own unit is the one that
+     * survives. The panel is now a FALLBACK — it answers only where the
+     * parse produced a panel entry and no structured field to render,
+     * which is the one state in which the bare float is the best this
+     * bridge has.
+     */
     const directKeys = ['ck', 'mb', 'ldh', 'ckmb', 'creatinine', 'uricAcid', 'alt', 'ast'];
     for (const key of directKeys) {
+      if (fields[key]) continue;
       const snakeKey = key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
       const valueText = toStringField(labPanel[key]) ?? toStringField(labPanel[snakeKey]);
       if (valueText) {

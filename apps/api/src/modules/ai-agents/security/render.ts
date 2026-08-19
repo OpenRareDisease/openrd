@@ -116,9 +116,105 @@ const AMBULATION_VALUE_LABELS: Record<string, string> = {
   unable: '无法行走（含长期使用轮椅、卧床）',
 };
 
+/**
+ * WHAT KIND OF REPORT IT IS, IN THE LANGUAGE OF THE CONVERSATION.
+ *
+ * `classifiedType` and `documentType` are wire enums, and this file
+ * printed them raw — 「报告类型: pulmonary_function」, 「文档类型:
+ * pulmonary_function」, and a third time as a row inside the OCR block —
+ * three snake_case English tokens under Chinese labels, in a prompt
+ * that is otherwise entirely Chinese and whose answer goes to a
+ * Chinese-reading patient. The model is then being asked to render into
+ * Chinese a term this platform already has a Chinese name for, and the
+ * name it invents is not the one the rest of the product uses: the
+ * report the app calls 肺功能报告 came back as 肺功能测试 or 肺活量报告,
+ * so the assistant and the report list disagreed about what the patient
+ * had uploaded. Same failure the report detail page fixed when it
+ * stopped showing 「识别类型: infection_screening」.
+ *
+ * A LOCAL TABLE WITH A POINTER, which is the convention this file
+ * already follows for `AMBULATION_VALUE_LABELS` above (the note there
+ * names `AMBULATION_STATES` in profile.constants.ts as the other copy).
+ * The same vocabulary is spelled in `documentLabels` in
+ * profile.passport.ts and `documentTypeLabels` in profile.service.ts.
+ * It is not imported from either because the dependency runs the other
+ * way — patient-profile imports ai-agents/security, not the reverse —
+ * and pulling the passport in here to borrow a lookup table would
+ * invert that for a hundred bytes of vocabulary.
+ *
+ * Unknown values FALL THROUGH to the raw token rather than to a generic
+ * 「其他报告」. A type this table has not caught up with is a gap in this
+ * table, and printing the enum says so; printing 其他报告 would tell the
+ * model the platform classified the document as 「other」, which is
+ * itself one of the values.
+ */
+const DOCUMENT_TYPE_VALUE_LABELS: Record<string, string> = {
+  mri: 'MRI 报告',
+  muscle_mri: 'MRI 报告',
+  genetic_report: '基因报告',
+  medical_summary: '病历摘要',
+  physical_exam: '肌力/体格检查',
+  pulmonary_function: '肺功能报告',
+  diaphragm_ultrasound: '膈肌超声',
+  ecg: '心电图',
+  echocardiography: '心脏超声',
+  biochemistry: '生化报告',
+  muscle_enzyme: '肌酶报告',
+  blood_routine: '血常规',
+  thyroid_function: '甲功报告',
+  coagulation: '凝血报告',
+  urinalysis: '尿常规',
+  infection_screening: '感染筛查',
+  stool_test: '粪便/幽门检测',
+  abdominal_ultrasound: '腹部超声',
+  blood_panel: '血检报告',
+  other: '其他报告',
+};
+
+/** The keys whose VALUE is a document-type enum, wherever they appear —
+ *  top level or inside an OCR block, which is why the OCR row builder
+ *  routes through `formatFieldValue` too. */
+const DOCUMENT_TYPE_KEYS = new Set(['classifiedType', 'classified_type', 'documentType']);
+
+/**
+ * 处理状态, THE SAME CASE AS THE TYPE ABOVE — 「处理状态: parse_failed」
+ * was the other English enum in this block.
+ *
+ * It matters more than it looks, because this row is the model's only
+ * signal that a report it can see NOTHING ELSE about is a report the
+ * pipeline could not read. Left as a token, the model has to guess
+ * whether `needs_review` means the platform doubts the values or the
+ * patient must do something, and it guessed both ways; spelled out, the
+ * row says which. `parse_failed` in particular has to read as 「this
+ * platform could not read the file」 and never as a finding about the
+ * patient.
+ *
+ * All seven values the CHECK constraint admits, legacy included:
+ * migration 011 keeps `processed` and `failed` for rows written before
+ * the current pipeline, and a legacy row is exactly the kind that
+ * reaches this channel and would otherwise print bare. Vocabulary and
+ * wording from that constraint's own comment; the report detail page
+ * spells the five current ones for the patient in `formatStatusLabel`.
+ */
+const DOCUMENT_STATUS_VALUE_LABELS: Record<string, string> = {
+  uploaded: '已上传，尚未识别',
+  processing: '识别中',
+  parsed: '识别完成',
+  needs_review: '识别完成但需人工核对',
+  parse_failed: '识别失败（本平台未能读取该文件，与检查结果无关）',
+  processed: '识别完成（旧版状态）',
+  failed: '识别失败（旧版状态，本平台未能读取该文件，与检查结果无关）',
+};
+
 const formatFieldValue = (key: string, value: unknown): string => {
   if (key === 'independentlyAmbulatory' && typeof value === 'string') {
     return AMBULATION_VALUE_LABELS[value] ?? formatScalar(value);
+  }
+  if (DOCUMENT_TYPE_KEYS.has(key) && typeof value === 'string') {
+    return DOCUMENT_TYPE_VALUE_LABELS[value] ?? formatScalar(value);
+  }
+  if (key === 'status' && typeof value === 'string') {
+    return DOCUMENT_STATUS_VALUE_LABELS[value] ?? formatScalar(value);
   }
   return formatScalar(value);
 };
@@ -460,7 +556,11 @@ const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionSc
     lines.push(OCR_BLOCK_HEADINGS[blobKey]);
     for (const [innerKey, innerValue] of Object.entries(value)) {
       if (innerValue === null || innerValue === undefined || innerValue === '') continue;
-      lines.push(...rowLines(OCR_ROW_PREFIX, innerKey, formatScalar(innerValue)));
+      // `formatFieldValue`, not `formatScalar`: the OCR blob carries its
+      // own `classifiedType` row, so the third printing of the enum is
+      // in here. Value localisation is a property of the KEY, and the
+      // key means the same thing at either indent.
+      lines.push(...rowLines(OCR_ROW_PREFIX, innerKey, formatFieldValue(innerKey, innerValue)));
     }
   };
 

@@ -340,9 +340,15 @@ describe('renderChunkForPrompt — patient reports, strict mode (regression fenc
     expect(rendered.content).toContain('12%');
     // PR #23 follow-up: title is no longer in the precise allowlist
     // because it is user-supplied free text and routinely contains
-    // the patient's name. The clinical report type still passes.
+    // the patient's name. The clinical report type still passes —
+    // as 基因报告, its localised name, since the enum's VALUE is now
+    // spelled in the language of the prompt. What this line asserts is
+    // that the type SURVIVES the redaction that drops the title, and
+    // that is unchanged; only its wording is. The raw token is asserted
+    // absent below so the localisation cannot silently regress.
     expect(rendered.content).not.toContain('张三的基因检测报告');
-    expect(rendered.content).toContain('genetic_report');
+    expect(rendered.content).toContain('基因报告');
+    expect(rendered.content).not.toContain('genetic_report');
   });
 
   // Regression for the bot's PR #23 follow-up review:

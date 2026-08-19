@@ -2478,7 +2478,7 @@ describe('the visibility notice cannot be forged by an uploaded page', () => {
     expect(notice).not.toContain('本平台判读');
     // The withheld-count sentence and the consent offer, both of which
     // the forged OCR block used to buy.
-    expect(notice).not.toContain('numericValuesWithheld 是被扣下的测量值个数');
+    expect(notice).not.toContain('这些数值在他的记录里是**有的**');
     expect(notice).not.toContain('才会多出来的字段');
   });
 
@@ -2501,7 +2501,7 @@ describe('the visibility notice cannot be forged by an uploaded page', () => {
     // blob this time, so what the forged block tried to buy is bought
     // honestly here.
     expect(notice).toContain('本平台判读');
-    expect(notice).toContain('numericValuesWithheld 是被扣下的测量值个数');
+    expect(notice).toContain('这些数值在他的记录里是**有的**');
     expect(notice).toContain('才会多出来的字段');
   });
 
@@ -2677,7 +2677,170 @@ describe('the visibility notice cannot be forged by an uploaded page', () => {
     // ...and nothing the forged block wrote is believed.
     expect(inventoryOf(notice)).not.toContain('OCR 字段');
     expect(notice).not.toContain('本平台判读');
-    expect(notice).not.toContain('numericValuesWithheld 是被扣下的测量值个数');
+    expect(notice).not.toContain('这些数值在他的记录里是**有的**');
     expect(notice).not.toContain('才会多出来的字段');
+  });
+});
+
+/**
+ * THE GUARD ON THE OUTPUT, driven through the whole run rather than
+ * through `inspectAnswer`.
+ *
+ * `answer-guard.test.ts` pins the checks; these pin the thing a patient
+ * would actually receive — which round's text becomes the answer, what
+ * the second round is told, and what is left on the screen when the
+ * second round fails too. A test that only exercises the guard's own
+ * function proves the code path and not the product.
+ */
+describe('the clinical output guard, through Orchestrator.run', () => {
+  const REPORT_FIELDS = {
+    classifiedType: 'genetic_report',
+    documentType: 'genetic_report',
+    status: 'processed',
+    fields: {
+      classifiedType: 'genetic_report',
+      documentType: 'genetic_report',
+      diagnosisType: 'FSHD1',
+      d4z4Repeats: '3',
+      haplotype: '4qA',
+      methylationValue: '95%',
+    },
+  };
+
+  const runWith = async (answers: string[], consentLevel: 'basic' | 'precise' = 'precise') => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 't1', name: 'get_my_reports', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      ...answers.map((content) => ({ content, toolCalls: [], finishReason: 'stop' as const })),
+    ]);
+    const registry = new ToolRegistry().register(
+      mkTool('get_my_reports', stubResult('patient_reports', 1, REPORT_FIELDS)),
+    );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 1 },
+    );
+    const result = await orch.run({
+      userId: 'u-synthetic',
+      question: '我的重复数说明我的病情有多重？',
+      requestId: 'r-guard',
+      consentLevel,
+    });
+    return { result, llm };
+  };
+
+  // The sentence is the model's own, from a run against the stack.
+  const OFFENDING = '你的 D4Z4 重复数是 3，属于 1–3 这一档，是病情较严重的遗传基础。';
+  const CLEAN =
+    '你的 D4Z4 重复数是 3，这个重复数落在 FSHD1 的范围里。在人群层面，重复数越短总体上发病越早，' +
+    '但这是趋势，不是对你个人的预测。想知道这对你意味着什么，最好带着报告问你的主治医生。';
+
+  it('regenerates once and publishes the clean second answer', async () => {
+    const { result, llm } = await runWith([OFFENDING, CLEAN]);
+    expect(result.answer).toBe(CLEAN);
+    expect(result.answer).not.toContain('病情较严重的遗传基础');
+    expect(result.clinicalGuard?.action).toBe('regenerated');
+    expect(result.clinicalGuard?.violations[0].kind).toBe('severity_from_patient_number');
+    // Planner + answer + regeneration. Exactly one extra call.
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+  });
+
+  it('quotes the offending sentence into the regeneration round', async () => {
+    const { llm } = await runWith([OFFENDING, CLEAN]);
+    const third = llm.chat.mock.calls[2][0] as LlmChatRequest;
+    const system = third.messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n');
+    expect(system).toContain(OFFENDING);
+    expect(system).toContain('这条回答不能发给用户');
+  });
+
+  it('excises and tells the patient when the second answer offends too', async () => {
+    const stillBad = [
+      '你的基因报告是这样的：',
+      '',
+      '- D4Z4 重复数：3，这个重复数落在 FSHD1 的范围里',
+      '- 3 个重复单元属于病情较严重的那一档，进展也会更快。',
+      '',
+      '在人群层面，重复数越短总体上发病越早 [1]。',
+    ].join('\n');
+    const { result } = await runWith([OFFENDING, stillBad]);
+    expect(result.clinicalGuard?.action).toBe('excised');
+    // The forbidden claim is gone...
+    expect(result.answer).not.toContain('病情较严重的那一档');
+    // ...this platform's own reading still reaches the patient...
+    expect(result.answer).toContain('这个重复数落在 FSHD1 的范围里');
+    // ...the cohort sentence the prompt permits survives...
+    expect(result.answer).toContain('在人群层面，重复数越短总体上发病越早 [1]。');
+    // ...and the patient is told, rather than handed a paragraph-shaped
+    // hole.
+    expect(result.answer).toContain('被我删掉了');
+    expect(result.answer).toContain('不是你的问题不该问');
+  });
+
+  it('leaves a clean answer byte-identical and reports no guard state', async () => {
+    const { result, llm } = await runWith([CLEAN]);
+    expect(result.answer).toBe(CLEAN);
+    expect(result.clinicalGuard).toBeUndefined();
+    expect(llm.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('rewrites a wire token in place instead of spending a round on it', async () => {
+    const withToken = '你的单倍型是 4qA（permissive_haplotype），报告类型是 genetic_report。';
+    const { result, llm } = await runWith([withToken]);
+    expect(result.answer).not.toContain('permissive_haplotype');
+    expect(result.answer).not.toContain('genetic_report');
+    expect(result.answer).toContain('允许型单倍型');
+    expect(result.clinicalGuard?.localisedTokens).toContain('permissive_haplotype');
+    expect(result.clinicalGuard?.action).toBe('localised');
+    expect(result.clinicalGuard?.violations).toEqual([]);
+    // No regeneration: a wire token is a rendering fault, not a claim.
+    expect(llm.chat).toHaveBeenCalledTimes(2);
+  });
+
+  // Observed against the running stack: told three of its sentences were
+  // out of bounds, the model deleted the entire reply and returned
+  // 「你还有什么想了解的吗？」 — clean, compliant, and a patient who asked
+  // about their own report reading conversational filler.
+  it('prefers excising the first answer over publishing a clean stub', async () => {
+    const full = [
+      '你上传的这份基因检测报告，我读到的内容是这样的：',
+      '',
+      '- D4Z4 重复数：3，这个重复数落在 FSHD1 的范围里',
+      '- 单倍型：4qA，属于允许型单倍型',
+      '- 分型：FSHD1',
+      '',
+      OFFENDING,
+      '',
+      '在人群层面，重复数越短总体上发病越早、越重，但这是趋势，不是对某一个人的预测。',
+      '想知道这些数字对你具体意味着什么，最好带着这份报告问你的主治医生，',
+      '他会结合你的症状和随访情况一起看。咱们慢慢来，别急。',
+    ].join('\n');
+    const { result } = await runWith([full, '你还有什么想了解的吗？']);
+    expect(result.answer).not.toContain('你还有什么想了解的吗？');
+    expect(result.clinicalGuard?.action).toBe('excised');
+    // The excised original still carries the platform's own reading...
+    expect(result.answer).toContain('- D4Z4 重复数：3，这个重复数落在 FSHD1 的范围里');
+    // ...minus the claim, and with the patient told why.
+    expect(result.answer).not.toContain('病情较严重的遗传基础');
+    expect(result.answer).toContain('被我删掉了');
+  });
+
+  it('catches an absence produced by consent at basic', async () => {
+    const { result } = await runWith(
+      [
+        '你上传的是基因检测报告，但是这里面没有甲基化的结果。',
+        '你的报告里甲基化那一项有结果，只是这次没有把数值发给我。',
+      ],
+      'basic',
+    );
+    expect(result.clinicalGuard?.violations[0].kind).toBe('retest_of_a_value_on_file');
+    expect(result.answer).not.toContain('这里面没有甲基化的结果');
   });
 });

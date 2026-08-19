@@ -771,6 +771,100 @@ def _gap_names_a_method(gap: str) -> bool:
     return bool(re.fullmatch(f"(?:{'|'.join(_METHOD_GAP_WORDS)})+", stripped))
 
 
+#: WHAT A LABEL'S OWN TAIL MAY SAY. The words a Chinese laboratory puts
+#: between a cell's name and its reading, spelled as the printed row
+#: spells them: 「甲基化水平」, 「D4Z4重复单元数」, 「片段大小」,
+#: 「D4Z4阵列」. None of them is a claim; each is the rest of the label.
+#:
+#: A REPORT'S OWN ROW, NOT A SENTENCE ABOUT THE DISEASE — see
+#: `_gap_is_label_to_value`.
+_LABEL_TAIL_WORDS: Tuple[str, ...] = (
+    "水平", "程度", "比例", "比率", "百分比", "率", "值", "数", "个数",
+    "重复", "单元", "拷贝", "阵列", "区域", "区", "片段", "长度", "大小",
+    "结果", "报告", "检出", "检测到", "所示", "如下",
+    "分析", "检测", "检验", "测定", "测序", "方法", "项目", "计数",
+)
+
+#: THE TOKEN THAT SAYS 「WHAT FOLLOWS IS THIS LABEL'S VALUE」. 「:」 and
+#: 「=」 are the printed ones; 为 and 是 are the same statement in a
+#: sentence — 「检出 D4Z4 重复单元数为 3」.
+_GAP_VALUE_INTRODUCERS: Tuple[str, ...] = (":", "=", "为", "是", "共")
+
+#: A LATIN RUN INSIDE A GAP IS A NAME IN THE OTHER SCRIPT. 「D4Z4 EcoRI
+#: 片段长度: 38 kb」 puts the enzyme between the label and the value, and
+#: 「甲基化 MS-PCR 35%」 puts the assay's initials there. Removed with the
+#: parenthetical, and for the same reason.
+#:
+#: THIS IS THE LIMIT OF WHAT `_gap_is_label_to_value` CLOSES: the
+#: sentences it refuses are Chinese, because the reports that carry a
+#: disease-background paragraph print it in Chinese. An English sentence
+#: between an English label and a number is not judged by this test at
+#: all, and would need its own list of connectives.
+_GAP_LATIN_RUN = re.compile(r"[A-Za-z]+")
+
+
+def _gap_is_label_to_value(gap: str, analyte: Optional[str] = None) -> bool:
+    """Is the text between a label and a number a LABEL-TO-VALUE gap?
+
+    A WIDTH IS NOT A SHAPE, AND THIS CLASS HAS NOW BEEN FIXED THREE
+    TIMES BY NARROWING ONE. `[^\\d]{0,12}` let a 检测项目 line reach into
+    the row below it; excluding `\\n` fixed that and left `{0,8}`, which
+    is short enough for 「甲基化水平: 35%」 and equally short enough for
+    「…甲基化水平常低于 25%」 — an ordinary sentence of disease
+    background, printed on the genetics reports that carry one, on which
+    this platform then published `methylation_value: 35%` for a report
+    that measured no methylation at all. Measured on a synthetic FSHD1
+    report whose only methylation words are in its background paragraph:
+    `methylation_value: 25.0` in `genetic_summary`, on `observations`,
+    in `latest_summary.by_analyte`, and rendered on the patient's own
+    report screen beside cells the laboratory really printed.
+    THE NEXT WIDENING WOULD HAVE REINTRODUCED IT, and the one after
+    that.
+
+    So the gap is judged by WHAT IT SAYS. Strip the name in the other
+    script, the label's own tail words and the punctuation between them,
+    and a label-to-value gap has nothing left — or has nothing left but
+    the token that introduces a value. 「水平常低于」 keeps 「常低于」,
+    which is a claim about a population and not the rest of a label, so
+    the number after it is not this patient's reading. A gap ten
+    characters wide made of nothing but 「重复单元数检测结果为」 still
+    reads, and a gap two characters wide made of 「低于」 does not.
+
+    THIS IS THE THIRD TEST OF ITS FAMILY AND THE MOST GENERAL.
+    `_gap_names_a_method` refuses a gap that is only the assay's name;
+    `_gap_names_another_analyte` refuses one that names a different
+    measurement; both name what a gap MAY NOT contain. This one states
+    what it may. A word absent from `_LABEL_TAIL_WORDS` costs a reading
+    that a report really printed, which is the failure this repo
+    prefers: an unread cell is visibly missing, an invented one is not.
+    """
+    stripped = _GAP_LATIN_RUN.sub("", gap)
+    stripped = _GAP_FILLER.sub("", stripped)
+    if not stripped:
+        return True
+    for introducer in _GAP_VALUE_INTRODUCERS:
+        head, separator, _ = stripped.partition(introducer)
+        if separator:
+            # Everything after the introducer is filler or nothing —
+            # `_GAP_FILLER` has already run — so only the head has to be
+            # the label's own tail.
+            stripped = head
+            break
+    # The analyte's own name may repeat inside its label —
+    # 「D4Z4 重复单元数」 read by the 重复数 pattern — and that is the rest
+    # of the label, not a second measurement. Another analyte's words are
+    # refused before this runs, by `_gap_names_another_analyte`.
+    tail_words = _LABEL_TAIL_WORDS + _ANALYTE_GAP_WORDS.get(analyte or "", ())
+    while stripped:
+        for word in tail_words:
+            if word and stripped.startswith(word):
+                stripped = stripped[len(word) :]
+                break
+        else:
+            return False
+    return True
+
+
 #: WHICH MEASUREMENT A WORD IN THE GAP NAMES.
 #:
 #: One analyte per key, the words a laboratory writes for it per value.
@@ -1446,6 +1540,8 @@ def _read_cell(
                     continue
                 if _gap_names_another_analyte(gap, analyte):
                     continue
+                if not _gap_is_label_to_value(gap, analyte):
+                    continue
                 value_at = match.start("value") if "value" in match.groupdict() else match.start()
                 rank = _row_rank(row, value_at)
                 if rank >= _REFUSED_ROW:
@@ -1520,6 +1616,10 @@ def _append_panel_number(
     unit: Optional[str],
     source_text: str,
     confidence: float = 0.93,
+    abnormal_flag: Optional[str] = None,
+    reference_range_raw: Optional[str] = None,
+    reference_low: Optional[float] = None,
+    reference_high: Optional[float] = None,
 ) -> None:
     panel[field_name] = normalized_value if normalized_value is not None else raw_value
     _append_field(
@@ -1531,6 +1631,14 @@ def _append_panel_number(
             unit=unit,
             source_text=source_text,
             confidence=confidence,
+            # PASSED THROUGH RATHER THAN READ HERE. `_build_field` writes
+            # each of these only when the row printed one, so a caller
+            # that reads no reference column produces exactly the shape
+            # it always did. See `_row_context` for what the row said.
+            abnormal_flag=abnormal_flag,
+            reference_range_raw=reference_range_raw,
+            reference_low=reference_low,
+            reference_high=reference_high,
         ),
     )
 
@@ -1619,6 +1727,11 @@ def _extract_numeric_panel(
     confidence: float = 0.93,
 ) -> None:
     haystacks = _panel_haystacks(text, lines)
+    #: The panel's own analyte vocabulary, which is what tells one row
+    #: from another inside it — see `_row_context`.
+    vocabulary: Dict[str, List[str]] = {
+        name: list(meta.get("keywords", [])) for name, meta in definitions.items()
+    }
     for field_name, meta in definitions.items():
         raw_value = normalized_value = unit = None
         for haystack in haystacks:
@@ -1631,15 +1744,34 @@ def _extract_numeric_panel(
                 break
         if raw_value is None:
             continue
+        row = _row_context(vocabulary, field_name, lines, raw_value)
         _append_panel_number(
             fields,
             panel,
             field_name=field_name,
             raw_value=raw_value,
             normalized_value=normalized_value,
-            unit=unit,
-            source_text=_panel_source_line(lines, meta.get("keywords", []), raw_value),
+            # THE DEFINITION'S UNIT WINS WHERE IT HAS ONE, because a
+            # hard-coded 「%」 is a statement about the analyte and the
+            # row's is a reading of the page. Where it has none the row's
+            # is all there is, and it used to be discarded.
+            unit=unit or row.unit,
+            # THE ROW, WHERE THE ROW READER FOUND ONE. `_panel_source_line`
+            # answers with the first LINE carrying a keyword, and on the
+            # cell-per-line layout that line is the analyte's name and
+            # nothing else — evidence that does not contain the reading
+            # it is evidence for. It also left
+            # `_append_generic_table_fields` unable to tell that this row
+            # had already been published, so a 甲功 panel shipped its FT3
+            # twice: `ft3` and `table_游离t3`, both on `observations` and
+            # — once the flag was carried — both in `abnormal_list`.
+            source_text=row.source_text
+            or _panel_source_line(lines, meta.get("keywords", []), raw_value),
             confidence=meta.get("confidence", confidence),
+            abnormal_flag=row.flag,
+            reference_range_raw=row.reference_raw,
+            reference_low=row.reference_low,
+            reference_high=row.reference_high,
         )
 
 
@@ -4481,6 +4613,66 @@ def _analyte_keyword_pattern(keyword: str) -> "re.Pattern":
     return re.compile(pattern, re.IGNORECASE)
 
 
+#: ANALYTE NAMES THIS MODULE DOES NOT OWN, LISTED SO THAT IT KNOWS THEM
+#: WHEN IT SEES THEM.
+#:
+#: `_competing_analyte_keywords` computes collisions from the map, which
+#: closes every collision BETWEEN TWO CELLS THE MAP OWNS — 肌酸激酶 inside
+#: 肌酸激酶同工酶, 低密度脂蛋白 inside 极低密度脂蛋白. It cannot see the
+#: other half of the class: a mapped name printed inside the name of an
+#: analyte the map has never heard of. A cardiac panel is an ordinary
+#: thing for an FSHD patient to upload, and measured on a synthetic one
+#: in the ordinary 项目/结果/单位/参考区间 layout, six rows published six
+#: other patients' analytes:
+#:
+#:     脑钠肽(BNP) 1580 pg/mL     →  sodium: 1580     (钠 inside 脑钠肽)
+#:     超敏肌钙蛋白I 0.85 ng/mL   →  calcium: 0.85    (钙 inside 肌钙蛋白)
+#:     前白蛋白(PA) 180 mg/L      →  alb: 180         (白蛋白 inside 前白蛋白)
+#:     β2微球蛋白 3.6 mg/L        →  globulin: 3.6    (球蛋白 inside 微球蛋白)
+#:     尿肌酐 8500 umol/L         →  creatinine: 8500 (a urine result as serum)
+#:     尿磷 22 mmol/24h           →  phosphorus: 22   (the same, one column over)
+#:
+#: A sodium of 1580 is not a survivable figure and a creatinine of 8500
+#: is a dialysis emergency; each was published at 0.93 with the row's own
+#: unit and reference interval attached, which is what makes them read as
+#: measurements rather than as noise.
+#:
+#: WHAT IS AND IS NOT ON THIS LIST. Every entry is a printed analyte name
+#: that CONTAINS a name the map owns — that is the only shape this list
+#: can act on, since a name containing nothing mapped collides with
+#: nothing. They were collected from the vocabulary this repo already
+#: carries: the analyte names in the panel definitions above
+#: (`_extract_blood_routine`, `_extract_thyroid_function`,
+#: `_extract_coagulation`, `_extract_urinalysis`), the names in
+#: `REPORT_TYPE_RULES`, and the rows the archived corpus prints — the
+#: 超敏肌钙蛋白I row in `tests/test_fshd_report_service.py` among them.
+#: A name that belongs to a cell the map SHOULD own is not listed here;
+#: it is added to that cell's keywords instead, which closes the
+#: collision through the map and reads the row at the same time — see
+#: 磷酸肌酸激酶 on `ck` and 白蛋白/球蛋白 on `a_g_ratio`.
+#:
+#: THE URINE FORMS ARE HERE BECAUSE A URINE RESULT IS NOT A SERUM ONE.
+#: Only the bare 尿X spellings are listed: 「24小时尿钙」 contains 「尿钙」,
+#: so the interval spellings are covered by containment.
+_FOREIGN_ANALYTE_NAMES: Tuple[str, ...] = (
+    # 钠
+    "脑钠肽", "钠尿肽", "利钠肽",
+    # 钙
+    "肌钙蛋白", "降钙素原", "降钙素",
+    # 白蛋白
+    "前白蛋白", "微量白蛋白", "糖化白蛋白",
+    # 球蛋白
+    "微球蛋白", "免疫球蛋白", "甲状腺球蛋白",
+    # 血红蛋白 (the 血常规 panel's own cell)
+    "糖化血红蛋白",
+    # 磷
+    "酸性磷酸酶", "磷脂",
+    # a urine analyte is not the serum one
+    "尿肌酐", "尿钙", "尿磷", "尿钾", "尿钠", "尿氯", "尿镁",
+    "尿葡萄糖", "尿总蛋白", "尿白蛋白", "尿尿素", "尿淀粉酶",
+)
+
+
 def _competing_analyte_keywords(
     analytes: Dict[str, List[str]], field_name: str
 ) -> Tuple[str, ...]:
@@ -4509,6 +4701,13 @@ def _competing_analyte_keywords(
     that other cell's row — computed from the map rather than written
     out, so an analyte added later is covered without anyone noticing
     that it needs to be.
+
+    AND THE MAP IS NOT THE WHOLE VOCABULARY OF A LABORATORY REPORT. A
+    computed answer only sees the cells this module owns; the same
+    collision with a cell it has never heard of — 钠 inside 脑钠肽 — has
+    to be told. `_FOREIGN_ANALYTE_NAMES` is that half, and it is read
+    through the identical containment test, so a name added to either
+    side behaves the same way.
     """
     mine = [k.strip().lower() for k in analytes[field_name] if k and k.strip()]
     competing: List[str] = []
@@ -4519,6 +4718,10 @@ def _competing_analyte_keywords(
             token = (keyword or "").strip().lower()
             if token and any(m != token and m in token for m in mine):
                 competing.append(token)
+    for name in _FOREIGN_ANALYTE_NAMES:
+        token = name.strip().lower()
+        if token and any(m != token and m in token for m in mine):
+            competing.append(token)
     return tuple(dict.fromkeys(competing))
 
 
@@ -4632,13 +4835,38 @@ def _unit_token_spans(line: str) -> Tuple[Tuple[int, int], ...]:
 #: THE LABORATORY'S OWN VERDICT ON THE ROW, which the captured snippet
 #: has always contained and nothing ever read. See `_read_row_flag`.
 #:
-#: Arrows and words only. A bare 「H」 or 「L」 is how some analysers print
-#: the same flag, and it is deliberately absent: 「U/L」 — the unit on
-#: every enzyme row an FSHD report is uploaded for — would answer to it.
+#: Arrows and words. These are matched as SUBSTRINGS of the row, which
+#: none of them can be inside anything else; the single-letter flags are
+#: a different shape and live in `_LETTER_FLAG_CELLS`.
 _ROW_FLAG_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("↑", "high"), ("偏高", "high"), ("升高", "high"), ("增高", "high"),
     ("↓", "low"), ("偏低", "low"), ("降低", "low"), ("减低", "low"),
 )
+
+#: THE SAME FLAG, PRINTED AS ONE LETTER — the Sysmex and Beckman
+#: convention, and the one every analyser exporting a Western LIS format
+#: uses. It is a WHOLE CELL, never a substring, and that is the whole of
+#: what makes it readable: 「U/L」 — the unit on every enzyme row an FSHD
+#: report is uploaded for — contains an `L`, and 「HDL-C」 an `H`.
+#:
+#: THE COST OF NOT KNOWING THEM WAS NOT ONLY THE LOST FLAG. `is_unit_only`
+#: in `_extract_lab_value` accepts any Latin run, so on the ordinary
+#: cell-per-line order 项目 / 结果 / 提示 / 单位 the flag cell was taken
+#: as the row's UNIT: measured on a synthetic 心肌酶谱 in exactly that
+#: layout, a CK of 693 was published as 「693H」 with the laboratory's
+#: 「U/L」 dropped and its abnormal marker nowhere in the payload — on the
+#: marker this disease is monitored by.
+#:
+#: 「HH」 and 「LL」 are the panic spellings of the same two directions; a
+#: bare 「N」 or 「A」 is deliberately absent, because a report that prints
+#: 「N」 for normal also prints 「N」 for nothing at all and 「A」 opens
+#: 「ALT」 as often as it means abnormal.
+_LETTER_FLAG_CELLS: Dict[str, str] = {
+    "h": "high",
+    "hh": "high",
+    "l": "low",
+    "ll": "low",
+}
 
 #: A two-sided reference interval inside a row. The lookarounds stop the
 #: scan starting or ending in the middle of a number, so 「1.41 1.2-1.6」
@@ -4658,9 +4886,21 @@ _ROW_BOUND = re.compile(r"([<>≤≥])\s*(\d+(?:\.\d+)?)(?![\d.])")
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:
-    """The abnormal marker the laboratory printed on this row."""
+    """The abnormal marker the laboratory printed on this row.
+
+    THE ARROWS AND THE WORDS ARE SUBSTRINGS; THE LETTERS ARE CELLS. A
+    row is either a run of cells joined by spaces or a flattened line
+    whose columns are separated by them, so in both shapes the flag
+    column is a whitespace-delimited token — which is the only reading
+    of 「H」 that does not also fire on the `L` of 「U/L」 or the `H` of
+    「HDL-C」. See `_LETTER_FLAG_CELLS`.
+    """
     for marker, direction in _ROW_FLAG_MARKERS:
         if marker in row_text:
+            return direction
+    for token in row_text.split():
+        direction = _LETTER_FLAG_CELLS.get(token.strip().lower())
+        if direction:
             return direction
     return None
 
@@ -4675,11 +4915,18 @@ def _is_row_flag_cell(cell: str) -> bool:
     printing 「↑」 ended the row between the reading and its reference
     interval, and the row lost both its unit and the interval this round
     exists to record.
+
+    A ONE-LETTER FLAG IS UNIT-SHAPED, which is the other half of the
+    same statement: this predicate is what `is_unit_only` and
+    `extract_numeric_value` ask before they let a cell be the row's unit,
+    so 「H」 stops being published as the unit of a creatine kinase.
     """
     stripped = cell.strip()
     if not stripped:
         return False
     if re.fullmatch(r"[↑↓→]+", stripped):
+        return True
+    if stripped.lower() in _LETTER_FLAG_CELLS:
         return True
     return any(stripped == marker for marker, _ in _ROW_FLAG_MARKERS)
 
@@ -4710,6 +4957,40 @@ def _read_row_reference(
             return raw, None, limit
         return raw, limit, None
     return None, None, None
+
+
+def _unit_from_row(row_text: str, value: Optional[str]) -> Optional[str]:
+    """The unit printed to the RIGHT of the reading, as its own cell.
+
+    `_LAB_NUMBER` only takes a unit GLUED to the number, so a row that
+    prints its columns apart — 「血红蛋白量(HGB) 98 ↓ 130-175 g/L」, the
+    ordinary 项目 / 结果 / 提示 / 参考区间 / 单位 order — came back with
+    no unit at all, and the panel path then shipped whatever unit was
+    hard-coded in the definition or none. This reads the cell.
+
+    To the right of the reading, because that is where a unit column
+    sits and because the cells to its LEFT are the analyte's own name.
+    A flag, a bare number, a bound and an interval are each excluded by
+    name: 「98」 is unit-shaped to `_UNIT_CELL` on its own, and so is
+    「H」.
+    """
+    tokens = row_text.split()
+    start = 0
+    if value:
+        wanted = value.strip()
+        for position, token in enumerate(tokens):
+            if token.strip() == wanted:
+                start = position + 1
+                break
+    for token in tokens[start:]:
+        cell = token.strip()
+        if not cell or _is_row_flag_cell(cell):
+            continue
+        if _VALUE_CELL.match(cell) or _BOUND_CELL.match(cell) or _RANGE_CELL.match(cell):
+            continue
+        if _UNIT_CELL.match(cell):
+            return cell
+    return None
 
 
 class _LabReading(NamedTuple):
@@ -4802,7 +5083,15 @@ def _extract_lab_value(
         chosen = next(iter(bare or candidates), None)
         if chosen is None:
             return None, None
-        return chosen.group(1), (chosen.group(2) or "").strip() or None
+        unit = (chosen.group(2) or "").strip() or None
+        # THE CELL AFTER THE NUMBER IS NOT ALWAYS THE UNIT. On a
+        # flattened row 「肌酸激酶(CK) 693 H 50-310 U/L」 the trailing
+        # group takes the `H`, which is the laboratory's abnormal flag.
+        # Same statement as `is_unit_only` makes for the cell-per-line
+        # layout, one column earlier.
+        if unit and _is_row_flag_cell(unit):
+            unit = None
+        return chosen.group(1), unit
 
     def search_segment(line: str) -> str:
         span = matched_span(line.lower())
@@ -4819,7 +5108,17 @@ def _extract_lab_value(
         )
 
     def is_unit_only(line: str) -> bool:
-        return bool(re.fullmatch(r"[A-Za-z/%μµ·/\-]+", line.strip()))
+        """`line` is a cell holding this row's unit and nothing else.
+
+        A ONE-LETTER ABNORMAL FLAG IS A LATIN RUN. 「H」 and 「L」 passed
+        this test, so on 项目 / 结果 / 提示 / 单位 the flag cell became
+        the unit, the laboratory's own 「U/L」 was never reached, and the
+        flag was lost with it. See `_LETTER_FLAG_CELLS`.
+        """
+        stripped = line.strip()
+        if _is_row_flag_cell(stripped):
+            return False
+        return bool(re.fullmatch(r"[A-Za-z/%μµ·/\-]+", stripped))
 
     def ends_the_row(candidate: str) -> bool:
         """`candidate` belongs to the NEXT analyte's row, not this one.
@@ -4878,7 +5177,7 @@ def _extract_lab_value(
         reference_raw, low, high = _read_row_reference(row_text, raw_value)
         return _LabReading(
             value=raw_value,
-            unit=unit,
+            unit=unit or _unit_from_row(row_text, raw_value),
             source_text=" ".join(source_parts),
             flag=_read_row_flag(row_text),
             reference_raw=reference_raw,
@@ -4907,6 +5206,21 @@ def _extract_lab_value(
         if _ROW_RANGE.search(segment) or _ROW_BOUND.search(segment):
             continue
 
+        # THE ROW IS READ TO ITS END, NOT TO ITS UNIT.
+        #
+        # This loop used to return the moment it had a value and a unit,
+        # and on the ordinary Chinese column order 项目 / 结果 / 单位 /
+        # 参考区间 the unit cell is the THIRD of four. So every cell to
+        # the right of it was abandoned unread, and what sits there is
+        # the reference interval — measured on a synthetic 心肌酶谱 in
+        # that layout, a CK of 693 and an LDH of 319 came back with
+        # 「50-310」 and 「120-250」 nowhere in the payload, which is the
+        # column the whole of `finish` exists to record and the only
+        # thing either number can be abnormal against.
+        #
+        # Nothing else bounds the row: `ends_the_row` and the four-cell
+        # window are the same boundary the value search already ran
+        # under, so reading on cannot reach the next analyte's cells.
         source_parts = [line]
         row_cells: List[str] = [segment]
         for offset in range(1, 5):
@@ -4929,17 +5243,67 @@ def _extract_lab_value(
                 if candidate_value is not None and not is_reference_range(candidate):
                     raw_value = candidate_value
                     unit = candidate_unit or unit
-                    if unit:
-                        return finish(raw_value, unit, source_parts, row_cells)
-                    continue
+                continue
 
-            if raw_value is not None and unit is None and is_unit_only(candidate):
+            if unit is None and is_unit_only(candidate):
                 unit = candidate
-                return finish(raw_value, unit, source_parts, row_cells)
 
         if raw_value is not None:
             return finish(raw_value, unit, source_parts, row_cells)
     return _NO_LAB_READING
+
+
+def _same_reading(row_value: str, panel_value: str) -> bool:
+    """The two readers are talking about the same printed number."""
+    left, right = _safe_float(row_value), _safe_float(panel_value)
+    if left is not None and right is not None:
+        return left == right
+    return row_value.strip() == panel_value.strip()
+
+
+def _row_context(
+    vocabulary: Dict[str, List[str]],
+    field_name: str,
+    lines: List[str],
+    raw_value: Optional[str],
+) -> _LabReading:
+    """What the ROW said about a number a panel pattern read off the page.
+
+    THE FLAG AND THE REFERENCE WORK LANDED IN ONE PANEL ONLY. Round 32
+    taught `_extract_lab_value` to read the abnormal marker and the
+    reference interval off the row, and that reader serves exactly one
+    caller — `_extract_labs`, the muscle-enzyme and biochemistry map.
+    Every other laboratory panel this platform parses — 血常规, 甲功,
+    凝血, 尿常规, 感染筛查, 粪便 — reaches `_append_panel_number` from
+    `_extract_numeric_panel`, which passed no flag, no interval, and a
+    unit only where someone had hard-coded one in the definition. So a
+    haemoglobin of 98 that the laboratory printed 「↓ 130-175 g/L」
+    beside reached the patient as a bare 98: `is_abnormal: false`, an
+    empty reference, and no unit, on the same payload where a CK on a
+    biochemistry panel carries all three.
+
+    THE PATTERN FINDS THE NUMBER; THIS FINDS THE ROW IT CAME OFF. The
+    panel patterns match across a two-line window (`_panel_haystacks`)
+    and know nothing about columns, so they cannot answer 「what else is
+    on this row」. Rather than teach them, the row reader is asked the
+    same question about the same analyte and its answer is accepted ONLY
+    IF THE TWO NUMBERS AGREE. Where they disagree the row reader found a
+    different row, and the honest answer is the one this function
+    returns empty — the field keeps exactly the shape it had before.
+
+    The competing names come from the panel's own definitions, which is
+    what keeps 白细胞 off 白细胞酯酶's row inside 尿常规; see
+    `_competing_analyte_keywords`.
+    """
+    keywords = [word for word in vocabulary.get(field_name, ()) if word and word.strip()]
+    if not keywords or raw_value is None:
+        return _NO_LAB_READING
+    reading = _extract_lab_value(
+        lines, keywords, _competing_analyte_keywords(vocabulary, field_name)
+    )
+    if reading.value is None or not _same_reading(reading.value, raw_value):
+        return _NO_LAB_READING
+    return reading
 
 
 # --------------------------------------------------------------------
@@ -5114,7 +5478,13 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
             # found a value. Scanning past it skipped every other row:
             # the cursor landed beyond the next name, so a table read as
             # rows 1, 3, 5.
-            if _looks_like_analyte(cell) or _is_header_row(cell):
+            #
+            # A FLAG IS NOT THE NEXT ANALYTE. 「偏高」 is CJK with no
+            # digits, so `_looks_like_analyte` calls it a name and the
+            # row ended between the reading and its unit — the same
+            # statement `ends_the_row` makes for the other reader of this
+            # layout, and this one never had it.
+            if (_looks_like_analyte(cell) or _is_header_row(cell)) and not _is_row_flag_cell(cell):
                 break
             cells.append(cell)
             cursor += 1
@@ -5132,7 +5502,19 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
         unit = None
         if value is not None:
             after = cells[cells.index(value) + 1 :]
-            unit = next((cell for cell in after if _UNIT_CELL.match(cell)), None)
+            # A ONE-LETTER FLAG IS UNIT-SHAPED, and on 项目 / 结果 / 提示
+            # / 单位 it is the cell immediately after the reading — so
+            # 「H」 was published as the unit of every analyte this reader
+            # exists to cover, and the laboratory's own unit, sitting one
+            # cell further right, was never reached.
+            unit = next(
+                (
+                    cell
+                    for cell in after
+                    if _UNIT_CELL.match(cell) and not _is_row_flag_cell(cell)
+                ),
+                None,
+            )
 
         if value is None:
             index += 1
@@ -5142,7 +5524,18 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
         key = clean.lower()
         if clean and key not in seen:
             seen.add(key)
-            rows.append({"name": clean, "value": value, "unit": unit, "reference": ref})
+            rows.append({
+                "name": clean,
+                "value": value,
+                "unit": unit,
+                "reference": ref,
+                # The laboratory's own verdict on the row, read the same
+                # way `_extract_lab_value` reads it — off the row's
+                # cells, which is where the letter flags can be told from
+                # a unit. `_append_generic_table_fields` is what carries
+                # it onto the field.
+                "flag": _read_row_flag(" ".join(cells)),
+            })
         # Resume at the cell that ended the row — the next analyte, or
         # the first cell this row did not claim.
         index = max(cursor, index + 1)
@@ -5181,7 +5574,12 @@ def _table_row_lines(lines: List[str]) -> List[str]:
 
 def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     analytes = {
-        "ck": ["肌酸激酶", "ck"],
+        # 磷酸肌酸激酶 IS CK'S OTHER PRINTED NAME, and listing it here
+        # rather than in `_FOREIGN_ANALYTE_NAMES` is what lets the row be
+        # both read and protected: the map-derived competitors then keep
+        # 磷 out of it, the way 肌酸激酶同工酶 keeps `ck` out of the CK-MB
+        # row. A phosphorus of 693 was one printing order away.
+        "ck": ["磷酸肌酸激酶", "肌酸激酶", "ck"],
         "mb": ["肌红蛋白", " myo ", " mb "],
         "ldh": ["乳酸脱氢酶", "ldh"],
         # 肌酸激酶同工酶 IS THE ROW'S PRINTED NAME, and it was absent
@@ -5198,7 +5596,11 @@ def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_sum
         "tp": ["总蛋白", "tp"],
         "alb": ["白蛋白", "alb"],
         "globulin": ["球蛋白", "globulin", "glo"],
-        "a_g_ratio": ["白球比例", "a/g"],
+        # 白蛋白/球蛋白 IS THE RATIO ROW'S OTHER SPELLING, and it names
+        # both of the cells it is a ratio of — so without it here the
+        # ratio 1.5 was published as this patient's ALBUMIN, and as their
+        # globulin, on the row that states neither.
+        "a_g_ratio": ["白蛋白/球蛋白", "白球比例", "a/g"],
         "alp": ["碱性磷酸酶", "alp"],
         "ggt": ["谷氨酰转肽酶", "谷氨酰基转移酶", "ggt"],
         "urea": ["尿素", "urea", "bun"],
@@ -5356,8 +5758,31 @@ def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]])
         lower-cases and punctuation-folds, which is one more place a
         name can stop looking like itself.
     """
-    existing = {str(f.get("source_text") or "") for f in fields}
+    #: THE ROWS A CANONICAL EXTRACTOR HAS ALREADY PUBLISHED. A field's
+    #: `source_text` is the row it was read off, so a table row whose
+    #: printed name AND reading both appear in one of them is that same
+    #: row, coming round a second time.
+    #:
+    #: THE GUARD BELOW USED TO BE `row["value"] in existing` — a bare
+    #: reading tested for membership in a set of whole row snippets,
+    #: which is never true. So the archived 生化全套 published its CK row
+    #: twice: `ck: 693` from the map and `table_肌酸激酶_ck: 693` from
+    #: this reader, both on `observations`, both in
+    #: `latest_summary.by_analyte`, and — once the row's flag started
+    #: being carried — the SAME creatine kinase named twice in
+    #: `abnormal_list`, which is the list a clinician reads to see what
+    #: this report flagged. 「一份报告里同一个指标出现两次」 is the
+    #: complaint `_GENETICS_CELL_NAME_WORDS` closes for the genetics
+    #: cells; this is the laboratory half of it.
+    published_rows = [
+        str(field.get("source_text") or "")
+        for field in fields
+        if field.get("source_text")
+    ]
     existing_names = {str(f.get("field_name") or "").lower() for f in fields}
+
+    def already_published(name: str, value: str) -> bool:
+        return any(name in row and value in row for row in published_rows)
 
     for row in extract_lab_table_rows(lines):
         printed_name = str(row["name"]).lower()
@@ -5369,9 +5794,12 @@ def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]])
         key = f"table_{slug}"[:48]
         if any(token in key.lower() for token in _GENETICS_DISPATCH_SUBSTRINGS):
             continue
-        if key.lower() in existing_names or row["value"] in existing:
+        if key.lower() in existing_names or already_published(row["name"], row["value"]):
             continue
         existing_names.add(key.lower())
+        reference_raw, reference_low, reference_high = _read_row_reference(
+            row.get("reference") or "", None
+        )
         _append_field(
             fields,
             _build_field(
@@ -5383,6 +5811,19 @@ def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]])
                 # Lower than a hand-written pattern: the analyte was
                 # matched by table position, not by knowing what it is.
                 confidence=0.7,
+                # THE ROW'S OWN COLUMNS, on the reader that exists for
+                # the analytes nobody wrote a pattern for. The row dict
+                # has carried the reference since it was written and
+                # nothing passed it on, so a `table_*` cell reached
+                # `observations` with an empty reference and
+                # `is_abnormal: false` however the laboratory flagged it.
+                # `_read_row_reference` re-reads the interval only to
+                # split it, so the two ends are typed the same way here
+                # as they are on every other laboratory field.
+                abnormal_flag=row.get("flag"),
+                reference_range_raw=reference_raw,
+                reference_low=reference_low,
+                reference_high=reference_high,
             ),
         )
 

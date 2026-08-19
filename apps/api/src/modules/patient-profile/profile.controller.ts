@@ -424,6 +424,160 @@ const countExtractedFields = (payload: unknown): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+/** Keys `fields` carries that are not readings off the report: the
+ *  parse's own status and counters, the classifier's verdict, the
+ *  uploader's type hint, and the stamps this app adds afterwards.
+ *  Mirrors `PIPELINE_BOOKKEEPING_FIELDS` on the report screen. */
+const PIPELINE_BOOKKEEPING_FIELDS = new Set([
+  'documentType',
+  'document_type',
+  'analysisStatus',
+  'analysis_status',
+  'ocrStatus',
+  'ocr_status',
+  'ocrIssue',
+  'ocr_issue',
+  'extractedTextLength',
+  'extracted_text_length',
+  'reviewRecommendedCount',
+  'review_recommended_count',
+  'fieldCount',
+  'field_count',
+  'classifiedType',
+  'classified_type',
+  'classifiedTypeConfidence',
+  'classified_type_confidence',
+  'reportTypeLabel',
+  'report_type_label',
+  'manuallyEditedAt',
+  'manually_edited_at',
+  'aiSummary',
+  'ai_summary',
+  'aiSummarySource',
+  'aiSummaryInputHash',
+  'hint',
+]);
+
+/**
+ * Does this payload hold anything a patient would miss?
+ *
+ * `countExtractedFields` alone was not enough once reparse started
+ * admitting rows that have something to lose. It reads the Python
+ * parser's own `fieldCount`, and a payload written by a provider that
+ * files no such counter — the legacy `uploaded` rows, the mock, a
+ * hand-corrected record — reads as zero while carrying a full report.
+ * Landing an empty result over one of those, on the strength of a
+ * counter that was never written, is the data loss this whole gate
+ * exists to prevent. So: the counter when there is one, and otherwise
+ * the count of keys that are not bookkeeping.
+ */
+const countClinicalReadings = (payload: unknown): number => {
+  const counted = countExtractedFields(payload);
+  if (counted > 0) return counted;
+  if (!isRecord(payload)) return 0;
+  const fields = isRecord(payload.fields) ? payload.fields : null;
+  if (!fields) return 0;
+  return Object.entries(fields).filter(
+    ([key, value]) => !PIPELINE_BOOKKEEPING_FIELDS.has(key) && String(value ?? '').trim() !== '',
+  ).length;
+};
+
+const clinicalReadingKeys = (payload: unknown): string[] => {
+  if (!isRecord(payload)) return [];
+  const fields = isRecord(payload.fields) ? payload.fields : null;
+  if (!fields) return [];
+  return Object.entries(fields)
+    .filter(
+      ([key, value]) => !PIPELINE_BOOKKEEPING_FIELDS.has(key) && String(value ?? '').trim() !== '',
+    )
+    .map(([key]) => key);
+};
+
+/** What a reparse did to the row, written onto the payload so the
+ *  patient can be told rather than left to notice. */
+export interface ReparseOutcome {
+  attemptedAt: string;
+  outcome: 'replaced' | 'kept_previous';
+  /** Readings the previous payload had and the new one does not. */
+  removedReadings?: string[];
+  notice: string;
+}
+
+/**
+ * WHETHER THE NEW PARSE MAY REPLACE THE OLD PAYLOAD.
+ *
+ * The eligibility gate used to answer this by refusing to start. It
+ * cannot any more — the rows most in need of repair are exactly the
+ * ones carrying readings — so the protection moved here, to the one
+ * moment where both results exist and can be compared.
+ *
+ * ONE REFUSAL, AND ONLY ONE: a re-run that came back with NOTHING does
+ * not get to replace a payload that had something. That covers the
+ * failure the patient would actually suffer — a raise inside the
+ * parser, a storage read that returned a truncated file, an OCR
+ * provider that timed out — and in every one of those cases the row
+ * goes back to exactly what it was, under its old status.
+ *
+ * AND DELIBERATELY NOT 「FEWER FIELDS THAN BEFORE」, which was the first
+ * shape of this rule and is wrong on this platform. The bugs being
+ * repaired are DUPLICATION bugs: on five of the seven documents CK,
+ * CK-MB, 肌酐 and LDH all carry the CK number, so a correct re-parse of
+ * those files lands FEWER fields than the archive holds, and a
+ * count-must-not-drop rule would refuse every repair it exists to
+ * enable while admitting nothing. Fewer readings, honestly read, is a
+ * better payload. What the patient is owed there is not a veto — it is
+ * being told, which `removedReadings` is.
+ */
+const decideReparseLanding = (input: {
+  previousPayload: unknown;
+  previousStatus: string | null;
+  nextPayload: unknown;
+  nextStatus: string;
+}): { payload: unknown; status: string; adopted: boolean } => {
+  const previousReadings = countClinicalReadings(input.previousPayload);
+  const nextReadings = countClinicalReadings(input.nextPayload);
+  const attemptedAt = new Date().toISOString();
+
+  if (previousReadings > 0 && nextReadings === 0) {
+    return {
+      payload: {
+        ...(isRecord(input.previousPayload) ? input.previousPayload : {}),
+        reparse: {
+          attemptedAt,
+          outcome: 'kept_previous',
+          notice: '重新识别没有取到报告里的数据，已保留上一次的识别结果。',
+        } satisfies ReparseOutcome,
+      },
+      // Back to where it was. `nextStatus` here is `parse_failed` or a
+      // `parsed` that landed nothing, and either would relabel a row
+      // whose content we just decided to keep.
+      status: input.previousStatus ?? 'parsed',
+      adopted: false,
+    };
+  }
+
+  if (previousReadings === 0) {
+    return { payload: input.nextPayload, status: input.nextStatus, adopted: true };
+  }
+
+  const before = new Set(clinicalReadingKeys(input.previousPayload));
+  const after = new Set(clinicalReadingKeys(input.nextPayload));
+  const removedReadings = [...before].filter((key) => !after.has(key)).sort();
+  const outcome: ReparseOutcome = {
+    attemptedAt,
+    outcome: 'replaced',
+    ...(removedReadings.length ? { removedReadings } : {}),
+    notice: removedReadings.length
+      ? '重新识别后，有些原先显示过的数值这次没有取到，已从这份报告中移除。'
+      : '已用重新识别的结果更新这份报告。',
+  };
+  return {
+    payload: { ...(isRecord(input.nextPayload) ? input.nextPayload : {}), reparse: outcome },
+    status: input.nextStatus,
+    adopted: true,
+  };
+};
+
 export class PatientProfileController {
   /** In-flight background parses keyed by documentId. Serves three
    *  jobs: reparse-while-running returns 409 instead of double
@@ -1016,6 +1170,14 @@ export class PatientProfileController {
     documentType: UploaderDeclaredDocumentType;
     fileName?: string;
     reportName?: string;
+    /**
+     * The payload this job is about to overwrite, and the status the
+     * row wore while carrying it. Absent on the upload path, where
+     * there is nothing to overwrite; supplied by `reparseDocument`,
+     * where there may be a whole report.
+     */
+    previousPayload?: unknown;
+    previousStatus?: string | null;
   }) {
     const job = this.ocrLimiter(async () => {
       let ocrPayload: unknown | null = null;
@@ -1034,10 +1196,21 @@ export class PatientProfileController {
       }
 
       const resolvedDocumentType = resolveDocumentTypeFromPayload(input.documentType, ocrPayload);
+      // The one place both results exist at once, which is why the
+      // decision is taken here and not at the button.
+      const landing = decideReparseLanding({
+        previousPayload: input.previousPayload ?? null,
+        previousStatus: input.previousStatus ?? null,
+        nextPayload: ocrPayload,
+        nextStatus: resolveDocumentStatusFromPayload(ocrPayload),
+      });
       await this.service.updateDocumentOcrResult(input.userId, input.documentId, {
-        status: resolveDocumentStatusFromPayload(ocrPayload),
-        ocrPayload,
-        documentType: resolvedDocumentType,
+        status: landing.status,
+        ocrPayload: landing.payload,
+        // Only when the new result is the one being kept. A restored
+        // payload must not carry a classification taken off a parse
+        // this row is not adopting.
+        documentType: landing.adopted ? resolvedDocumentType : undefined,
       });
     })
       .catch((error) => {
@@ -1074,25 +1247,63 @@ export class PatientProfileController {
       status === 'processing' &&
       !Number.isNaN(uploadedAt.getTime()) &&
       uploadedAt.getTime() < stuckSinceMs;
-    // A `parsed` row that extracted nothing is a failure wearing a
-    // success label. The patient sees「没有解析出具体数据」and, until
-    // now, had no way to act on it: reparse was refused on the
-    // reasoning that the source file hadn't changed. True, but the
-    // *parser* changes — the lab-table extractor was returning zero
-    // fields for every report whose OCR put table cells on separate
-    // lines, and each of those rows is now recoverable by re-running
-    // the same file. Reports that did extract fields stay out of
-    // scope, where the original reasoning still holds.
-    const parsedButEmpty = status === 'parsed' && countExtractedFields(document.ocr_payload) === 0;
+    // A REPARSE IS A REPAIR NOW, NOT A RETRY, AND THE GATE HAD TO STOP
+    // ASKING WHETHER THE LAST PARSE SUCCEEDED.
+    //
+    // The gate this replaces admitted `parse_failed`, legacy
+    // `uploaded`, a dead `processing`, and a `parsed` row that
+    // extracted nothing — everything, that is, that had nothing to
+    // lose. Its reasoning for excluding a `parsed` row that DID extract
+    // fields was that the source file has not changed. That was always
+    // half the sentence: the file has not changed and the parser has,
+    // and a row that extracted fields FROM A PARSER THAT WAS WRONG is
+    // not a success to protect, it is the precise case a parser fix
+    // invalidates.
+    //
+    // What that half-sentence cost, measured against this deployment's
+    // own archive: seven documents carry an LDH the laboratory never
+    // printed — five of them the CK value off the same report, two a
+    // table row index — and FOUR of the seven are `parsed` with fields,
+    // belonging to four different patients. The endpoint whose comment
+    // already reasoned that the parser changes could not be pointed at
+    // any of them.
+    //
+    // So the question is no longer 「did this parse succeed」 but 「is
+    // there a job running that this would collide with」. A `processing`
+    // row young enough that its job is plausibly alive is refused, and
+    // that is the whole of it — the same test `inFlightOcrJobs` makes
+    // for this process, widened to cover a job that died with an
+    // earlier one. Every settled status is admitted, including the
+    // legacy `processed` / `failed` spellings migration 011 still
+    // validates.
+    //
+    // Everything that made refusing 「a good parse」 feel safe now lives
+    // where it belongs — on the LANDING, in `startOcrJob`, which
+    // refuses to replace a payload holding readings with one holding
+    // none. Refusing to press the button was never the protection;
+    // refusing to overwrite is.
+    if (status === 'processing' && !isStuckProcessing) {
+      throw new AppError('该报告正在识别中，请稍候', 409);
+    }
 
-    // Eligible: failed parses, legacy 'uploaded' rows (written before
-    // the async pipeline / with OCR disabled), processing rows whose
-    // job evidently died, and empty parses. Fresh 'processing' waits
-    // for its job.
-    const eligible =
-      status === 'parse_failed' || status === 'uploaded' || isStuckProcessing || parsedButEmpty;
-    if (!eligible) {
-      throw new AppError('该报告当前状态不支持重新识别', 409);
+    // THE ONE THING A RE-RUN CANNOT REPRODUCE. `patchDocumentOcrFields`
+    // is the patient correcting their own report by hand, and it stamps
+    // `manuallyEditedAt` — but not WHICH cells they touched, so there
+    // is no way to carry the corrections across a fresh parse and no
+    // way to tell a corrected value from an extracted one afterwards.
+    // A parse can be re-run; a patient's reading of their own paper
+    // report cannot. Refused with the alternative named, rather than
+    // silently overwritten.
+    const existingFields = isRecord(document.ocr_payload)
+      ? isRecord(document.ocr_payload.fields)
+        ? document.ocr_payload.fields
+        : null
+      : null;
+    if (existingFields && (existingFields.manuallyEditedAt ?? existingFields.manually_edited_at)) {
+      throw new AppError(
+        '这份报告的识别结果被手动修正过，重新识别会覆盖你填的内容。如需重新识别，请删除后重新上传。',
+        409,
+      );
     }
 
     // Before the storage read, not after: the buffer we're about to
@@ -1152,9 +1363,25 @@ export class PatientProfileController {
       documentType: declaredDocumentType,
       fileName: document.file_name ?? undefined,
       reportName: document.title ?? document.file_name ?? undefined,
+      // THE ROW STILL GOES TO `processing` WITH A NULL PAYLOAD — that
+      // contract is load-bearing elsewhere (the genetic-evidence picker
+      // and the report screen both read「no payload」as「this parse has
+      // not landed」, which is what stops a re-run from emptying a
+      // passport while it runs). What changes is that the payload it
+      // nulls is now carried into the job, so the landing has something
+      // to compare its result against and something to put back.
+      previousPayload: document.ocr_payload ?? null,
+      previousStatus: status,
     });
 
-    res.status(202).json({ documentId, status: 'processing' });
+    res.status(202).json({
+      documentId,
+      status: 'processing',
+      // What the patient is promised before the button does anything:
+      // a re-run that comes back empty does not cost them the reading
+      // they already had. `startOcrJob` is what keeps the promise.
+      previousResultRestoredIfWorse: countClinicalReadings(document.ocr_payload) > 0,
+    });
   };
 
   addMedication = async (req: AuthenticatedRequest, res: Response) => {
@@ -1521,15 +1748,20 @@ export class PatientProfileController {
 
   getDocumentOcr = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
-    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+    // `getDocumentOcrForUser`, not `getDocumentForUser`: this is a read
+    // for display, so it goes through the same guard the profile
+    // projection does. Reading the row raw here is what made this
+    // endpoint the one door into `fields` that printed a withheld
+    // reading anyway.
+    const document = await this.service.getDocumentOcrForUser(req.user.id, documentId);
 
     res.status(200).json({
       documentId,
       // The async pipeline keeps ocr_payload null while the job runs,
       // so the row status is the only way a poller can distinguish
       // "still parsing" from "never parsed" / "failed".
-      status: document.status ?? null,
-      ocrPayload: document.ocr_payload ?? null,
+      status: document.status,
+      ocrPayload: document.ocrPayload ?? null,
     });
   };
 

@@ -604,8 +604,364 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
   CASE WHEN ocr_payload IS NULL THEN NULL ELSE jsonb_build_object(
     'fields', ocr_payload -> 'fields',
     'extractedText', coalesce(ocr_payload -> 'extractedText', ocr_payload -> 'extracted_text'),
-    'provider', ocr_payload -> 'provider'
+    'provider', ocr_payload -> 'provider',
+    -- What the last re-run did to this row. Small, absent on every row
+    -- nobody has reparsed, and the only channel by which「some values
+    -- you used to see are gone, and here is which」reaches a screen that
+    -- reads the profile rather than the single-document endpoint.
+    'reparse', ocr_payload -> 'reparse',
+    'analyteReferences', (
+      SELECT jsonb_object_agg(
+               entry.key,
+               jsonb_build_object(
+                 'low', entry.value -> 'reference_low',
+                 'high', entry.value -> 'reference_high'
+               )
+             )
+      FROM jsonb_each(
+             coalesce(ocr_payload -> 'aiExtraction' -> 'latest_summary' -> 'by_analyte', '{}'::jsonb)
+           ) AS entry
+      WHERE jsonb_typeof(entry.value -> 'reference_low') = 'number'
+         OR jsonb_typeof(entry.value -> 'reference_high') = 'number'
+    )
   ) END AS ocr_payload`;
+
+/**
+ * WHERE A STORED READING IS CHECKED BEFORE IT IS PRINTED, AND THE ONLY
+ * PLACE IT IS.
+ *
+ * Everything below this comment exists because a parser fix does not
+ * reparse. `ocr_payload.fields` is written once, at upload, by whatever
+ * the extractor was on that day, and the passport, the share page, the
+ * referral pack, the three exports and the report screen all read that
+ * record and print the number in it. When the extractor was wrong the
+ * number stays wrong on every one of those surfaces for as long as the
+ * row exists — which is how seven archived documents came to carry an
+ * LDH that is the CK value off the same report, or a table row index.
+ *
+ * So the guard is not on a screen. It is on the payload, at the two
+ * points the service hands one out, and `reparseDocument` is the repair
+ * rather than the defence: there will be a next generation of parser
+ * bug and it will land in rows nobody reparses either.
+ *
+ * TWO QUESTIONS, ASKED OF THE ROW ITSELF — no external reference table,
+ * no per-analyte physiology, nothing this repo would have to keep
+ * current against a laboratory:
+ *
+ *  1. DOES THIS NUMBER BELONG TO SOMEONE ELSE ON THE SAME REPORT? Two
+ *     different analytes carrying the identical reading is the exact
+ *     signature of a column that slipped: CK, CK-MB, 肌酐 and LDH all
+ *     reading 693 is one cell copied four times, and no laboratory
+ *     printed that. Both readings are WITHHELD, not one — the payload
+ *     does not say which of the two is the cell that was really read,
+ *     and picking would be this file inventing a clinical value. The
+ *     same question asked of ONE analyte's own spellings — `ldh`
+ *     against `table_ldh` — is the sharper form of it, and catches the
+ *     archived document whose LDH is a row index while the laboratory's
+ *     real LDH sits beside it under the other key.
+ *
+ *  2. DOES IT SIT OUTSIDE THE INTERVAL THIS SAME REPORT PRINTED NEXT
+ *     TO IT? The parser archives 「50-310」 off the CK row into
+ *     `latest_summary.by_analyte`, so the row carries its own answer.
+ *     This one is MARKED, not withheld, and the difference is the
+ *     whole of the judgement: on this platform a CK outside its
+ *     interval is usually the disease, not the parser. Withholding
+ *     everything abnormal would blank precisely the readings the
+ *     passport exists to carry. Marking says 「this is outside the
+ *     range the report itself printed」, which is true of the elevated
+ *     CK and true of the LDH that is really a row index, and leaves
+ *     the reader to weigh it.
+ *
+ * WHAT A WITHHELD READING LEAVES BEHIND. The cell is deleted from
+ * `fields` under every spelling it has — snake, camel, and the generic
+ * table reader's `table_*` twin — so a reader that never heard of this
+ * guard cannot print it by reaching for another alias. In its place the
+ * payload carries `unsafeReadings` and `unsafeReadingsNotice`, at the
+ * TOP LEVEL and deliberately not inside `fields`: `fields` is the
+ * record of what the report said, every reader walks it, and one screen
+ * (report detail) decides whether to offer 重新识别 by asking whether
+ * any non-bookkeeping key survives in it. A review note filed among the
+ * readings would answer that question 「yes, this report still has
+ * data」 — and suppress the offer to repair the very row this guard just
+ * emptied.
+ */
+export interface UnsafeReading {
+  /** Canonical analyte name, as the parser names it (`ldh`, `uric_acid`). */
+  analyte: string;
+  /** Every `fields` spelling that carried it, so a caller can say where it went. */
+  keys: string[];
+  disposition: 'withheld' | 'flagged';
+  reason: 'duplicate_reading' | 'contradictory_aliases' | 'outside_reference_interval';
+  /** The other analytes sharing this value (duplicate_reading only). */
+  sharedWith?: string[];
+}
+
+/**
+ * Canonical names of the laboratory analytes this pipeline extracts —
+ * `analytes` in `_extract_biochemistry` / `_extract_muscle_enzymes`
+ * (apps/report-manager/app/services/fshd_report_service.py).
+ *
+ * THE LIST IS THE SCOPE, AND THE SCOPE IS THE SAFETY. Question 1 asks
+ * whether two readings are identical, and outside a laboratory panel
+ * that question has ordinary true answers: a D4Z4 repeat count of 4 and
+ * a 4qA haplotype's leading 4, two MRC grades of 5, two 0-10 symptom
+ * scores. Restricting the comparison to analytes off the same results
+ * table is what keeps this from deleting a genetics cell because a
+ * number appeared twice on a page.
+ */
+const LAB_ANALYTE_CANONICAL_KEYS = [
+  'a_g_ratio',
+  'alb',
+  'alp',
+  'alt',
+  'apo_a1',
+  'apo_b',
+  'ast',
+  'calcium',
+  'chloride',
+  'cholesterol',
+  'ck',
+  'ckmb',
+  'co2cp',
+  'creatinine',
+  'dbil',
+  'ggt',
+  'globulin',
+  'glucose',
+  'hdl_c',
+  'ibil',
+  'il6',
+  'ldh',
+  'ldl_c',
+  'lp_a',
+  'magnesium',
+  'mb',
+  'phosphorus',
+  'potassium',
+  'sodium',
+  'tbil',
+  'tp',
+  'triglyceride',
+  'urea',
+  'uric_acid',
+  'vldl_c',
+] as const;
+
+const flattenKey = (key: string) => key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+
+const LAB_ANALYTE_BY_FLAT_KEY = new Map<string, string>(
+  LAB_ANALYTE_CANONICAL_KEYS.map((key) => [flattenKey(key), key]),
+);
+
+/**
+ * Spellings the TypeScript bridge mints for a cell the parser already
+ * named. `buildFields` writes `creatineKinase = ck` and `myoglobin = mb`
+ * beside the parser's own keys, and both spellings reach the passport —
+ * so a guard that withheld `ck` and left `creatineKinase` standing
+ * would have withheld nothing at all.
+ */
+const LAB_ANALYTE_BRIDGE_ALIASES: Record<string, string> = {
+  creatinekinase: 'ck',
+  myoglobin: 'mb',
+};
+
+/**
+ * The abbreviations the generic table reader slugs a row name into —
+ * `table_k`, `tableCrea` — for rows a named extractor also publishes.
+ * Honoured ONLY under the `table` prefix: bare `p` or `k` is not an
+ * analyte anywhere else in this payload, and reading it as one is how a
+ * guard starts deleting fields it was never pointed at.
+ */
+const LAB_TABLE_SLUG_ALIASES: Record<string, string> = {
+  k: 'potassium',
+  na: 'sodium',
+  cl: 'chloride',
+  ca: 'calcium',
+  mg: 'magnesium',
+  p: 'phosphorus',
+  crea: 'creatinine',
+  ua: 'uric_acid',
+  glu: 'glucose',
+  tg: 'triglyceride',
+  tcho: 'cholesterol',
+  apoa1: 'apo_a1',
+  apob: 'apo_b',
+  ag: 'a_g_ratio',
+};
+
+const resolveLabAnalyte = (key: string): string | null => {
+  const trimmed = key.trim();
+  if (!trimmed) return null;
+  const tableMatch = /^table[_]?(.+)$/i.exec(trimmed);
+  const bare = tableMatch ? tableMatch[1] : trimmed;
+  const flat = flattenKey(bare);
+  if (!flat) return null;
+  if (tableMatch && LAB_TABLE_SLUG_ALIASES[flat]) {
+    return LAB_TABLE_SLUG_ALIASES[flat];
+  }
+  return LAB_ANALYTE_BY_FLAT_KEY.get(flat) ?? LAB_ANALYTE_BRIDGE_ALIASES[flat] ?? null;
+};
+
+/**
+ * The reading as a number, or nothing.
+ *
+ * Leading-token only, because `formatStructuredValue` staples the
+ * laboratory's own unit on — 「693 U/L」 — and a comparison that
+ * demanded a bare number would simply never fire on a report whose unit
+ * column the OCR recovered. A value that does not START with a number
+ * (「阴性」, 「未见异常」) is not a reading either question can be asked
+ * of, and is left alone.
+ */
+const readNumericReading = (raw: unknown): number | null => {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const match = /^-?\d+(?:\.\d+)?/.exec(text);
+  if (!match) return null;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : null;
+};
+
+const readReferenceLimits = (payload: Record<string, unknown>) => {
+  const projected = asRecord(payload.analyteReferences);
+  if (projected) return projected;
+  const aiExtraction = asRecord(payload.aiExtraction);
+  const latestSummary = asRecord(aiExtraction?.latest_summary);
+  return asRecord(latestSummary?.by_analyte) ?? null;
+};
+
+const readLimit = (source: Record<string, unknown> | null, keys: readonly string[]) => {
+  if (!source) return null;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+const UNSAFE_READING_NOTICE_ZH =
+  '这份报告里有数值没有通过核对：与同一份报告上另一个项目完全相同的数值已经不再显示，' +
+  '超出报告自己印的参考区间的数值已标注。请以报告原件为准，必要时重新识别一次。';
+
+/**
+ * Run both questions over one payload and return a copy fit to print.
+ *
+ * Pure, and returns a NEW payload: `reparseDocument` reads the stored
+ * payload to decide what a re-run may replace, and a guard that mutated
+ * it in place would have the repair path comparing against a record
+ * this function had already edited.
+ */
+export const withholdUnsafeReadings = <T>(payload: T): T => {
+  const record = asRecord(payload);
+  if (!record) return payload;
+  const fields = asRecord(record.fields);
+
+  // EVERY SPELLING'S VALUE, NOT THE FIRST ONE SEEN.
+  //
+  // This collected one value per analyte and dropped the rest, and that
+  // was a hole big enough to hide a whole document in. `fields` carries
+  // the same analyte under a named key and under the generic table
+  // reader's slug — `ldh` and `table_ldh`, `potassium` and `tableK` —
+  // and on a report whose columns slipped the two DISAGREE: the
+  // archived document that publishes an LDH of 9 has the laboratory's
+  // real LDH sitting beside it under `table_ldh`. Keeping only whichever
+  // key `Object.entries` happened to yield first made the guard's answer
+  // depend on key order, and on that document it silently chose the row
+  // index and then found nothing wrong with it.
+  //
+  // Two spellings of one cell disagreeing is not a tie to break. It is
+  // the strongest statement this payload can make that it does not know
+  // what the laboratory printed, so it is withheld on its own account.
+  const readings = new Map<string, { keys: string[]; values: Set<number> }>();
+  if (fields) {
+    for (const [key, raw] of Object.entries(fields)) {
+      const analyte = resolveLabAnalyte(key);
+      if (!analyte) continue;
+      const value = readNumericReading(raw);
+      if (value === null) continue;
+      const existing = readings.get(analyte);
+      if (existing) {
+        existing.keys.push(key);
+        existing.values.add(value);
+        continue;
+      }
+      readings.set(analyte, { keys: [key], values: new Set([value]) });
+    }
+  }
+
+  const byValue = new Map<number, string[]>();
+  for (const [analyte, reading] of readings) {
+    if (reading.values.size !== 1) continue;
+    const [value] = reading.values;
+    byValue.set(value, [...(byValue.get(value) ?? []), analyte]);
+  }
+
+  const references = readReferenceLimits(record);
+  const unsafe: UnsafeReading[] = [];
+
+  for (const [analyte, reading] of readings) {
+    if (reading.values.size !== 1) {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'withheld',
+        reason: 'contradictory_aliases',
+      });
+      continue;
+    }
+    const [value] = reading.values;
+    const shared = (byValue.get(value) ?? []).filter((other) => other !== analyte);
+    if (shared.length) {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'withheld',
+        reason: 'duplicate_reading',
+        sharedWith: shared,
+      });
+      continue;
+    }
+    const limits = asRecord(references?.[analyte]);
+    const low = readLimit(limits, ['low', 'reference_low']);
+    const high = readLimit(limits, ['high', 'reference_high']);
+    if ((low !== null && value < low) || (high !== null && value > high)) {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'flagged',
+        reason: 'outside_reference_interval',
+      });
+    }
+  }
+
+  // `analyteReferences` is a working column, not a payload key: it is
+  // selected so this function has an interval to compare against and is
+  // dropped here, so a clean report's payload leaves this file byte
+  // for byte the shape it arrived in.
+  const hadReferences = 'analyteReferences' in record;
+  if (!unsafe.length && !hadReferences) return payload;
+
+  const next: Record<string, unknown> = { ...record };
+  delete next.analyteReferences;
+
+  if (unsafe.length) {
+    const withheldKeys = new Set(
+      unsafe.filter((item) => item.disposition === 'withheld').flatMap((item) => item.keys),
+    );
+    if (fields && withheldKeys.size) {
+      const nextFields: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(fields)) {
+        if (withheldKeys.has(key)) continue;
+        nextFields[key] = value;
+      }
+      next.fields = nextFields;
+    }
+    unsafe.sort((a, b) => a.analyte.localeCompare(b.analyte));
+    next.unsafeReadings = unsafe;
+    next.unsafeReadingsNotice = UNSAFE_READING_NOTICE_ZH;
+  }
+
+  return next as T;
+};
 
 /**
  * Fewest distinct patients before a cohort distribution is shown.
@@ -745,7 +1101,7 @@ export class PatientProfileService {
         status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
         checksum: row.checksum,
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
         submissionId: row.submission_id ?? null,
       }));
 
@@ -970,7 +1326,7 @@ export class PatientProfileService {
         documentType: row.document_type,
         status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
       })),
     );
 
@@ -1428,7 +1784,7 @@ export class PatientProfileService {
       status: row.status,
       uploadedAt: toTimestampString(row.uploaded_at),
       checksum: row.checksum,
-      ocrPayload: row.ocr_payload ?? null,
+      ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
       submissionId: row.submission_id ?? null,
     };
   }
@@ -1457,6 +1813,25 @@ export class PatientProfileService {
       mime_type: string | null;
       ocr_payload: unknown | null;
       uploaded_at: Date | string;
+    };
+  }
+
+  /**
+   * The single document's payload AS IT MAY BE PRINTED.
+   *
+   * `getDocumentForUser` deliberately hands back the row untouched:
+   * `reparseDocument` reads it to decide what a re-run is allowed to
+   * replace, and that decision has to be taken against what is actually
+   * stored. Every OTHER reader of one document's payload wants the
+   * guarded copy, and the two used to be the same call — which is how
+   * GET …/documents/:id/ocr became the one door into `fields` that the
+   * projection's guard did not cover.
+   */
+  async getDocumentOcrForUser(userId: string, documentId: string) {
+    const document = await this.getDocumentForUser(userId, documentId);
+    return {
+      status: document.status ?? null,
+      ocrPayload: withholdUnsafeReadings(document.ocr_payload ?? null),
     };
   }
 
@@ -2554,7 +2929,7 @@ export class PatientProfileService {
         status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
         checksum: row.checksum,
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
         submissionId,
       });
     });

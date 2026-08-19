@@ -276,15 +276,61 @@ describe('parseAnswer — more block shapes', () => {
 
   // A step's second sentence belongs to the step. Emitting it
   // flush-left read as「步骤、无关的话、步骤」.
+  //
+  // The continuation is joined with the NEWLINE the model wrote, not
+  // with a space, and it arrives as one span rather than three. Both
+  // changed when soft line breaks started being handled in one place
+  // (see `flushPending`): a soft break is rejoined the same way in a
+  // paragraph, a quote and a list item, because a rule that depends on
+  // which block you are in is a rule that will disagree with itself.
+  // The space was also wrong on its own terms — it fell between two
+  // Chinese sentences, which take no space.
   it('joins a continuation line onto its list item', () => {
     expect(parseAnswer('1. 先做基因检测\n   这一步需要空腹。\n2. 再做肌电图')).toEqual([
       {
         kind: 'listItem',
         marker: '1.',
         depth: 0,
-        spans: [{ text: '先做基因检测' }, { text: ' ' }, { text: '这一步需要空腹。' }],
+        spans: [{ text: '先做基因检测\n这一步需要空腹。' }],
       },
       { kind: 'listItem', marker: '2.', depth: 0, spans: [{ text: '再做肌电图' }] },
+    ]);
+  });
+
+  // The defect this whole soft-break pass exists for: the system prompt
+  // promises the model that bold renders, and a bolded run that WRAPPED
+  // put literal asterisks in front of the patient, because each source
+  // line was parsed on its own and neither half held a matching pair.
+  it('carries emphasis across a soft line break', () => {
+    expect(parseAnswer('这里有一个**很重要的\n提醒**，请注意。')).toEqual([
+      {
+        kind: 'paragraph',
+        spans: [
+          { text: '这里有一个' },
+          { text: '很重要的\n提醒', bold: true },
+          { text: '，请注意。' },
+        ],
+      },
+    ]);
+  });
+
+  // ...and it must still STOP at a blank line, or emphasis opened in
+  // one paragraph would bold everything up to the next stray asterisk.
+  it('does not carry emphasis across a blank line', () => {
+    expect(parseAnswer('第一段有个**记号\n\n第二段也有个**记号')).toEqual([
+      { kind: 'paragraph', spans: [{ text: '第一段有个**记号' }] },
+      { kind: 'paragraph', spans: [{ text: '第二段也有个**记号' }] },
+    ]);
+  });
+
+  // A wrapped citation is one quotation, not a quote followed by an
+  // unquoted paragraph carrying the rest of it.
+  it('keeps a wrapped quote inside the quote', () => {
+    expect(parseAnswer('> 指南建议**每年\n复查一次**肺功能。')).toEqual([
+      {
+        kind: 'quote',
+        spans: [{ text: '指南建议' }, { text: '每年\n复查一次', bold: true }, { text: '肺功能。' }],
+      },
     ]);
   });
 
