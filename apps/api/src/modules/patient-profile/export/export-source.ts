@@ -8,6 +8,7 @@ import {
   pickReading,
   readGeneticEvidence,
 } from '../genetic-evidence.js';
+import { MUSCLE_GROUP_LABELS, labelFor } from './labels.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import {
   buildClinicalPassportSummary,
@@ -224,6 +225,22 @@ export interface ReportField {
    * on a number that is not there.
    */
   readonly geneticQualifier: SerialisedGeneticQualifier | null;
+  /**
+   * HOW TO READ `value`, for a cell whose printed form is this
+   * platform's own encoding rather than the report's.
+   *
+   * Almost every reading here is the report's own rendered string — 「1245
+   * U/L」, 「78%」 — and needs no gloss. The MRC cells are the exception:
+   * `formatAggregateStrength` (embedded-report-ocr.ts) folds the two
+   * sides of one muscle into ONE string, 「L4 / R3」, and 「L」 and 「R」 are
+   * ours. A receiver who reads that as a range, or as 「left/right」 in the
+   * other order, has the weak side and the strong side swapped — which is
+   * exactly the reading a clinician acts on. So the notation is stated
+   * beside the value in the only three places a value travels.
+   *
+   * Null for every cell whose printed form is the report's own.
+   */
+  readonly readingNoteZh: string | null;
   /**
    * The ledger key a coding WOULD be looked up under. Null where no
    * candidate exists at all. Never a code — see codings.ts.
@@ -1856,12 +1873,79 @@ const CHALLENGE_LABELS: Record<string, string> = {
  * omits it, because the number then looks like a result something here
  * weighed.
  */
+/**
+ * HOW `formatAggregateStrength` WRITES A MUSCLE'S GRADE, said out loud.
+ *
+ * The parser publishes one `muscle_strength` entry per muscle per side;
+ * `embedded-report-ocr.ts` folds them into one cell as 「L4 / R3」, and
+ * writes only 「4」 when the examiner graded the muscle without a side.
+ * The 「L」/「R」 are this platform's, not the report's, and a receiver who
+ * reads them in the other order has the weak side and the strong side
+ * swapped. The grade text itself is the examiner's, including a range
+ * (「4-5级」) or a modifier (「4+」) the parser declined to type.
+ */
+const MRC_SIDE_NOTATION_NOTE_ZH =
+  '本条是本平台从上传的报告原文中解析出的徒手肌力（MRC）分级，0–5，5 为正常。左右写在同一个值里：「L」后面是左侧、「R」后面是右侧，用「 / 」隔开（例如「L4 / R3」表示左侧 4 级、右侧 3 级）；只有一个数字表示报告上没有分左右记。这个 L/R 写法是本平台的记法，不是报告上的原文。分级本身照报告原样给出，包括报告写成区间（如「4-5级」）或带正负号（如「4+」）的情况——本平台不把这类写法折算成一个数。';
+
+const mrcReportSpec = (
+  key: string,
+  muscleGroup: keyof typeof MUSCLE_GROUP_LABELS | string,
+): {
+  keys: readonly string[];
+  key: string;
+  labelZh: string;
+  category: ReportField['category'];
+  codingKey: string | null;
+  readingNoteZh: string;
+} => ({
+  key,
+  // BOTH SPELLINGS, and the reason the list is not one string: the
+  // camelCase key is what `embedded-report-ocr.ts` writes today and the
+  // snake_case one is what archived payloads hold — the app's own
+  // report table (apps/mobile/lib/report-insights.ts) reads the pair,
+  // and an export that read only the current spelling would be blank
+  // for exactly the patients whose reports are oldest.
+  keys: [`${key}Strength`, `${key}_strength`],
+  // The muscle name is taken from `MUSCLE_GROUP_LABELS` rather than
+  // written out, so the muscle a receiver sees on a report-derived grade
+  // and the muscle it sees on a questionnaire grade for the same body
+  // part cannot differ.
+  //
+  // AND THE QUALIFIER IS LOAD-BEARING. Without it this label is
+  // character-for-character the label the BASELINE measurement carries
+  // (fhir-r4.ts writes `三角肌肌力（左侧）` off `profile.measurements`), and
+  // they are two different facts about two different events: an examiner
+  // grading a limb in clinic, transcribed off a report, versus the
+  // patient grading themselves at home through this app. A bundle with
+  // both, under one name, is a bundle a receiver merges into one series
+  // — and the two do not even carry the same value type, one being a
+  // `valueQuantity` of 4 and the other a `valueString` of 「L4 / R3」.
+  //
+  // It also keeps the coverage assertion honest: with a shared label,
+  // 「the document contains 三角肌肌力」 was satisfied by the questionnaire
+  // row for a document carrying none of the report readings at all. That
+  // is the two-facts-one-name hole this directory has now been bitten by
+  // three times (the falls diary, the two notes stores, and this).
+  labelZh: `${labelFor(MUSCLE_GROUP_LABELS, muscleGroup)}肌力（报告上的记录）`,
+  // `exam`, not `laboratory`: an examiner's hand on a limb is a
+  // physical examination finding. This is the first spec to use the
+  // value, and `ReportField['category']` has carried it since the type
+  // was written.
+  category: 'exam',
+  // No ledger entry. MRC has no verified LOINC in codings.ts, and
+  // codings.ts is the only place that question is allowed to be
+  // answered — see the `CodeableConcept.coding (LOINC)` omission.
+  codingKey: null,
+  readingNoteZh: MRC_SIDE_NOTATION_NOTE_ZH,
+});
+
 const REPORT_FIELD_SPECS: ReadonlyArray<{
   keys: readonly string[];
   key: string;
   labelZh: string;
   category: ReportField['category'];
   codingKey: string | null;
+  readingNoteZh?: string;
   geneticCell?: GeneticCellSpec;
 }> = [
   {
@@ -1934,6 +2018,34 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     category: 'imaging',
     codingKey: null,
   },
+  /**
+   * THE MRC GRADES THE PARSER READS OFF A CLINICAL REPORT — five cells
+   * that had NO ENTRY IN THIS TABLE AT ALL, in either spelling.
+   *
+   * `fshd_report_service.py` extracts one `muscle_strength` entry per
+   * muscle per side off 体格检查 prose (「三角肌肌力左侧4级」), and
+   * `embedded-report-ocr.ts` writes them into `ocrPayload.fields` as
+   * `deltoidStrength` / `bicepsStrength` / `tricepsStrength` /
+   * `quadricepsStrength` / `tibialisStrength`. The app PRINTS them: the
+   * report-detail table in apps/mobile/lib/report-insights.ts has a row
+   * for each, reading both spellings, and 平均肌力 is averaged from them.
+   *
+   * So the patient sees these grades on their own report page, and
+   * before this entry existed not one of them reached ANY portable
+   * export — `collectReportFields` only ever emits what this table
+   * names, and this table named none of them. Not carried anywhere, and
+   * not declared anywhere either: a neurologist reading a bundle whose
+   * only strength data is the patient's at-home self-test had no way to
+   * know an examiner's graded exam was sitting in the archive.
+   *
+   * `category: 'exam'` rather than `'laboratory'`, and the L/R notation
+   * travels with the value — see `mrcReportSpec`.
+   */
+  mrcReportSpec('deltoid', 'deltoid'),
+  mrcReportSpec('biceps', 'biceps'),
+  mrcReportSpec('triceps', 'triceps'),
+  mrcReportSpec('quadriceps', 'quadriceps'),
+  mrcReportSpec('tibialis', 'tibialis'),
   {
     key: 'd4z4Repeats',
     keys: GENETIC_FIELD_KEYS.d4z4Repeats,
@@ -2118,6 +2230,10 @@ const collectReportFields = (
         // three documents must not disagree about whether this number
         // was weighed, and two of them have no other place to say so.
         notJudgedZh: cell?.notJudgedZh ?? null,
+        // Rides the spec for the reason `notJudgedZh` does: 「L4 / R3」
+        // must not mean one thing in the FHIR bundle and another in the
+        // TREAT-NMD document, and a per-serialiser gloss is how it would.
+        readingNoteZh: spec.readingNoteZh ?? null,
         // The report's own stated time when OCR read one, else the
         // upload time — with the substitution recorded, not silent.
         // Every consumer of `observedAt` has to decide what to do
@@ -2374,6 +2490,215 @@ export const fallsDiaryOmission = (field: string, eventNoteZh: string): ExportOm
   field,
   reasonZh: `${FALLS_DIARY_OMISSION_REASON_ZH}${eventNoteZh}`,
 });
+
+/**
+ * EVERY MEASUREMENT THIS PLATFORM PARSES OFF AN UPLOADED REPORT, as a
+ * list a test can walk.
+ *
+ * The genetic cells are excluded on purpose: they are the four items the
+ * three documents already argue about by name, each with its own
+ * provenance sentence, and folding them into this list would let a
+ * generic 「报告读数」 declaration stand in for the specific ones.
+ * `REPORT_READING_LABELS_ZH` is therefore exactly the laboratory,
+ * pulmonary, cardiac, imaging and physical-examination readings.
+ *
+ * EXPORTED SO THE TABLE CANNOT BE THE THING THAT GOES STALE. Four review
+ * rounds in a row found a clinical fact carried by no export and
+ * declared by none, and every one of them was a fact that existed in a
+ * runtime table here while the hand-written coverage table in
+ * omissions-coverage.test.ts had no row for it. A list derived from
+ * `REPORT_FIELD_SPECS` fails the moment a spec is added with no home,
+ * which is the only version of this check that survives the next person.
+ */
+export const REPORT_READING_KEYS: readonly string[] = REPORT_FIELD_SPECS.filter(
+  (spec) => spec.geneticCell === undefined,
+).map((spec) => spec.key);
+
+/**
+ * EVERY spec, genetic ones included, as a list a test can walk.
+ *
+ * `REPORT_READING_*` above is the subset the two non-FHIR documents
+ * declare as a block. This is the whole table, because the coverage
+ * assertion has to be able to say 「this reading is emitted or declared
+ * in all three envelopes」 about the genetic cells too — they are the
+ * ones with three different answers to that question.
+ */
+export const REPORT_FIELD_INVENTORY: ReadonlyArray<{
+  readonly key: string;
+  readonly labelZh: string;
+  readonly payloadKeys: readonly string[];
+  readonly genetic: boolean;
+}> = REPORT_FIELD_SPECS.map((spec) => ({
+  key: spec.key,
+  labelZh: spec.labelZh,
+  payloadKeys: spec.keys,
+  genetic: spec.geneticCell !== undefined,
+}));
+
+export const REPORT_READING_LABELS_ZH: readonly string[] = REPORT_FIELD_SPECS.filter(
+  (spec) => spec.geneticCell === undefined,
+).map((spec) => spec.labelZh);
+
+/**
+ * THE READINGS THIS PLATFORM PARSES OFF AN UPLOADED REPORT, AND THE TWO
+ * DOCUMENTS THAT CARRIED NONE OF THEM AND SAID NOTHING.
+ *
+ * WHAT WAS WRONG. `source.reportFields` appeared exactly twice in this
+ * directory, both times in fhir-r4.ts. treat-nmd.ts and phenopacket.ts
+ * never read it — grep for 「reportFields」 in either and the count is
+ * zero — so CK, 肌红蛋白, LDH, CK-MB, FVC%pred, TLC%pred, DLCO%pred,
+ * LVEF, QTc, 前锯肌脂肪化等级 and the five MRC grades reached the FHIR
+ * bundle and reached neither of the other two. Not one of them was named
+ * in either omissions list.
+ *
+ * WHY THAT IS THE FAILURE envelope.ts DESCRIBES AND NOT A GAP. TREAT-NMD
+ * is a REGISTRY alignment document. A registry ingesting it, and a
+ * registry ingesting the FHIR bundle for the same patient in the same
+ * hour, get two different patients — one with a CK of 1245 and an FVC at
+ * 78% of predicted, one with no laboratory data of any kind and nothing
+ * saying there could have been. The TREAT-NMD document made that worse
+ * than silent: its `codingProvenance` block publishes the ledger entry
+ * for `pft.fvcPercentPredicted`, 「FVC percent predicted」 and all, so the
+ * document announces that this platform knows the concept, prints no
+ * value, and declares no omission.
+ *
+ * DECLARED RATHER THAN CARRIED, and the reason is specific to each
+ * format rather than shared:
+ *
+ *   - TREAT-NMD. The six sections are the six MANDATORY CONTENT AREAS
+ *     the corpus establishes (treat-nmd.ts's header quotes the source),
+ *     and laboratory / pulmonary / cardiac / imaging results are not one
+ *     of them. Inventing a seventh clinical section is the same move
+ *     that file already refuses for 「sixteen sections」 and for per-item
+ *     references: a receiver mapping our data onto a question the
+ *     dataset does not ask is worse off than one told where the data is.
+ *   - Phenopacket. `Measurement.assay` must be an ontology term, and
+ *     codings.ts holds no verified LOINC for most of these — the same
+ *     reason that document already gives for the strength and function
+ *     test blocks.
+ *
+ * So both declare, both name the readings, and both point at the one
+ * document that carries them.
+ */
+const REPORT_READINGS_RULE_ZH = `本平台会从患者上传的检查报告原文里解析出结构化读数，本平台可解析的项目是这些：${REPORT_READING_LABELS_ZH.join('、')}。这些读数不出现在本文件里。`;
+
+/**
+ * @param heldCount How many such readings THIS export actually holds for
+ *   THIS profile. Printed rather than hidden, because 0 is itself an
+ *   answer a receiver can act on — and it is not 「这位患者没做过检查」,
+ *   which the sentence says out loud.
+ * @param whereZh Where the readings DO travel, in this format's own
+ *   vocabulary. Required rather than optional for the reason
+ *   `fallsDiaryOmission`'s note argument is: a fourth serialiser must
+ *   not inherit another format's answer by leaving it out.
+ */
+export const reportReadingsOmission = (
+  field: string,
+  heldCount: number,
+  whereZh: string,
+): ExportOmission => ({
+  field,
+  // THE POINTER DOES NOT PROMISE COMPLETENESS, and the reason is the one
+  // phenopacket.ts's `measurements` entry already learned the hard way:
+  // the FHIR bundle caps its Observations and declares the cut in its own
+  // omissions, so an entry telling a receiver 「it is all over there」
+  // promises a completeness the other document says it does not have —
+  // and a receiver told that does not go looking for the omission that
+  // says otherwise. Nor does it promise dates: that bundle writes
+  // `effectiveDateTime` only where the report stated its own, which is
+  // the correct behaviour and not the same as 「dated」.
+  reasonZh: `${REPORT_READINGS_RULE_ZH}本次导出的档案里有 ${heldCount} 条这样的读数。${whereZh}那份导出对条目数有上限，超出时会截断并在它自己的 omissions 里说明；报告上没写日期的条目，它也不写观察时间，同样有说明。不受截断影响的完整读数在不带 format 参数的数据导出里。请不要把这些项目在本文件里的缺席读成患者没有做过这些检查，也不要读成检查结果正常——本文件对它们一个字都没有说。`,
+});
+
+/**
+ * A GENETIC VALUE THE ARCHIVE HOLDS AND THE EVIDENCE DOCUMENT DOES NOT
+ * STATE — the state in which the three documents gave three different
+ * answers about one number.
+ *
+ * HOW A PROFILE GETS INTO IT, and it is the ordinary lifecycle rather
+ * than an edge case. The baseline questionnaire has its own boxes for
+ * these cells (`diseaseBackground.d4z4` and friends). A patient can
+ * answer them before uploading anything, or from a report that is not
+ * the one `pickGeneticEvidenceDocument` later names, or a member of
+ * staff can transcribe them off a paper report during onboarding.
+ * `applyGeneticReportAutofill` fills an EMPTY slot from the evidence
+ * document and never corrects a full one — so the archived answer
+ * survives with no matching cell on the document forever.
+ *
+ * WHAT THE THREE DOCUMENTS DID WITH IT. TREAT-NMD prints the archived
+ * value with `geneticValueProvenanceZh` saying where it came from and
+ * that the report is silent. The Phenopacket declares it. The FHIR
+ * bundle builds its genetic Observations out of `reportFields`, which
+ * exist only where the EVIDENCE DOCUMENT had a cell — so it neither
+ * carried the value nor said a word about it, while its own omissions
+ * list stated that 「the readings themselves all travel now」. One
+ * registry gets 甲基化水平 32%, one is told where to find it, and one is
+ * told there is nothing to find.
+ *
+ * THE RESOLVED SPLIT, which every caller now states the same way: a
+ * value READ OFF THE EVIDENCE DOCUMENT travels to TREAT-NMD and to the
+ * FHIR bundle; a value held ONLY IN THE ARCHIVE travels to TREAT-NMD
+ * and is DECLARED by the other two. 分型 is not in this table because it
+ * is not carried this way at all — it reaches the FHIR bundle as
+ * `Condition.code` and the Phenopacket as `Disease.term`, from the
+ * archive, whatever the document says.
+ *
+ * Asked of `reportFields` rather than of `geneticEvidenceReading`,
+ * because `reportFields` is literally what the FHIR builder emits from:
+ * a second reading here is how this declaration would come to disagree
+ * with the bundle it is attached to.
+ */
+const GENETIC_ARCHIVE_CELLS: ReadonlyArray<{
+  readonly field: GeneticBaselineField;
+  readonly reportFieldKey: string;
+  readonly labelZh: string;
+}> = [
+  { field: 'd4z4', reportFieldKey: 'd4z4Repeats', labelZh: 'D4Z4 重复单元数' },
+  { field: 'haplotype', reportFieldKey: 'haplotype', labelZh: '4q 单倍型' },
+  { field: 'methylation', reportFieldKey: 'methylation', labelZh: '甲基化' },
+];
+
+export interface ArchiveOnlyGeneticCell {
+  readonly field: GeneticBaselineField;
+  readonly labelZh: string;
+  readonly archivedValue: string;
+}
+
+export const archiveOnlyGeneticCells = (
+  source: NormalisedSource,
+): readonly ArchiveOnlyGeneticCell[] =>
+  GENETIC_ARCHIVE_CELLS.flatMap((cell) => {
+    const archived = GENETIC_BASELINE_VALUE_ORIGINS[cell.field].archived(source);
+    if (archived === null) return [];
+    if (source.reportFields.some((field) => field.key === cell.reportFieldKey)) return [];
+    return [{ field: cell.field, labelZh: cell.labelZh, archivedValue: archived }];
+  });
+
+/**
+ * Every cell in the table above, named, for a declaration that has to
+ * hold for a profile with none of them filled in — the receiver who most
+ * needs to know this route exists is the one holding a document with no
+ * genetic values at all.
+ */
+export const GENETIC_ARCHIVE_CELL_LABELS_ZH: readonly string[] = GENETIC_ARCHIVE_CELLS.map(
+  (cell) => cell.labelZh,
+);
+
+/**
+ * How many of those cells the archive has an answer in, at all.
+ *
+ * The declaration's empty branch needs it. 「本次导出没有处在这种状态的项目」
+ * is true both when the patient answered every box and the report happens
+ * to state every one of them, and when the patient answered none — and
+ * those are opposite facts. A receiver told the first about a profile
+ * that is the second concludes the boxes were filled and agreed with the
+ * report, which is a stronger statement than anything this platform
+ * holds.
+ */
+export const archivedGeneticCellCount = (source: NormalisedSource): number =>
+  GENETIC_ARCHIVE_CELLS.filter(
+    (cell) => GENETIC_BASELINE_VALUE_ORIGINS[cell.field].archived(source) !== null,
+  ).length;
 
 /**
  * The family-history statement is held, and two of the three portable

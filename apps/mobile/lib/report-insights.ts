@@ -1031,6 +1031,41 @@ const parseScore = (value: string) => {
   return Math.min(5, Math.max(0, base + modifier));
 };
 
+/**
+ * A TWO-SIDED MMT CELL, AS THE PARSER PUBLISHES ONE — 「L4 / R2」.
+ *
+ * Not a notation an examiner writes: `_format_strength` in the report
+ * parser and `formatAggregateStrength` in the API's OCR bridge both fold
+ * the per-side `mrc_score` rows into `f"L{left} / R{right}"`, and that
+ * string is what lands on `deltoid_strength` and its four siblings.
+ *
+ * `parseScore` takes the first grade-shaped number in a cell, so the
+ * pair collapsed to the LEFT grade and the right side was dropped in
+ * silence — 「L4 / R2」 averaged 4.0 against a true 3.0, and 「L2 / R4」
+ * averaged 2.0 against the same 3.0. FSHD is characteristically
+ * asymmetric; the two sides are the finding, and the collapsed number is
+ * the one value guaranteed not to be this patient's strength on either
+ * side.
+ *
+ * THE SIDE MARKER IS REQUIRED ON BOTH HALVES, so 「4/5」 — grade 4 out of
+ * 5, one grade — is left alone. The API's copy of this rule is
+ * `TWO_SIDED_STRENGTH_CELL` in profile.passport.ts and the two have to
+ * move together, exactly as the genetic-evidence picker does.
+ */
+const TWO_SIDED_STRENGTH_CELL = /^\s*L\s*(.+?)\s*\/\s*R\s*(.+?)\s*$/i;
+
+/**
+ * Every MRC grade one examination cell states — none, one, or one per
+ * side. A range still states none, and it states none PER SIDE:
+ * 「L4-5 / R3」 used to lose the whole cell because the range test
+ * scanned end to end, so the determinate 3 on the right went with it.
+ */
+const readStrengthCellGrades = (value: string): number[] => {
+  const sides = TWO_SIDED_STRENGTH_CELL.exec(value);
+  const halves = sides ? [sides[1], sides[2]] : [value];
+  return halves.map((half) => parseScore(half)).filter((score): score is number => score !== null);
+};
+
 const compactText = (value?: string | null, fallback = '暂无数据') => {
   const text = value?.trim();
   if (!text) return fallback;
@@ -1122,10 +1157,7 @@ export const buildStrengthSummary = (fields?: Record<string, string | number>) =
     const value = pickField(fields, [entry.key, entry.alt]);
     if (!value) return;
     parts.push(`${entry.label}${value}`);
-    const score = parseScore(value);
-    if (score !== null) {
-      scores.push(score);
-    }
+    scores.push(...readStrengthCellGrades(value));
   });
 
   const average =

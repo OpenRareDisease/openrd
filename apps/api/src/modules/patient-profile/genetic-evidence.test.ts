@@ -713,23 +713,101 @@ describe('还没解析出来的上传，顶不掉已经解析出结果的那一�
   });
 });
 
-describe('势均力敌时：读出来更多的赢，然后是更新的，然后是定死的顺序', () => {
-  it('读出来更多的赢，哪怕更旧', () => {
+/**
+ * 两份报告都测了同一段序列时，晚的那一份说了算 —— 而「测没测」问的是
+ * 报告自己说了什么，不是本平台读出了几格。
+ *
+ * 这一组是 `pickGeneticEvidenceDocument` 里 statesLength / time / values
+ * 三层的全部内容，按它们互相压制的顺序排。
+ */
+describe('势均力敌时：先看有没有重复数，再看谁更新，最后才看读出来多少', () => {
+  it('两份都报了重复数时，更新的赢 —— 哪怕它读出来的格数更少', () => {
+    // D4Z4 重复数是一次可以被复检修正的测量，而「读出来几格」是本平台
+    // 抽取管线的属性，不是报告的属性：同样两份报告会因为 OCR 变好或变
+    // 坏而重新排序，患者身上什么都没变。2019 年那份把七个键都读出来了，
+    // 于是压过了患者刚传上来的 2025 年复检 —— 而复检正是因为它是现在
+    // 这一份才被传上来的。
     expect(
       stablePickedId([
         geneticReport(
           'old-full',
           {
             diagnosisType: 'FSHD1',
-            d4z4Repeats: '4',
+            d4z4Repeats: '9',
             haplotype: '4qA',
+            methylationValue: '28%',
             geneticTestMethod: 'southern_blot',
+            diagnosisDate: '2019-05-01',
           },
+          { uploadedAt: '2019-05-02T00:00:00.000Z' },
+        ),
+        geneticReport(
+          'new-thin',
+          { d4z4Repeats: '6', geneticTestMethod: 'optical_genome_mapping' },
+          { uploadedAt: '2025-11-20T00:00:00.000Z' },
+        ),
+      ]),
+    ).toBe('new-thin');
+  });
+
+  it('没报重复数的新报告，压不过报了的旧报告 —— 短读长测序测不了这一段', () => {
+    // 这是「更新的赢」唯一不成立的地方，也是它能成立的前提。短读长
+    // WES 是为鉴别诊断开的，它会顺带报一个 4q 单倍型；本产品引用的指南
+    // 原文写着 D4Z4 的长度与单倍型「cannot be determined by short read
+    // WES- or WGS-like technologies」。一份没测这一段的报告，不能因为
+    // 它更新就顶掉测过的那一份 —— 实测过：这么顶掉之后，患者从
+    // confirmation: genetic 掉成 none。
+    expect(
+      stablePickedId([
+        geneticReport(
+          'southern-2019',
+          { d4z4Repeats: '4', haplotype: '4qA', geneticTestMethod: 'southern_blot' },
+          { uploadedAt: '2019-05-02T00:00:00.000Z' },
+        ),
+        geneticReport(
+          'wes-2026',
+          { haplotype: '4qA', geneticTestMethod: 'short_read_sequencing' },
+          { uploadedAt: '2026-09-01T00:00:00.000Z' },
+        ),
+      ]),
+    ).toBe('southern-2019');
+  });
+
+  it('问的是报告说了什么，不是它自称什么方法', () => {
+    // 检测方法那一格是被降级出第一问的两个记账键之一，绝大多数行上是
+    // unknown；一份没能把阵列测出长度的 Southern blot，不该凭方法标签
+    // 压过更新的那一份。
+    expect(
+      stablePickedId([
+        geneticReport(
+          'blot-no-length',
+          { haplotype: '4qA', geneticTestMethod: 'southern_blot' },
+          { uploadedAt: '2019-05-02T00:00:00.000Z' },
+        ),
+        geneticReport(
+          'ogm-with-length',
+          { d4z4Repeats: '6', geneticTestMethod: 'optical_genome_mapping' },
+          { uploadedAt: '2025-11-20T00:00:00.000Z' },
+        ),
+      ]),
+    ).toBe('ogm-with-length');
+  });
+
+  it('两份都没报重复数时，仍然是更新的赢', () => {
+    expect(
+      stablePickedId([
+        geneticReport(
+          'old-haplotype',
+          { haplotype: '4qA', diagnosisType: 'FSHD1', geneticTestMethod: 'southern_blot' },
           { uploadedAt: '2026-01-01T00:00:00.000Z' },
         ),
-        geneticReport('new-thin', { d4z4Repeats: '5' }, { uploadedAt: '2026-09-01T00:00:00.000Z' }),
+        geneticReport(
+          'new-methylation',
+          { methylationValue: '25%' },
+          { uploadedAt: '2026-09-01T00:00:00.000Z' },
+        ),
       ]),
-    ).toBe('old-full');
+    ).toBe('new-methylation');
   });
 
   it('读出来一样多时，更新的赢 —— 这不是「旧的永远赢」', () => {
@@ -747,6 +825,21 @@ describe('势均力敌时：读出来更多的赢，然后是更新的，然后�
         ),
       ]),
     ).toBe('new');
+  });
+
+  it('日期分不出来时，读出来更多的那一份收尾', () => {
+    // 存量行可能一个 uploadedAt 都没有，两边都落到 0；同一秒传上来的
+    // 两份也一样。这时候「读出来多少」才是最后一道分辨。
+    expect(
+      stablePickedId([
+        geneticReport('thin', { d4z4Repeats: '4' }),
+        geneticReport('full', {
+          d4z4Repeats: '4',
+          haplotype: '4qA',
+          geneticTestMethod: 'southern_blot',
+        }),
+      ]),
+    ).toBe('full');
   });
 
   it('完全平手时按 id 定，所以没改过的档案每次渲染都一样', () => {
@@ -819,6 +912,47 @@ describe('哪些文件根本不参与', () => {
         medicalSummary('summary-with-values', { diagnosisType: 'FSHD1', d4z4Repeats: '4' }),
       ]),
     ).toBe('summary-with-values');
+  });
+
+  it('只读出检测方法的基因报告，也算什么都没说 —— 记账不是结果', () => {
+    // 「说了点什么」问的是 GENETIC_RESULT_KEY_GROUPS，不是「七个键里读
+    // 出了任意一个」。检测方法与诊断日期是记账，不是关于这位患者的结论
+    // —— 这正是 GENETIC_RESULT_KEY_GROUPS 把它们排除在外的理由。
+    //
+    // 而这个状态一点都不罕见：检测方法印在带标签的字段里、结果落在被
+    // OCR 揉坏的表格里，是常态，护照专门为它留了一个等级叫「方法对但
+    // 结果不全」。这条曾经让那份报告压过唯一抄着重复数的病历摘要，
+    // readGeneticEvidence 返回 d4z4: null —— 文件就在档案里，数字从每
+    // 一个界面上消失。
+    const documents = [
+      geneticReport(
+        'method-only',
+        { geneticTestMethod: 'southern_blot' },
+        { uploadedAt: '2026-09-01T00:00:00.000Z' },
+      ),
+      medicalSummary('summary-with-count', { d4z4Repeats: '7' }),
+    ];
+    expect(stablePickedId(documents)).toBe('summary-with-count');
+    expect(readGeneticEvidence(documents).d4z4).toBe('7');
+  });
+
+  it('但它照样压不过读出了结果的基因报告', () => {
+    // 第一问只把它降到「没说话」那一档，没有把它排除在候选之外，也没有
+    // 让它顶掉真读出了结果的实验室报告。
+    expect(
+      stablePickedId([
+        geneticReport(
+          'method-only',
+          { geneticTestMethod: 'southern_blot' },
+          { uploadedAt: '2026-09-01T00:00:00.000Z' },
+        ),
+        geneticReport(
+          'older-with-result',
+          { d4z4Repeats: '4', haplotype: '4qA' },
+          { uploadedAt: '2019-05-02T00:00:00.000Z' },
+        ),
+      ]),
+    ).toBe('older-with-result');
   });
 
   it('只有一份还没解析的报告时，它仍然被点名，但一个值都不供给', () => {

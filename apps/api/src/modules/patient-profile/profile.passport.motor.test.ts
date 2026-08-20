@@ -132,6 +132,80 @@ describe('MMT 单元格：MRC 的 ± 仍然是 ±', () => {
   });
 });
 
+/**
+ * 「L4 / R2」 —— 一格里两次测量。
+ *
+ * 这个字符串不是检查者写的记号，是本平台自己拼的：Python 侧的
+ * `_format_strength` 和 TS 桥的 `formatAggregateStrength` 都把体格检查
+ * 抽取器逐侧产出的 `mrc_score` 折成 `f"L{left} / R{right}"`，落到
+ * `deltoid_strength` 和它的四个兄弟键上。
+ *
+ * `parseScore` 只取一格里第一个像等级的数，于是这一对塌成了左侧那一个
+ * —— 右侧被无声丢掉，左侧被当成这块肌肉的肌力投进 平均肌力。FSHD 本来
+ * 就是不对称的，两侧之间的差就是所见本身。
+ */
+describe('MMT 单元格：一格写了两侧时，两侧都要算', () => {
+  it.each([
+    ['L4 / R2', '3.0'],
+    ['L2 / R4', '3.0'],
+    ['L4+ / R3-', '3.5'],
+    // 单侧照旧，一格一票。
+    ['R2', '2.0'],
+    ['L4', '4.0'],
+  ])('%s → %s', (cell, expected) => {
+    expect(averageFor(cell)).toBe(expected);
+  });
+
+  it('读错的方向由排版决定 —— 一位读得比实际强，下一位读得比实际弱', () => {
+    // 同一个缺陷，两个患者，方向相反：塌成左侧之后 L4/R2 读作 4.0，
+    // L2/R4 读作 2.0，而两者真实的平均都是 3.0。
+    expect(averageFor('L4 / R2')).toBe(averageFor('L2 / R4'));
+  });
+
+  it('一侧是区间时，只丢掉它自己那一票，不连累另一侧', () => {
+    // 区间检测原本扫的是整格，于是「L4-5 / R3」整格作废 —— 右侧那个没
+    // 人有异议的 3 级也一起没了。
+    expect(averageFor('L4-5 / R3')).toBe('3.0');
+    // 两侧都是区间时，才真的没有数。
+    expect(averageFor('L4-5 / R3-4')).toBe('—');
+  });
+
+  it('「4/5」不是两侧 —— 没有 L/R 就不拆', () => {
+    // 4 out of 5，MMT 单个等级最常见的写法。斜杠本身不是侧别标记。
+    expect(averageFor('4/5')).toBe('4.0');
+  });
+
+  it('多块肌肉时，一票一次测量 —— 跟 App 内录入用同一条规则', () => {
+    // `buildClinicalPassportSummary` 对 App 内录入的评分是按 (肌群, 侧)
+    // 平均的：左三角肌 2 和右三角肌 5 平均成 3.5，谁都不消失。报告读出
+    // 来的等级是同一种东西，现在按同一种方式计票。
+    const summary = buildClinicalPassportSummary(
+      base({
+        documents: [exam({ deltoidStrength: 'L4 / R2', bicepsStrength: 'L3 / R3' })],
+      } as never),
+    );
+    expect(summary.motor.average).toBe('3.0');
+  });
+
+  it('两侧照常原样印在摘要里，分隔符也照原样', () => {
+    const summary = buildClinicalPassportSummary(
+      base({ documents: [exam({ deltoidStrength: 'L4 / R2' })] } as never),
+    );
+    expect(summary.motor.summary).toContain('三角肌L4 / R2');
+  });
+
+  it('导出里印的是两侧算出来的那个数', () => {
+    const { markdown } = buildClinicalPassportExport(
+      buildClinicalPassportSummary(
+        base({ documents: [exam({ deltoidStrength: 'L4 / R2' })] } as never),
+      ),
+    );
+    expect(markdown).toContain('- 平均肌力：3.0 级');
+    // 左侧那个数不再作为这块肌肉的肌力出现在这一行上。
+    expect(markdown).not.toContain('- 平均肌力：4.0 级');
+  });
+});
+
 describe('App 内录入的肌力不受影响', () => {
   const measurement = (score: number, muscleGroup: string) => ({
     id: `m-${muscleGroup}`,

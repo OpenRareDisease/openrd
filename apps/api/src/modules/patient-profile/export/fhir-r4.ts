@@ -1,6 +1,8 @@
 import { buildCodingProvenance, verifiedCoding, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
+  archiveOnlyGeneticCells,
+  archivedGeneticCellCount,
   deterministicUuid,
   diagnosisTypeMarkerPath,
   diagnosisTypeSourceZh,
@@ -12,6 +14,7 @@ import {
   instrumentOmission,
   originNoteZh,
   resourceUuid,
+  GENETIC_ARCHIVE_CELL_LABELS_ZH,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type NormalisedSource,
 } from './export-source.js';
@@ -22,10 +25,13 @@ import {
   FOLLOWUP_EVENT_LABELS,
   FOLLOWUP_EVENT_SEVERITY_LABELS,
   FUNCTION_TEST_LABELS,
-  MUSCLE_GROUP_LABELS,
   SIDE_LABELS,
   SYMPTOM_LABELS,
+  UNNAMED_MEASUREMENT_SUBJECT_ZH,
   labelFor,
+  measurementMovementZh,
+  measurementSubjectZh,
+  unnamedMeasurementNoteZh,
 } from './labels.js';
 import { toPartialFhirDate } from './occurrence-date.js';
 
@@ -110,6 +116,20 @@ export interface FhirBundle {
 const CLINICAL_STATUS_SYSTEM = 'http://terminology.hl7.org/CodeSystem/condition-clinical';
 const VERIFICATION_STATUS_SYSTEM = 'http://terminology.hl7.org/CodeSystem/condition-ver-status';
 const OBSERVATION_CATEGORY_SYSTEM = 'http://terminology.hl7.org/CodeSystem/observation-category';
+
+/**
+ * The Chinese rendering of each `ReportField['category']`.
+ *
+ * Every member of the union has a row, so adding a fourth category to
+ * `ReportField` fails the build here rather than silently inheriting
+ * 「检验」 — which is what the two-branch ternary this replaces did to the
+ * `exam` member for as long as no spec used it.
+ */
+const REPORT_CATEGORY_LABELS_ZH: Readonly<Record<'laboratory' | 'exam' | 'imaging', string>> = {
+  laboratory: '检验',
+  exam: '体格检查',
+  imaging: '影像',
+};
 /**
  * FHIR's own answer to 「there is no value here, and this is why」.
  *
@@ -557,6 +577,15 @@ export const buildFhirExport = (
 
   profile.measurements.forEach((measurement) => {
     const sideLabel = measurement.side ? `（${labelFor(SIDE_LABELS, measurement.side)}）` : '';
+    // `measurementSubjectZh`, not `labelFor(MUSCLE_GROUP_LABELS, …)`.
+    // The shipped 用力闭眼 self-test writes a row with NO muscle group on
+    // every submission, `addMeasurement` stores it as the sentinel
+    // 「custom」, and the raw-key fallback published `code.text` =
+    // 「custom肌力（不分左右）」 — an MRC 4 on a muscle named 「custom」, with
+    // the `metricKey` that says it was facial strength carried nowhere in
+    // this bundle. See labels.ts.
+    const subjectZh = measurementSubjectZh(measurement.muscleGroup, measurement.metricKey);
+    const movementZh = measurementMovementZh(measurement.muscleGroup, measurement.metricKey);
     candidates.push({
       sortAt: sortKey(measurement.recordedAt),
       resource: {
@@ -566,9 +595,7 @@ export const buildFhirExport = (
         category: [
           { coding: [{ system: OBSERVATION_CATEGORY_SYSTEM, code: 'exam' }], text: '体格检查' },
         ],
-        code: codeableText(
-          `${labelFor(MUSCLE_GROUP_LABELS, measurement.muscleGroup)}肌力${sideLabel}`,
-        ),
+        code: codeableText(`${subjectZh ?? UNNAMED_MEASUREMENT_SUBJECT_ZH}${sideLabel}`),
         subject: { reference: patientRef },
         effectiveDateTime: measurement.recordedAt,
         valueQuantity: { value: measurement.strengthScore, unit: 'MRC 分级（0–5，5 为正常）' },
@@ -579,6 +606,14 @@ export const buildFhirExport = (
                 ? '由临床人员录入。'
                 : '患者自评或在应用引导下自测，非临床环境下的标准化徒手肌力测试。',
           },
+          ...(movementZh ? [{ text: `记录时做的动作是「${movementZh}」。` }] : []),
+          ...(subjectZh === null
+            ? [
+                {
+                  text: unnamedMeasurementNoteZh(measurement.muscleGroup, measurement.metricKey),
+                },
+              ]
+            : []),
         ],
       },
     });
@@ -777,15 +812,18 @@ export const buildFhirExport = (
         ...(field.transcribedGeneticReading
           ? {}
           : {
+              // A TABLE, not a two-branch ternary. Both branches read
+              // 「imaging or else laboratory」, which was true while the
+              // only two categories in use were those two — and
+              // `ReportField['category']` has always had a THIRD member.
+              // The MRC grades an examiner writes into 体格检查 are that
+              // member: with the ternary they would have gone out coded
+              // `exam` and labelled 「检验」, telling a receiver a
+              // laboratory produced a hand-graded muscle test.
               category: [
                 {
-                  coding: [
-                    {
-                      system: OBSERVATION_CATEGORY_SYSTEM,
-                      code: field.category === 'imaging' ? 'imaging' : field.category,
-                    },
-                  ],
-                  text: field.category === 'imaging' ? '影像' : '检验',
+                  coding: [{ system: OBSERVATION_CATEGORY_SYSTEM, code: field.category }],
+                  text: REPORT_CATEGORY_LABELS_ZH[field.category],
                 },
               ],
             }),
@@ -915,6 +953,13 @@ export const buildFhirExport = (
           // the value is present and is published; what is absent is a
           // judgement, and R4 has no element for that.
           ...(field.notJudgedZh ? [{ text: field.notJudgedZh }] : []),
+          // HOW TO READ `valueString`, where its printed form is this
+          // platform's own encoding rather than the report's. The MRC
+          // cells fold both sides of a muscle into one string as
+          // 「L4 / R3」; a receiver who takes the two in the other order
+          // has the weak side and the strong side swapped, and that is
+          // the direction a clinician acts on. See `ReportField.readingNoteZh`.
+          ...(field.readingNoteZh ? [{ text: field.readingNoteZh }] : []),
           ...(field.transcribedGeneticReading
             ? [
                 {
@@ -1099,12 +1144,58 @@ export const buildFhirExport = (
     });
   }
 
+  // A GENETIC VALUE THE ARCHIVE HOLDS AND THE EVIDENCE DOCUMENT DOES
+  // NOT STATE — carried by TREAT-NMD, declared by the Phenopacket, and
+  // until now neither carried nor mentioned here.
+  //
+  // Every genetic Observation in this bundle is built from
+  // `source.reportFields`, and a `ReportField` exists only where the
+  // document `pickGeneticEvidenceDocument` named had a cell for it. A
+  // 甲基化 answered on the baseline questionnaire, beside a report that
+  // says nothing about methylation, therefore produced no Observation —
+  // and the entry below this one used to end 「the readings themselves
+  // all travel now」, which was true of the readings that come off the
+  // document and false of this one. A receiver comparing this bundle
+  // against the TREAT-NMD document for the same patient in the same hour
+  // found a value in one and nothing in the other, with nothing here
+  // accounting for the difference.
+  //
+  // UNCONDITIONAL, and the list of cells is in the sentence rather than
+  // gated on which of them this profile has: a bundle built for a
+  // patient with no archived genetic answers still has to tell its
+  // receiver that this route exists and that this bundle does not carry
+  // it, or 「no methylation Observation」 stays unreadable. The names of
+  // the cells that ARE in this state are appended when there are any, so
+  // the specific gap is nameable without the general rule going quiet.
+  //
+  // NOT EMITTED. An archived answer has no `derivedFrom`: nothing on
+  // this platform can say which report it was copied off, or whether it
+  // was copied off one at all. Publishing it as an Observation with no
+  // provenance under a code a registry maps as a genotype is the exact
+  // trade this file refuses everywhere else — see the `category` note on
+  // the transcribed readings. TREAT-NMD can carry it because every one
+  // of its items carries a `provenanceZh` saying what the value is; this
+  // format has no element that means 「archived answer, source unknown」.
+  const archivedOnly = archiveOnlyGeneticCells(source);
+  omissions.push({
+    field: 'Observation（只存在于档案里、报告上没有的基因读数）',
+    reasonZh: `本 Bundle 里的基因结果 Observation 只来自本平台读作这份档案基因证据的那一份上传件：报告上有那一项，才有对应的 Observation。基线问卷另外为${GENETIC_ARCHIVE_CELL_LABELS_ZH.join('、')}各留了输入框，患者或本平台工作人员填进去的值存在档案里；这类值本 Bundle 一律不承载，因为它没有可指向的 derivedFrom——本平台没有记录它当初是从哪一份报告抄来的，甚至没有记录它是不是抄来的，而把一个来源不明的值写成 Observation 会被登记方当作实验室结果导入。${
+      archivedOnly.length > 0
+        ? `本次导出正处在这种状态的是：${archivedOnly.map((cell) => cell.labelZh).join('、')}。这些值连同各自的来源说明在 TREAT-NMD 对齐导出的 diagnosis 一节里给出。`
+        : archivedGeneticCellCount(source) > 0
+          ? '本次导出没有处在这种状态的项目：档案里填了值的那几项，报告上也都有，因此它们都以 Observation 出现在本 Bundle 里。'
+          : '本次导出没有处在这种状态的项目，原因是这份档案的这三个输入框一个都没有值——不是「填了而且和报告一致」。'
+    }请不要把这类项目在本 Bundle 里的缺席读成患者没有做过对应的检测。`,
+  });
+
   // WHAT THE PASSPORT'S 诊断 BLOCK HOLDS AND THIS BUNDLE DOES NOT.
   //
   // Unconditional, because it is about what this exporter does and not
-  // about which resources a particular profile produced. The readings
-  // themselves all travel now — 甲基化 and the EcoRI fragment were the
-  // two that did not — so what is left is this platform's judgement of
+  // about which resources a particular profile produced. Every reading
+  // the EVIDENCE DOCUMENT states travels now — 甲基化 and the EcoRI
+  // fragment were the two that did not, and an archived answer the
+  // document is silent about is declared in the entry immediately above
+  // rather than carried — so what is left is this platform's judgement of
   // the report, the copy written around that judgement, the assay
   // method, and the patient's own answer about their diagnostic
   // journey. Declared rather than emitted for the reason the TREAT-NMD

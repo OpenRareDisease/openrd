@@ -535,7 +535,12 @@ const getTimestamp = (value: string | null | undefined) => {
 /** How much of the diagnosis block this document can supply. Zero for a
  *  document whose parse has not landed: such a row has no payload,
  *  because the upload path inserts it empty and the reparse path blanks
- *  it before the job starts. */
+ *  it before the job starts.
+ *
+ *  IT COUNTS ALL SEVEN KEYS, 检测方法 AND 诊断日期 INCLUDED, and two of
+ *  those are bookkeeping rather than a statement about this patient —
+ *  which is why it is no longer what the first question below asks. See
+ *  `GENETIC_RESULT_KEY_GROUPS`. */
 const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
   const fields = payloadFields(document);
   if (!fields) return 0;
@@ -549,7 +554,7 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * carrying a genetic RESULT — a 病历摘要 quoting the repeat count is the
  * only copy some patients have. Among candidates the order is:
  *
- * IT SAYS SOMETHING. A document this platform has read nothing off
+ * IT STATES A RESULT. A document this platform has read no RESULT off
  * cannot be the evidence for anything. That is what stops a new upload
  * from emptying the page: the row sits in `processing` with no payload
  * for as long as the parse takes, a parse that raises lands in
@@ -558,6 +563,14 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * when nothing else is on file, so the page can still say when
  * something was last uploaded; it supplies no value, which is the
  * honest answer for a file we have not read.
+ *
+ * THE QUESTION IS `GENETIC_RESULT_KEY_GROUPS` AND NOT 「it yielded any
+ * field」. It was `countGeneticValues(document) > 0` over all seven
+ * keys, and 检测方法 / 诊断日期 are bookkeeping: a report whose parse
+ * read its method label and lost the result to a mangled table scored 1
+ * and ranked as a document that had spoken — outranking a 病历摘要
+ * carrying the patient's only surviving copy of their repeat count, and
+ * deleting that number from every screen.
  *
  * THEN THE LABORATORY, ahead of anything else and ahead of how much
  * either carries. Ranking by information content first is how a 病历摘要
@@ -569,12 +582,27 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * otherwise equal — a legacy row carrying fields from a pre-async
  * extraction path, against a row the current pipeline finished.
  *
- * THEN RICHER, and only then newer. `parsed` is a statement about the
- * job, not about the document: it means the extractor returned, and a
- * `parsed` row that extracted nothing is recoverable by re-running the
- * same file — the file did not change, the parser did. So a newer
- * report's SILENCE about a value is not a measurement, and letting it
- * delete a real one is the same erasure with a slower fuse.
+ * THEN THE ONE THAT STATES A D4Z4 LENGTH. 重复数 is not one of five
+ * equal rows: it is the value the FSHD1 boundary is drawn against and
+ * the one 基因确诊 is decided by, and the others qualify it. A report
+ * that states one and a report that does not are not two datings of the
+ * same thing. A short-read WES reports a 4q haplotype and states no
+ * length — the guideline says that method 「cannot be determined by
+ * short read WES- or WGS-like technologies」 — and letting it outrank an
+ * older Southern blot on date alone took a confirmed patient from
+ * 基因确诊 to 未确诊, measured. Asked of what the report SAID, not of
+ * `geneticTestMethod`, which is one of the demoted bookkeeping keys and
+ * is `unknown` on most rows.
+ *
+ * THEN NEWER, AND ONLY THEN RICHER — this pair was the other way round.
+ * A count of parsed fields is a fact about THIS PLATFORM'S EXTRACTION,
+ * not about the document: an OCR change re-ranks the same two reports
+ * with nothing about the patient having changed. Two reports that both
+ * sized the array are two datings of one measurement, and a repeat count
+ * is the value a re-test exists to revise, so the later one is the one
+ * the laboratory stands behind. The erasure argument does not reach here
+ * — 「a newer report's silence must not delete an older reading」 is
+ * discharged by the two questions above it.
  *
  * THEN `id`, so an unchanged profile re-renders identically.
  *
@@ -599,6 +627,7 @@ export const pickGeneticEvidenceDocument = <T extends GeneticEvidenceDocumentLik
         document,
         typed: isLaboratoryGeneticReport(document),
         carriesResult: GENETIC_RESULT_KEY_GROUPS.some((keys) => pickReading(fields, keys)),
+        statesLength: Boolean(pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats)),
         values: countGeneticValues(document),
         parseLanded: PARSE_LANDED_STATUSES.has(document.status ?? ''),
         time: getTimestamp(document.uploadedAt),
@@ -609,11 +638,12 @@ export const pickGeneticEvidenceDocument = <T extends GeneticEvidenceDocumentLik
   return (
     candidates.sort(
       (a, b) =>
-        Number(b.values > 0) - Number(a.values > 0) ||
+        Number(b.carriesResult) - Number(a.carriesResult) ||
         Number(b.typed) - Number(a.typed) ||
         Number(b.parseLanded) - Number(a.parseLanded) ||
-        b.values - a.values ||
+        Number(b.statesLength) - Number(a.statesLength) ||
         b.time - a.time ||
+        b.values - a.values ||
         (a.document.id < b.document.id ? -1 : a.document.id > b.document.id ? 1 : 0),
     )[0]?.document ?? null
   );

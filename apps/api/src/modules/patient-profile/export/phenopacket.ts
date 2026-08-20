@@ -12,9 +12,11 @@ import {
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
   instrumentOmission,
+  reportReadingsOmission,
   resourceUuid,
   heldDatePrecision,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
+  REPORT_READING_KEYS,
   type HeldDatePrecision,
   type NormalisedSource,
 } from './export-source.js';
@@ -358,10 +360,26 @@ export const buildPhenopacketExport = (
   // wrong push, which is how the two got swapped in the first place —
   // so the block and the push it describes now travel together, and
   // 「下一条」 resolves to the entry that answers it.
+  //
+  // AND THE POINTER SENTENCE NO LONGER PROMISES SOMETHING THE FHIR
+  // BUNDLE DOES NOT DO. It read 「凡是本平台从这份档案上读到过或档案里记着的，
+  // 都…出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的
+  // Observation 里」, and the second half of that 「或」 is false: the FHIR
+  // bundle builds its genetic Observations out of `reportFields`, which
+  // exist only where the evidence DOCUMENT had a cell. A 甲基化 answered
+  // on the baseline questionnaire beside a report that never mentions
+  // methylation is in TREAT-NMD and in neither of the other two — so
+  // this document was sending its receiver to a bundle that does not
+  // hold the value, which is worse than the silence it replaced: a
+  // receiver who follows a pointer and finds nothing concludes the
+  // patient has nothing. The two routes are now named separately, and
+  // the FHIR bundle declares the archive-only case in its own omissions
+  // (`archiveOnlyGeneticCells` in export-source.ts is the one reading
+  // both files ask).
   omissions.push({
     field: 'diseases / measurements（基因报告上的读数）',
     reasonZh:
-      '本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项里，凡是本平台从这份档案上读到过或档案里记着的，都连同各自的来源说明出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里；这份档案上没有的那几项，那两份导出里同样没有条目，不要把它们的缺席读成本文件把它们藏起来了。其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。',
+      '本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项在另外两份导出里分两条路走，请按路找：本平台从这份档案的基因证据文件上直接读到的那几项，连同各自的来源说明，出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里；只记在本平台档案里、而那份报告上没有的那几项（基线问卷为 D4Z4 重复单元数、4q 单倍型与甲基化各留了输入框），只出现在 TREAT-NMD 对齐导出里，FHIR 导出不承载它们并在它自己的 omissions 里说明原因。哪一项都没有的，三份导出里都没有条目，不要把它们的缺席读成本文件把它们藏起来了。其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。',
   });
   // The judgement half of the same sweep. This packet's only clinical
   // assertion is `Disease.term`, so everything the passport's 诊断 block
@@ -515,6 +533,34 @@ export const buildPhenopacketExport = (
       // item in this document to point at, and the sentence must not
       // sound as though there is.
       '本文件连跌倒这件事本身都不承载（见上一条），因此这里没有可供参照的条目；跌倒的日期与严重程度见 TREAT-NMD 对齐导出的 followupEvents 与 FHIR 导出的 Observation，上面那五项则哪一份都没有。',
+    ),
+  );
+  // THE READINGS PARSED OFF THE PATIENT'S OWN UPLOADED REPORTS.
+  //
+  // `measurements` above declares the STRENGTH and FUNCTION TEST rows —
+  // the ones the patient or a clinician entered through this product —
+  // and it was read for years as if it covered everything a Measurement
+  // could have held. It did not: CK, 肌红蛋白, LDH, CK-MB, FVC%pred,
+  // TLC%pred, DLCO%pred, LVEF, QTc, 前锯肌脂肪化等级 and the five MRC
+  // grades this platform parses off uploaded reports are a different
+  // store, reached through `source.reportFields`, which this file has
+  // never read. Same failure shape as the falls diary two entries below:
+  // a declaration that is true about a neighbouring fact reads as
+  // covering the one beside it.
+  //
+  // Its own entry rather than a clause on `measurements` for exactly
+  // that reason — and because the reason differs. Those rows have no
+  // assay term; these have a report, a date and a laboratory behind
+  // them, and one of them (FVC%pred) does have a ledgered LOINC. What
+  // stops them is the same ontology-first constraint applied to a set
+  // codings.ts has verified only a corner of, so publishing the corner
+  // as `measurements` and dropping the rest would be worse than
+  // declaring the set.
+  omissions.push(
+    reportReadingsOmission(
+      'measurements（检验、肺功能、心脏、影像与体格检查的报告解析读数）',
+      source.reportFields.filter((field) => REPORT_READING_KEYS.includes(field.key)).length,
+      'Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC）。codings.ts 为其中几项登记了候选的 LOINC 编码，但一条都没有通过核对——本仓库内没有 LOINC 发行版，也没有任何带 LOINC 的文件可以对照，每一条候选都写着自己为什么没被核对。因此这些项目一个都没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些读数连同各自的来源文件在 FHIR 导出里以 Observation 给出（那份导出同样不写编码，只写显示名；TREAT-NMD 对齐导出则两者都不承载，并在它自己的 omissions 里说明）。',
     ),
   );
   // The remainder, in one entry because they share one reason: this

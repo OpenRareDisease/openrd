@@ -856,10 +856,23 @@ const getTimestamp = (value: string | null) => {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
-/** How much of the diagnosis block this document can supply. Zero for a
- *  document whose parse has not landed: a row in `processing` has no
- *  payload at all, because the upload path inserts it empty and the
- *  reparse path nulls `ocr_payload` before it starts the job. */
+/**
+ * How much of the diagnosis block this document can supply. Zero for a
+ * document whose parse has not landed: a row in `processing` has no
+ * payload at all, because the upload path inserts it empty and the
+ * reparse path nulls `ocr_payload` before it starts the job.
+ *
+ * IT COUNTS ALL SEVEN KEYS, 检测方法 AND 诊断日期 INCLUDED, AND THAT IS
+ * ONLY SAFE WHERE IT IS NOW USED. This number once decided the picker's
+ * FIRST question — 「did this document say anything」 — and two of the
+ * seven things it counts are not the document saying anything about this
+ * patient: a report whose parse yielded nothing but 检测方法：Southern
+ * blot scored 1 and was ranked as a document that had spoken. See
+ * `GENETIC_RESULT_KEY_GROUPS`, which excludes both keys for exactly that
+ * reason and is what the first question asks now. This is a measure of
+ * how much of the block a document can FILL, which is the right measure
+ * for the last tiebreak and the wrong one for the gate.
+ */
 const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
   const fields = payloadFields(document);
   if (!fields) return 0;
@@ -873,7 +886,7 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * carrying a genetic RESULT — a 病历摘要 that quotes the repeat count is
  * the only copy some patients have. Among candidates the order is:
  *
- * IT SAYS SOMETHING. A document this platform has read nothing off
+ * IT STATES A RESULT. A document this platform has read no RESULT off
  * cannot be the evidence for anything. That is what stops a new upload
  * from emptying a passport: the row sits in `processing` with no
  * payload for as long as the parse takes, a parse that raises lands in
@@ -886,12 +899,27 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * still say when the patient last uploaded something; it supplies no
  * value, which is the honest answer for a file we have not read.
  *
+ * THE QUESTION IS `GENETIC_RESULT_KEY_GROUPS` AND NOT 「it yielded any
+ * field」, and the difference is a real state this platform models. It
+ * was `countGeneticValues(document) > 0`, over all seven keys — and two
+ * of those seven, 检测方法 and 诊断日期, are bookkeeping rather than a
+ * statement about this patient. A genetics report whose parse read its
+ * method label off a printed field and lost the result to a mangled
+ * table scored 1 and ranked as a document that had spoken. That is not
+ * a rare miss; the passport has a grade named for it, 方法对但结果不全.
+ * Executed on the pair: that report outranked a 病历摘要 carrying the
+ * patient's only surviving copy of their repeat count, and
+ * `readGeneticEvidence` returned `d4z4: null` — the value deleted from
+ * every surface while the document holding it sat on file. The module's
+ * own rule below says the transcription is picked exactly then; the
+ * seven-key count is what made that rule false.
+ *
  * THEN THE LABORATORY, ahead of anything else, and ahead of how much
  * either carries. Ranking by information content first is how a 病历摘要
  * quoting a repeat count came to outrank the genetics report it was
  * quoting: a transcription is not a measurement, and a sparse report
  * from the laboratory is still the laboratory. The one place this
- * yields is above — where the genetics report read out nothing at all,
+ * yields is above — where the genetics report stated no result at all,
  * the transcription is what there is.
  *
  * AND WHERE IT YIELDS, THE ANSWER IS STILL CARRIED. This function
@@ -906,15 +934,132 @@ const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
  * pre-async extraction path, against a row the current pipeline
  * finished.
  *
- * THEN RICHER, and only then newer. `parsed` is a statement about the
- * job, not about the document: it means the extractor returned, and
- * `reparseDocument` treats a `parsed` row that extracted nothing as a
+ * THEN THE ONE THAT STATES A D4Z4 LENGTH, WHICH IS WHAT MAKES RECENCY
+ * SAFE BELOW IT.
+ *
+ * 重复数 is not one of five equal rows. It is the value the FSHD1
+ * boundary is drawn against (`FSHD1_MAX_REPEAT_UNITS`), the value the
+ * grey-zone counselling is written off, and the value 基因确诊 and
+ * 可用于入组 are decided by; the other readings qualify it. So a report
+ * that states one and a report that does not are not two datings of the
+ * same thing, and ordering them by date is a category error.
+ *
+ * IT IS ASKED HERE BECAUSE PLAIN RECENCY FAILED ON IT, measured. A
+ * short-read WES is ordered for a differential and reports a 4q
+ * haplotype off short reads; the guideline this product quotes says in
+ * as many words that D4Z4 length and haplotype 「cannot be determined by
+ * short read WES- or WGS-like technologies」, and such a report states
+ * no length at all. Driven through the passport: a patient with a 2019
+ * Southern blot reading D4Z4 4 / 4qA who later uploads that WES went
+ * from `confirmation: genetic`, D4Z4 4, FSHD1 — to `confirmation:
+ * none`, D4Z4 —, 分型 —. A genetically confirmed patient told they are
+ * not, by a report that never measured the thing. A newer assay
+ * supersedes an older one only where it MEASURED the same thing, and
+ * whether it did is a question this module can answer without a method
+ * vocabulary: it either stated a length or it did not.
+ *
+ * ASKED OF THE READING AND NOT OF `geneticTestMethod` on purpose. The
+ * method cell is one of the two bookkeeping keys demoted out of the
+ * first question above, it is `unknown` on every row whose parse did not
+ * reach it, and a Southern blot that failed to size the array should not
+ * outrank a newer report on the strength of its method label. What the
+ * report SAID is the fact about the document; what it was CALLED is not.
+ * Determinacy is deliberately not asked here either — 「35 kb」 and a
+ * range are both the report stating a length, and which of them can
+ * carry a grade is `parseD4Z4Reading`'s question, asked of the winner.
+ *
+ * THEN NEWER, AND ONLY THEN RICHER. This pair was the other way round,
+ * and 「richer」 was measured over all seven keys, so a 2019 Southern
+ * blot that happened to yield its 分型, 单倍型, EcoRI 片段, 甲基化,
+ * 检测方法 and 诊断日期 outranked the 2025 re-test the patient uploaded
+ * because it is their current one. Driven through the passport on a
+ * synthetic pair whose counts differ across the FSHD1 grey-zone
+ * boundary: the 2019 report's 9 was printed as 报告读取, the citation
+ * chip named the 2019 document, and the grey-zone counselling paragraph
+ * — 「你的 D4Z4 重复单元数是 9，落在指南所说的 8–10 单元灰区」 — was
+ * written to a patient whose laboratory has since measured 6, which is
+ * not in the grey zone at all. The count drives the FSHD1 boundary, the
+ * trial-readiness grade and the assistant's answers, so the stale one is
+ * not a stale display; it is a superseded measurement presented as
+ * current.
+ *
+ * WHY RECENCY IS THE RIGHT KEY AND FIELD COUNT IS NOT. A count of parsed
+ * fields is a fact about THIS PLATFORM'S EXTRACTION, not about the
+ * document or the patient: the same two reports re-rank on an OCR
+ * improvement or a parser regression, with nothing about the patient
+ * having changed. An upload date is a fact about the documents. Two
+ * reports that both sized the array are two datings of one measurement,
+ * and a repeat count is the value a re-test exists to revise — Southern
+ * blot sizing is imprecise and the boundary it is graded against is ten.
+ * The later one is the one the laboratory stands behind.
+ *
+ * THE ERASURE ARGUMENT DOES NOT REACH THIS TIER, which is why the pair
+ * could be swapped at all. 「A newer report's silence must not delete an
+ * older reading」 is discharged twice over above it: a document stating
+ * no result never outranks one that does, and a document stating no
+ * LENGTH never outranks one that does. What is left here is two reports
+ * that both sized the same array, and between those 「richer」 means
+ * 「more fields parsed」, not 「more true」.
+ *
+ * WHAT IT COSTS, PLAINLY: where the newer report states a length and the
+ * older stated a length plus four qualifiers, those four go blank rather
+ * than being filled from the older document. That is the ONE-DOCUMENT
+ * rule below doing what it is for.
+ *
+ * AND THE SHARPEST CASE OF THAT COST IS 基因确诊 ITSELF, STATED SO THAT
+ * NOBODY HAS TO REDISCOVER IT. The guideline grades on TWO items,
+ * length and 单倍型, and both must be on the ONE report being graded. So
+ * a patient whose 2019 blot read 9 / 4qA and whose 2025 re-test read 6
+ * with the haplotype NOT parsed off it goes from `confirmation: genetic`
+ * to `none` — measured, on that exact synthetic pair. Where the re-test's
+ * haplotype IS parsed, the count updates to 6 and the confirmation
+ * stands; the loss is entirely an extraction gap on the newer document.
+ *
+ * IT IS STILL THE RIGHT SIDE OF THE TRADE, and the reason is the one
+ * this whole module is built on. What the passport claims is 「this is
+ * your genetic evidence, read off report X」, and every sentence under
+ * that heading has to be true OF REPORT X. 「This report states a length
+ * and no haplotype, so it is not by itself a two-item molecular
+ * diagnosis」 is TRUE of the 2025 report, it is visible, it has a grade
+ * of its own (结果不全) and a next step that names the missing item and
+ * says the original laboratory can usually amend it from the existing
+ * sample, and a re-parse recovers it. The alternative claim — 「your
+ * genetic evidence is the 2019 report, D4Z4 9」 — is FALSE about this
+ * patient's current state, carries 报告读取 beside it, fires the 8–10
+ * grey-zone counselling paragraph at somebody whose laboratory has since
+ * measured 6, and offers no remedy because nothing on any page says a
+ * newer report exists. An absent 单倍型 is visibly absent; a superseded
+ * repeat count is invisible, and it is the one that reaches a guideline
+ * boundary.
+ *
+ * The old ordering did not PROTECT that confirmation either, it only
+ * happened to: it preserved the older report whenever the older report
+ * was the richer one, which is a fact about which page our OCR read
+ * better and not about which report is this patient's evidence.
+ *
+ * THE CLOCK IS `uploadedAt`, AND ITS LIMIT IS KNOWN. A report states its
+ * own date, and the passport reads it as `reportTime` for the 基因检测
+ * row — so the sharper rule would be 「the report's own date, else the
+ * upload」. It is not used here on purpose: `reportTime` is absent on
+ * every row whose parse did not reach it, so the comparison would mix an
+ * exact date against an upper bound, and a well-parsed OLD report would
+ * outrank a thinly-parsed NEW one on the strength of being read better —
+ * the same 「rank by our own extraction」 failure this tier was just
+ * moved to end, reached from the other side. The state it would improve
+ * is a patient bulk-uploading their history at registration, where the
+ * upload times differ by seconds and the winner is whichever file they
+ * picked second; that is arbitrary rather than systematic, and it is
+ * stable, which the tiebreaks below guarantee.
+ *
+ * `parsed` remains a statement about the job and not about the document
+ * — `reparseDocument` treats a `parsed` row that extracted nothing as a
  * failure wearing a success label, recoverable by re-running the same
- * file — the file did not change, the parser did. So a newer report's
- * SILENCE about D4Z4 重复数 is not a measurement, and letting it delete
- * a real one is the same erasure with a slower fuse. `needs_review` is
- * ranked by what it carries like any other: the reviewer flag is about
- * confidence in fields that ARE there.
+ * file. `needs_review` is ranked by what it carries like any other: the
+ * reviewer flag is about confidence in fields that ARE there.
+ *
+ * THEN RICHER, which now settles only what the dates cannot: two rows
+ * uploaded in the same instant, and the archived rows that carry no
+ * `uploadedAt` at all and tie at zero.
  *
  * THEN `id`, so an unchanged profile re-renders byte-identical.
  *
@@ -939,6 +1084,7 @@ export const pickGeneticEvidenceDocument = <T extends GeneticEvidenceDocumentLik
         document,
         laboratory: isLaboratoryGeneticReport(document),
         carriesResult: GENETIC_RESULT_KEY_GROUPS.some((keys) => pickReading(fields, keys)),
+        statesLength: Boolean(pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats)),
         values: countGeneticValues(document),
         parseLanded: PARSE_LANDED_STATUSES.has(document.status ?? ''),
         time: getTimestamp(document.uploadedAt),
@@ -949,11 +1095,12 @@ export const pickGeneticEvidenceDocument = <T extends GeneticEvidenceDocumentLik
   return (
     candidates.sort(
       (a, b) =>
-        Number(b.values > 0) - Number(a.values > 0) ||
+        Number(b.carriesResult) - Number(a.carriesResult) ||
         Number(b.laboratory) - Number(a.laboratory) ||
         Number(b.parseLanded) - Number(a.parseLanded) ||
-        b.values - a.values ||
+        Number(b.statesLength) - Number(a.statesLength) ||
         b.time - a.time ||
+        b.values - a.values ||
         (a.document.id < b.document.id ? -1 : a.document.id > b.document.id ? 1 : 0),
     )[0]?.document ?? null
   );

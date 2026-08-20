@@ -752,6 +752,10 @@
       "reasonZh": "直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。这里说的是：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（那是第三人的姓名，本 Bundle 不写 Condition.asserter，也不建 Practitioner 资源）、联系电话与邮箱、常住地区，以及本平台内部的患者编号。前三项只出现在 TREAT-NMD 对齐导出的 localOnly 节，且只在明确请求本地留存版本时出现；联系方式、常住地区与患者编号三份可携带导出都不承载，需要请直接向患者索取。"
     },
     {
+      "field": "Observation（只存在于档案里、报告上没有的基因读数）",
+      "reasonZh": "本 Bundle 里的基因结果 Observation 只来自本平台读作这份档案基因证据的那一份上传件：报告上有那一项，才有对应的 Observation。基线问卷另外为D4Z4 重复单元数、4q 单倍型、甲基化各留了输入框，患者或本平台工作人员填进去的值存在档案里；这类值本 Bundle 一律不承载，因为它没有可指向的 derivedFrom——本平台没有记录它当初是从哪一份报告抄来的，甚至没有记录它是不是抄来的，而把一个来源不明的值写成 Observation 会被登记方当作实验室结果导入。本次导出没有处在这种状态的项目：档案里填了值的那几项，报告上也都有，因此它们都以 Observation 出现在本 Bundle 里。请不要把这类项目在本 Bundle 里的缺席读成患者没有做过对应的检测。"
+    },
+    {
       "field": "Condition（临床护照的基因证据分级、检测方法与诊断进度）",
       "reasonZh": "本 Bundle 承载报告上的读数与「是否基因确诊」这一判定，不承载临床护照上围绕它的其余内容：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法（FHIR 的 Observation.method 是它的位置，本导出尚未填写），以及患者在基线问卷上自己勾选的「诊断进度」。判定本身在 Condition.verificationStatus 上，它的 text 与 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh、Phenopacket 导出中对应的 omission 是同一句话。verificationStatus 只有 confirmed / unconfirmed 两个取值，「实验室读到的单倍型不是允许型」与「什么都没读到」都落在 unconfirmed 上——这两种情况的区别写在同一元素的 text 里，请读它，不要只读编码。"
     },

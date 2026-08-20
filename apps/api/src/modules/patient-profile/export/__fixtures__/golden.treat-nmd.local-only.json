@@ -223,21 +223,27 @@
             "value": [
               {
                 "muscleGroup": "deltoid",
-                "muscleGroupLabelZh": "三角肌",
+                "metricKey": null,
+                "subjectLabelZh": "三角肌肌力",
+                "movementLabelZh": null,
                 "side": "left",
                 "sideLabelZh": "左侧",
                 "strengthScore": 3,
                 "entryMode": "self_report",
-                "recordedAt": "2025-06-01T02:00:00.000Z"
+                "recordedAt": "2025-06-01T02:00:00.000Z",
+                "unnamedSubjectNoteZh": null
               },
               {
                 "muscleGroup": "tibialis",
-                "muscleGroupLabelZh": "胫骨前肌",
+                "metricKey": null,
+                "subjectLabelZh": "胫骨前肌肌力",
+                "movementLabelZh": null,
                 "side": "bilateral",
                 "sideLabelZh": "双侧",
                 "strengthScore": 4,
                 "entryMode": "clinician_entered",
-                "recordedAt": "2025-05-02T02:00:00.000Z"
+                "recordedAt": "2025-05-02T02:00:00.000Z",
+                "unnamedSubjectNoteZh": null
               }
             ],
             "provenanceZh": "MRC 分级 0–5，5 为正常；每一条的 entryMode 说明这一条是谁做的：clinician_entered 为临床人员录入，其余为患者自评或在应用引导下自测，不是临床环境下的标准化徒手肌力测试"
@@ -422,6 +428,10 @@
     {
       "field": "subject（出生年份、性别、常住地区、体格测量与联系方式）",
       "reasonZh": "本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：出生年份（这份档案上有年份，本平台这一栏区分「记不清了」与「未采集」）、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。出生时间与性别在 FHIR 导出里各有对应字段（Patient.birthDate 与 Patient.gender），本文件两个都没有；这份档案上只有出生年份，那份导出的 Patient.birthDate 上写的就是这个年份；联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。"
+    },
+    {
+      "field": "sections（检验、肺功能、心脏、影像与体格检查的报告解析读数）",
+      "reasonZh": "本平台会从患者上传的检查报告原文里解析出结构化读数，本平台可解析的项目是这些：肌酸激酶（CK）、肌红蛋白（Mb）、乳酸脱氢酶（LDH）、肌酸激酶同工酶（CK-MB）、用力肺活量占预计值百分比（FVC%pred）、肺总量占预计值百分比（TLC%pred）、一氧化碳弥散量占预计值百分比（DLCO%pred）、左心室射血分数（LVEF）、QTc 间期、前锯肌脂肪化等级、三角肌肌力（报告上的记录）、肱二头肌肌力（报告上的记录）、肱三头肌肌力（报告上的记录）、股四头肌肌力（报告上的记录）、胫骨前肌肌力（报告上的记录）。这些读数不出现在本文件里。本次导出的档案里有 2 条这样的读数。本文件按该核心数据集的六个强制性内容领域组织，检验、肺功能、心脏、影像与体格检查的结果不属于这六个领域中的任何一个，本导出因此没有为它们建立对齐位置——凭空加一节等于把数据映射到该数据集没有问的问题上。这些读数连同各自的来源文件在 FHIR 导出里以 Observation 给出（Phenopacket 导出同样不承载它们，并在它自己的 omissions 里说明）。那份导出对条目数有上限，超出时会截断并在它自己的 omissions 里说明；报告上没写日期的条目，它也不写观察时间，同样有说明。不受截断影响的完整读数在不带 format 参数的数据导出里。请不要把这些项目在本文件里的缺席读成患者没有做过这些检查，也不要读成检查结果正常——本文件对它们一个字都没有说。"
     },
     {
       "field": "sections（用药记录、日常记录、档案备注与基线备注）",

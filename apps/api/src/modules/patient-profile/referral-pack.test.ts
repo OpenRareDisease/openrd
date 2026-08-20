@@ -243,20 +243,35 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
   });
 
   it('speaks about this document, not about every report the patient uploaded', () => {
-    // `buildReportInsights` opens ONE genetic document — the one that
-    // fills the most of the diagnosis block — so a repeat count that
-    // only a lower-ranked report carries is never read. That residue is
+    // `buildReportInsights` opens ONE genetic document — the one
+    // `pickGeneticEvidenceDocument` names — so a repeat count that only
+    // a lower-ranked document carries is never read. That residue is
     // inherent to reading one report rather than merging several, and
     // it is why 「未从任何上传的报告里读到 D4Z4 重复数」 would be false
     // about exactly this patient. It is the sentence a neurologist
     // decides on.
+    //
+    // THE LOWER-RANKED DOCUMENT HERE IS A 病历摘要, which is the tier
+    // that produces this residue: the laboratory's own report outranks a
+    // document quoting one, ahead of dates and ahead of how much either
+    // carries. The count on the clinic letter is therefore held and not
+    // read, and 转录自非基因报告文件 is what it would be labelled if it
+    // were.
     const result = pack(
       base({
         geneticMutation: 'FSHD1',
         documents: [
           {
             ...geneticReport({ d4z4Repeats: '4' }),
-            id: 'doc-old',
+            id: 'doc-summary',
+            documentType: 'medical_record',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_summary',
+                documentType: 'other',
+                d4z4Repeats: '4',
+              },
+            },
             uploadedAt: '2019-05-03T12:00:00.000Z',
           },
           {
@@ -281,12 +296,12 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
    * THE DATE UNDER THE DIAGNOSIS BLOCK BELONGS TO THE DOCUMENT THE
    * VALUES WERE READ OFF, AND THAT IS NOT ALWAYS THE NEWEST ONE.
    *
-   * `pickGeneticEvidenceDocument` ranks a candidate by what it carries
-   * before its upload time, so a thin report uploaded this month loses
-   * to a full assay from two years ago. The line was labelled 「最近一份
-   * 诊断相关报告」 and fed that older date — printing, in the section a
-   * 协作网 neurologist uses to decide whether the workup is current,
-   * that this patient has brought nothing since 2019.
+   * `pickGeneticEvidenceDocument` puts a report that states a D4Z4
+   * length above one that does not, so a 2026 methylation workup that
+   * never sized the array loses to the 2019 assay that did. The line was
+   * labelled 「最近一份诊断相关报告」 and fed that older date — printing,
+   * in the section a 协作网 neurologist uses to decide whether the
+   * workup is current, that this patient has brought nothing since 2019.
    */
   it('dates the report the values were read off, and does not call it the most recent', () => {
     const result = pack(
@@ -298,15 +313,16 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
             uploadedAt: '2019-05-03T12:00:00.000Z',
           },
           {
-            ...geneticReport({ d4z4Repeats: '4' }),
-            id: 'doc-thin',
+            ...geneticReport({ methylationValue: '25%' }),
+            id: 'doc-later-workup',
             uploadedAt: '2026-02-01T12:00:00.000Z',
           },
         ],
       } as never),
     );
 
-    // The premise: the picked document is the older, fuller one.
+    // The premise: the picked document is the older one, because it is
+    // the one that sized the array.
     expect(result.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('doc-full');
     expect(result.markdown).toContain('本平台读作基因证据的报告：2019-05-03');
     expect(result.markdown).not.toContain('最近一份诊断相关报告');

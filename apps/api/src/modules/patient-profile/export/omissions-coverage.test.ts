@@ -2,11 +2,20 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EXPORT_FIXTURE_PROFILE,
+  EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS,
   EXPORT_FIXTURE_PROFILE_MAXIMAL,
   EXPORT_FIXTURE_PROFILE_SPARSE,
   FIXTURE_GENERATED_AT,
 } from './__fixtures__/profile.fixture.js';
+import {
+  normaliseSource,
+  GENETIC_ARCHIVE_CELL_LABELS_ZH,
+  REPORT_FIELD_INVENTORY,
+} from './export-source.js';
 import { buildPortableExport, type PortableExportFormat } from './index.js';
+import { MEASUREMENT_METRIC_LABELS, measurementSubjectZh } from './labels.js';
+import { MUSCLE_GROUPS } from '../profile.constants.js';
+import type { PatientProfileDTO } from '../profile.service.js';
 
 /**
  * THE AUDIT, AS A TEST.
@@ -185,10 +194,22 @@ const FACTS: readonly FactRow[] = [
   },
   // ------------------------------------------------------- 运动功能
   {
+    // THIS ROW IS ABOUT `patient_measurements` — the grades the patient
+    // records through this app and a clinician records for them. It is
+    // NOT about the MRC grades parsed off an uploaded report; those are
+    // a different store, reached through `REPORT_FIELD_SPECS`, and they
+    // are covered by the derived block at the bottom of this file.
+    //
+    // THE FHIR PROBE CARRIES THE SIDE ON PURPOSE. A bare 「三角肌肌力」 is
+    // a prefix of the report-derived label too, so this row would have
+    // gone green for a bundle carrying only the report's grade and none
+    // of the patient's own — the two-facts-one-name hole again, now that
+    // both facts are in the bundle. `（左侧）` is written only by the
+    // measurement path.
     factZh: '徒手肌力（MRC）',
     treatNmd: emitted('motor.muscleStrength'),
     phenopacket: declared('肌力记录'),
-    fhir: emitted('三角肌肌力'),
+    fhir: emitted('三角肌肌力（左侧）'),
   },
   {
     factZh: '功能测试',
@@ -474,5 +495,485 @@ describe('每一项临床事实，三份可携带导出要么承载它，要么�
         expect(family?.reasonZh).toContain('不表示患者没有家族史');
       });
     });
+  });
+});
+
+/**
+ * ============================================================
+ * THE HALF OF THE CHECK THAT IS NOT HAND-WRITTEN.
+ * ============================================================
+ *
+ * WHY THIS BLOCK EXISTS. The table above is a good check and it has now
+ * failed to prevent the same defect FOUR TIMES. Every one of those
+ * rounds went the same way: a clinical fact this platform holds reached
+ * no portable export and was declared in none, a human found it by
+ * reading the DTO by hand, and a row was added. The table never fails
+ * for a fact it has no row for — that is not a bug in the table, it is
+ * the definition of a hand-written enumeration.
+ *
+ * The four facts, and what each of them WAS at the moment it was missed:
+ *
+ *   1. The lab / pulmonary / cardiac / imaging readings. A member of
+ *      `REPORT_FIELD_SPECS`, a runtime array in export-source.ts. Ten of
+ *      its fourteen entries were exercised by no test in this directory.
+ *   2. The MRC grades read off a clinical report. A key
+ *      `embedded-report-ocr.ts` writes into `ocrPayload.fields` and the
+ *      app's own report table prints, with NO `REPORT_FIELD_SPECS` entry
+ *      in either spelling.
+ *   3. The measurement row with no muscle group. A shape
+ *      `measurementSchema` explicitly admits and the shipped 用力闭眼
+ *      self-test writes on every submission.
+ *   4. A genetic reading held in the archive and absent from the
+ *      evidence document. One of the four cells in
+ *      `GENETIC_BASELINE_VALUE_ORIGINS`, in one of its two states.
+ *
+ * ALL FOUR WERE ALREADY ENUMERATED SOMEWHERE IN RUNNING CODE. Not one
+ * of them needed a human to discover that it existed; what was missing
+ * was anything that walked those enumerations and asked the exports the
+ * question. That is what this block does.
+ *
+ * IS FULL DERIVATION POSSIBLE? No, and the boundary is worth stating
+ * precisely, because pretending otherwise is how a check becomes
+ * decorative:
+ *
+ *   - The MEMBERSHIP question — 「what does the platform hold?」 — is
+ *     derivable wherever the answer is a runtime table, and every one of
+ *     the four was. That is what is enforced below, and it is the half
+ *     that failed four times.
+ *   - The PLACEMENT question — 「does this document carry it, or declare
+ *     it, and is the sentence true?」 — is not derivable. Two of the
+ *     three formats answer it in Chinese prose, and no assertion can
+ *     tell a reason that is true from one that is fluent. That half
+ *     stays in the table above, one row at a time, written by whoever
+ *     changes the serialiser.
+ *
+ * WHAT IT COSTS. Three things, all of them real:
+ *
+ *   - `EXPORT_FIXTURE_PROFILE_MAXIMAL` has to actually populate every
+ *     enumerated member. It did not: it carried two of fourteen report
+ *     cells, and no measurement without a muscle group. A derived check
+ *     over a thin fixture passes vacuously, which is worse than no check.
+ *     Keeping it maximal is now a standing obligation.
+ *   - `REPORT_FIELD_SPECS` had to be exported from export-source.ts as
+ *     `REPORT_FIELD_INVENTORY`. A private table cannot be the subject of
+ *     a coverage assertion.
+ *   - The `Record<keyof PatientProfileDTO, …>` below turns adding a
+ *     column to the DTO into a COMPILE error in this file. That is the
+ *     cheapest of the three and the one with the longest reach, and it
+ *     is also the one that will annoy somebody adding a field that has
+ *     nothing to do with exports — they still have to write the row.
+ *     That cost is the point.
+ *
+ * WHAT IT STILL DOES NOT CATCH, stated so nobody reads the block as
+ * covering more than it does: defect 2 above. Nothing here derives the
+ * set of keys `embedded-report-ocr.ts` can write into `ocrPayload.fields`
+ * — that inventory lives in another module, behind a Python parser, and
+ * importing it into an export test would couple this directory to the
+ * OCR pipeline's internals. `PARSED_CELL_INVENTORY` below is the manual
+ * bridge, and it is manual on purpose: it is closed in the direction
+ * that matters (every payload key it lists must have a home) but a key
+ * nobody adds to it is still invisible. That is the residual, and it is
+ * the one place a fifth round can still come from.
+ */
+
+const MAXIMAL_ENVELOPES = FORMATS.map(([format]) => [format, build(format)] as const);
+
+describe('清单是从运行时的表里推导出来的，不是手写的', () => {
+  /**
+   * DEFECT 1's CLASS. Every entry in `REPORT_FIELD_SPECS`, asked of all
+   * three envelopes: is this reading in the document, or named in an
+   * omission? A spec added with no home fails here on the day it is
+   * added, without anybody remembering to add a row above.
+   *
+   * The probe is the spec's own `labelZh`, which is what both a
+   * document value and a declaration are written with — that is why the
+   * shared declaration in `reportReadingsOmission` builds its sentence
+   * out of `REPORT_READING_LABELS_ZH` rather than a hand-typed list.
+   */
+  REPORT_FIELD_INVENTORY.forEach((spec) => {
+    MAXIMAL_ENVELOPES.forEach(([format, envelope]) => {
+      it(`${format}：报告解析项「${spec.labelZh}」要么写进文件，要么在 omissions 里点名`, () => {
+        const inDocument = JSON.stringify(envelope.document).includes(spec.labelZh);
+        const inOmissions = envelope.omissions.some((entry) =>
+          entry.reasonZh.includes(spec.labelZh),
+        );
+        expect(
+          inDocument || inOmissions,
+          `${format} 既没有承载「${spec.labelZh}」，也没有在 omissions 里声明它。` +
+            'REPORT_FIELD_SPECS 里新增一项时，三份导出各自要么写它、要么声明它——' +
+            '「悄悄没有」不是一个可选项，见 envelope.ts。',
+        ).toBe(true);
+      });
+    });
+  });
+
+  /**
+   * And the maximal fixture must actually CARRY every one of them,
+   * or every assertion above is green over a value that is not there.
+   *
+   * This is the cost paragraph in the header, made enforceable.
+   */
+  it('最大化夹具真的填满了 REPORT_FIELD_SPECS 的每一项', () => {
+    const source = normaliseSource(EXPORT_FIXTURE_PROFILE_MAXIMAL, {
+      includeLocalOnly: false,
+      generatedAt: FIXTURE_GENERATED_AT,
+    });
+    const present = new Set(source.reportFields.map((field) => field.key));
+    const missing = REPORT_FIELD_INVENTORY.map((spec) => spec.key).filter(
+      (key) => !present.has(key),
+    );
+    expect(
+      missing,
+      '这些解析项在 EXPORT_FIXTURE_PROFILE_MAXIMAL 上没有值，' +
+        '因此上面那组断言对它们是空转的。请在夹具的 ocrPayload.fields 里补上。',
+    ).toEqual([]);
+  });
+
+  /**
+   * DEFECT 2's CLASS, as far as it can be closed from inside this
+   * directory. `embedded-report-ocr.ts` writes these keys into
+   * `ocrPayload.fields`; each must be read by a `REPORT_FIELD_SPECS`
+   * entry, or carry a written reason for not being one.
+   *
+   * MANUAL, AND CLOSED IN ONE DIRECTION ONLY — see the header. What it
+   * buys is that the five MRC keys can never again be present in the
+   * payload, printed in the app, and absent from every export with
+   * nobody having written a sentence about it.
+   */
+  const PARSED_CELL_INVENTORY: ReadonlyArray<{
+    readonly payloadKey: string;
+    readonly notAReadingBecauseZh?: string;
+  }> = [
+    {
+      payloadKey: 'reportTime',
+      notAReadingBecauseZh: '是报告自己的日期，不是读数；用于 observedAt',
+    },
+    { payloadKey: 'creatineKinase' },
+    { payloadKey: 'myoglobin' },
+    { payloadKey: 'LDH' },
+    { payloadKey: 'CKMB' },
+    { payloadKey: 'fvcPredPct' },
+    { payloadKey: 'tlcPredPct' },
+    { payloadKey: 'dlcoPredPct' },
+    { payloadKey: 'LVEF' },
+    { payloadKey: 'qtcMs' },
+    { payloadKey: 'serratusFatigueGrade' },
+    { payloadKey: 'deltoidStrength' },
+    { payloadKey: 'deltoid_strength' },
+    { payloadKey: 'bicepsStrength' },
+    { payloadKey: 'biceps_strength' },
+    { payloadKey: 'tricepsStrength' },
+    { payloadKey: 'triceps_strength' },
+    { payloadKey: 'quadricepsStrength' },
+    { payloadKey: 'quadriceps_strength' },
+    { payloadKey: 'tibialisStrength' },
+    { payloadKey: 'tibialis_strength' },
+    { payloadKey: 'd4z4Repeats' },
+    { payloadKey: 'haplotype' },
+    { payloadKey: 'ecoRIFragment' },
+    { payloadKey: 'methylationValue' },
+    {
+      payloadKey: 'diagnosisType',
+      notAReadingBecauseZh:
+        '分型不是走 reportFields 的：它经 normaliseSource 归一后成为 Condition.code / Disease.term / diagnosis.type',
+    },
+    {
+      payloadKey: 'geneticTestMethod',
+      notAReadingBecauseZh:
+        '检测方法，三份导出都在 omissions 里声明不承载（FACTS 表里有「报告上写的检测方法」一行）',
+    },
+    {
+      payloadKey: 'interpretationSummary',
+      notAReadingBecauseZh: '是报告的结论段落，不是某一项的读数；属于自由文本，三份都不承载',
+    },
+    {
+      payloadKey: 'reportImpression',
+      notAReadingBecauseZh: '同上：影像报告的印象段落，自由文本',
+    },
+    {
+      payloadKey: 'impressionText',
+      notAReadingBecauseZh: '同上，reportImpression 的别名',
+    },
+    { payloadKey: 'aiSummary', notAReadingBecauseZh: '本平台生成的摘要，不是报告上的读数' },
+  ];
+
+  it('OCR 写进 ocrPayload.fields 的每一个键，要么被某条 REPORT_FIELD_SPECS 读走，要么写明为什么不是读数', () => {
+    const consumed = new Set(REPORT_FIELD_INVENTORY.flatMap((spec) => spec.payloadKeys));
+    const orphans = PARSED_CELL_INVENTORY.filter(
+      (cell) => !consumed.has(cell.payloadKey) && cell.notAReadingBecauseZh === undefined,
+    ).map((cell) => cell.payloadKey);
+    expect(
+      orphans,
+      '这些键会被写进 ocrPayload.fields，但没有任何 REPORT_FIELD_SPECS 条目读它们，' +
+        '也没有写明它们为什么不是一项读数。患者在 App 的报告页上看得到的值，' +
+        '不能对三份可携带导出全部隐形。',
+    ).toEqual([]);
+  });
+
+  /**
+   * And closed the other way, at the granularity of a READING rather
+   * than of a spelling.
+   *
+   * Not 「every alias appears in the inventory」: `REPORT_FIELD_SPECS`
+   * lists historical spellings (`d4z4_repeats`, `EcoRI_kb`, `ecoriFragmentKb`)
+   * that no writer produces any more and that exist so an archived
+   * payload still resolves. Demanding a row for each would make the
+   * inventory a second copy of the alias lists, which is a table that
+   * goes stale rather than a bridge between two modules.
+   *
+   * What must hold is that each spec is REPRESENTED — a reading nobody
+   * has traced back to a key the OCR writer produces is a reading whose
+   * presence in the payload nothing here can vouch for.
+   */
+  it('反过来也要闭合：每一条 REPORT_FIELD_SPECS 至少有一个拼写出现在上面的清单里', () => {
+    const listed = new Set(PARSED_CELL_INVENTORY.map((cell) => cell.payloadKey));
+    const untraced = REPORT_FIELD_INVENTORY.filter(
+      (spec) => !spec.payloadKeys.some((key) => listed.has(key)),
+    ).map((spec) => spec.key);
+    expect(
+      untraced,
+      '这些解析项的所有拼写都不在 PARSED_CELL_INVENTORY 里，' +
+        '也就是说没人核对过 OCR 到底会不会写出这个键。',
+    ).toEqual([]);
+  });
+
+  /**
+   * DEFECT 3's CLASS. Every muscle group the database will accept, plus
+   * the group-less row the schema accepts and the self-test writes, must
+   * produce a NAMED subject — never a raw enum key, never the storage
+   * sentinel, never 「null」 or 「undefined」 rendered by a template
+   * literal.
+   *
+   * Derived from `MUSCLE_GROUPS`, which is the api-side half of the
+   * two-place edit migration 022 documents. A tenth muscle group added
+   * to that array with no `MUSCLE_GROUP_LABELS` row fails here.
+   */
+  const FORBIDDEN_IN_A_SUBJECT_LABEL = ['custom', 'null', 'undefined'];
+
+  MUSCLE_GROUPS.forEach((group) => {
+    it(`肌群「${group}」在导出里有中文名，不是把枚举值直接印出来`, () => {
+      const subject = measurementSubjectZh(group, null);
+      expect(subject).not.toBeNull();
+      expect(subject).not.toContain(group);
+    });
+  });
+
+  Object.keys(MEASUREMENT_METRIC_LABELS).forEach((metricKey) => {
+    it(`自测动作「${metricKey}」在没有肌群时仍然有中文名`, () => {
+      // 'custom' is what `addMeasurement` stores for a row whose payload
+      // carried no `muscleGroup`; null and undefined are what a reader
+      // that bypasses that COALESCE would hand us. All three must land
+      // on the movement's own label rather than on a template literal's
+      // rendering of the sentinel.
+      ['custom', null, undefined].forEach((stored) => {
+        const subject = measurementSubjectZh(stored, metricKey);
+        expect(subject).not.toBeNull();
+        FORBIDDEN_IN_A_SUBJECT_LABEL.forEach((token) => {
+          expect(subject).not.toContain(token);
+        });
+      });
+    });
+  });
+
+  it('用力闭眼这一条在三份导出里都有名字，没有一份印出 custom / null / undefined', () => {
+    MAXIMAL_ENVELOPES.forEach(([format, envelope]) => {
+      const serialised = JSON.stringify(envelope.document);
+      FORBIDDEN_IN_A_SUBJECT_LABEL.forEach((token) => {
+        expect(serialised, `${format} 的文件里出现了「${token}肌力」`).not.toContain(
+          `${token}肌力`,
+        );
+      });
+    });
+    // And it is not merely absent — the grade actually travelled, under
+    // the movement's own name, in the two formats that carry strength.
+    const [, treatNmd] = MAXIMAL_ENVELOPES.find(([format]) => format === 'treat-nmd')!;
+    const [, fhir] = MAXIMAL_ENVELOPES.find(([format]) => format === 'fhir-r4')!;
+    expect(JSON.stringify(treatNmd.document)).toContain('用力闭眼肌力');
+    expect(JSON.stringify(fhir.document)).toContain('用力闭眼肌力');
+  });
+
+  /**
+   * DEFECT 4's CLASS. Each of the three genetic cells the baseline
+   * questionnaire has a box for, in BOTH of its states — read off the
+   * evidence document, and held only in the archive — asked of all three
+   * envelopes.
+   *
+   * The archive-only state is the one that produced three different
+   * answers about one number, and it is a state no fixture had.
+   */
+  GENETIC_ARCHIVE_CELL_LABELS_ZH.forEach((labelZh) => {
+    FORMATS.forEach(([format]) => {
+      it(`${format}：只存在于档案里、报告上没有的「${labelZh}」，要么写进文件，要么在 omissions 里点名`, () => {
+        const envelope = build(format, EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS);
+        const inDocument = JSON.stringify(envelope.document).includes(labelZh);
+        const inOmissions = envelope.omissions.some((entry) => entry.reasonZh.includes(labelZh));
+        expect(
+          inDocument || inOmissions,
+          `${format} 对「${labelZh}」既不承载也不声明。` +
+            '基线问卷为这一项留了输入框，患者填了值而基因证据文件上没有这一项时，' +
+            '三份导出必须各自给出一个答案——TREAT-NMD 印出来，另外两份声明它。',
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('档案里有、报告上没有的那一项，FHIR 不承载但点名，Phenopacket 不再把接收方指向 FHIR', () => {
+    const fhir = build('fhir-r4', EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS);
+    expect(JSON.stringify(fhir.document)).not.toContain('甲基化水平 32%');
+    const declaration = fhir.omissions.find((entry) => entry.reasonZh.includes('甲基化'));
+    expect(declaration).toBeDefined();
+    expect(declaration?.reasonZh).toContain('derivedFrom');
+
+    const treatNmd = build('treat-nmd', EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS);
+    expect(JSON.stringify(treatNmd.document)).toContain('甲基化水平 32%');
+
+    // The Phenopacket's pointer used to read 「凡是本平台…档案里记着的，都…
+    // 出现在…FHIR 导出的 Observation 里」, which sent a receiver to a bundle
+    // that does not hold the value — and a receiver who follows a pointer
+    // and finds nothing concludes the patient has nothing.
+    const pheno = build('phenopacket', EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS);
+    const readings = pheno.omissions.find((entry) =>
+      entry.field.includes('基因报告上的读数'),
+    )?.reasonZh;
+    expect(readings).toBeDefined();
+    expect(readings).toContain('只记在本平台档案里');
+    expect(readings).toContain('FHIR 导出不承载它们');
+  });
+
+  /**
+   * THE COMPILE-TIME HALF, and the one with the longest reach.
+   *
+   * Every column on `PatientProfileDTO` names the FACTS rows that
+   * account for it. `Record<keyof PatientProfileDTO, …>` means adding a
+   * column to the DTO does not typecheck until somebody has written down
+   * which fact rows cover it — and writing 「nothing here is clinical」 is
+   * a fine answer, made explicitly, in a file whose whole subject is
+   * what the exports do and do not carry.
+   *
+   * This is the mechanism that would have caught the family-history
+   * defect and the two notes stores. It would NOT have caught any of the
+   * four listed at the top of this block: all four hang off `documents`
+   * or `measurements`, which have had rows since the table was written.
+   * It is here because it closes a different door on the same corridor,
+   * and it costs one line per column.
+   */
+  const DTO_COVERAGE: Record<keyof PatientProfileDTO, readonly string[]> = {
+    id: [],
+    userId: [],
+    createdAt: [],
+    updatedAt: [],
+    fullName: ['姓名与称呼'],
+    preferredName: ['姓名与称呼'],
+    dateOfBirth: ['出生年份'],
+    gender: ['性别'],
+    patientCode: ['本平台内部的患者编号'],
+    diagnosisStage: ['诊断进度（患者自己勾选的）'],
+    diagnosisDate: ['确诊年份'],
+    geneticMutation: ['FSHD 分型'],
+    heightCm: ['身高 / 体重 / 血型'],
+    weightKg: ['身高 / 体重 / 血型'],
+    bloodType: ['身高 / 体重 / 血型'],
+    contactPhone: ['联系电话与邮箱'],
+    contactEmail: ['联系电话与邮箱'],
+    primaryPhysician: ['确诊医生 / 主诊医生姓名'],
+    regionProvince: ['常住地区'],
+    regionCity: ['常住地区'],
+    regionDistrict: ['常住地区'],
+    // The baseline JSONB is many facts, not one. Listed exhaustively
+    // rather than waved at, because it is the column every one of the
+    // four defects' neighbours came out of.
+    baseline: [
+      'FSHD 分型',
+      '确诊年份',
+      'D4Z4 重复单元数',
+      '4q 单倍型',
+      '甲基化',
+      '起病部位',
+      '家族史陈述',
+      '基线问卷的困难程度自评',
+      '基线问卷记录的身体状况（抬臂 / 面部 / 足下垂 / 呼吸）',
+      '正在使用的辅助器具',
+      '基线记录的行走状态',
+      '出生年份',
+      '姓名与称呼',
+      '基线备注（baseline_payload.notes）',
+      // §B3's markers live in the baseline payload's own provenance
+      // block — `listBaselineFieldOrigins` reads it out of this column.
+      '管理员代填的基线字段标记（§B3）',
+    ],
+    notes: ['档案备注（patient_profiles.notes）'],
+    measurements: ['徒手肌力（MRC）'],
+    functionTests: ['功能测试'],
+    symptomScores: ['症状自评（随访）'],
+    dailyImpacts: ['日常活动困难程度（随访）'],
+    followupEvents: ['里程碑事件（轮椅 / NIV / AFO）', '其他随访事件（跌倒等）——事件本身'],
+    activityLogs: ['患者写的日常记录'],
+    documents: [
+      '上传的报告文件',
+      '报告上写的检测方法',
+      'EcoRI 片段',
+      // The lab / pulmonary / cardiac / imaging / MRC readings parsed
+      // off these documents deliberately have NO row in FACTS. They are
+      // enumerated by `REPORT_FIELD_INVENTORY` and asserted by the
+      // derived block above — a hand-written row per reading would be a
+      // second copy of a table that already exists, and the copy is what
+      // goes stale.
+      // Both are READ OFF the evidence document by
+      // `buildClinicalPassportSummary` and carried on `NormalisedSource`
+      // rather than stored anywhere — the archive contributes the boxes,
+      // the document contributes the reading, and the verdict is neither.
+      '是否基因确诊',
+      '基因证据分级（本平台的判定）',
+    ],
+    medications: ['用药记录'],
+  };
+
+  /**
+   * FACTS THAT ARE NOT ON `PatientProfileDTO` AT ALL.
+   *
+   * `normaliseSource` reads exactly one shape, and two of the facts in
+   * the table above come out of tables that shape does not include. They
+   * are declared here with the store named, rather than filed under a
+   * DTO column they do not live in — a coverage table whose entries are
+   * approximately true is the failure mode this whole file is about, and
+   * 「the falls diary is covered by `followupEvents`」 is precisely the
+   * mistake the FACTS row for it was written to undo.
+   *
+   * A fact landing HERE is also a signal: it is a fact no export can
+   * carry today no matter what the serialisers do, because the
+   * normaliser cannot see it. Both of these are declared by all three.
+   */
+  const OFF_DTO_FACTS: Readonly<Record<string, readonly string[]>> = {
+    'patient_instruments（migration 022）': ['Brooke / Vignos 分级'],
+    'patient_falls（migration 023）': [
+      '跌倒日记的五项结构化明细（活动 / 室内外 / 手是否占用 / 能否自行起身 / 是否受伤）',
+    ],
+  };
+
+  it('DTO 上的每一列都指向真实存在的 FACTS 行', () => {
+    const known = new Set(FACTS.map((row) => row.factZh));
+    const dangling = [...Object.entries(DTO_COVERAGE), ...Object.entries(OFF_DTO_FACTS)].flatMap(
+      ([column, facts]) =>
+        facts.filter((fact) => !known.has(fact)).map((fact) => `${column} -> ${fact}`),
+    );
+    expect(
+      dangling,
+      'DTO_COVERAGE / OFF_DTO_FACTS 指向了 FACTS 里没有的行。重命名 factZh 时两处要一起改，' +
+        '否则这层编译期保护会退化成一张对不上的表。',
+    ).toEqual([]);
+  });
+
+  it('FACTS 里的每一行都被某一列或某个已点名的存储认领', () => {
+    const claimed = new Set([
+      ...Object.values(DTO_COVERAGE).flat(),
+      ...Object.values(OFF_DTO_FACTS).flat(),
+    ]);
+    const orphans = FACTS.map((row) => row.factZh).filter((fact) => !claimed.has(fact));
+    expect(
+      orphans,
+      '这些事实没有任何 DTO 列认领，也没有写明它来自哪个 normaliseSource 看不见的表。' +
+        '要么补一列，要么把它连同存储名写进 OFF_DTO_FACTS——' +
+        '「大概挂在某一列下面」正是这张表存在要防的那种说法。',
+    ).toEqual([]);
   });
 });

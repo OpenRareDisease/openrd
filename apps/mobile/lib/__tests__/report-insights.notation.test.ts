@@ -181,3 +181,43 @@ describe('肌力格里写的是区间时，不许变成一个数', () => {
     ).toContain('三角肌4至5级');
   });
 });
+
+/**
+ * 一格里写了两侧时，两侧都要算 —— 和 profile.passport.motor.test.ts 同表。
+ *
+ * 「L4 / R2」 是本平台自己拼的：`_format_strength`（解析器）与
+ * `formatAggregateStrength`（API 的 OCR 桥）把逐侧的 `mrc_score` 折成
+ * 一格。`parseScore` 只取第一个像等级的数，于是这一对塌成左侧那一个，
+ * 右侧被无声丢掉。FSHD 本来就是不对称的，两侧之间的差就是所见本身。
+ */
+describe('肌力格里写了两侧时，两侧都算', () => {
+  // bicepsStrength: '5级' 是这一组共用的第二块肌肉，一票。
+  const averageOf = (cell: string) =>
+    buildStrengthSummary({ deltoidStrength: cell, bicepsStrength: '5级' }).average;
+
+  it.each([
+    // 三角肌两票（4、2）+ 肱二头肌一票（5）→ 11/3 = 3.7
+    ['L4 / R2', 3.7],
+    ['L2 / R4', 3.7],
+    // (4.3 + 2.7 + 5) / 3 = 4.0
+    ['L4+ / R3-', 4],
+    // 左侧是区间，只丢它自己那一票：(3 + 5) / 2 = 4
+    ['L4-5 / R3', 4],
+    // 单侧照旧一票：(2 + 5) / 2 = 3.5
+    ['R2', 3.5],
+  ] as ReadonlyArray<readonly [string, number]>)('%s → 平均 %s，和护照一致', (cell, average) => {
+    expect(averageOf(cell)).toBe(average);
+  });
+
+  it('两侧都是区间时才真的没有数', () => {
+    expect(averageOf('L4-5 / R3-4')).toBe(5);
+  });
+
+  it('「4/5级」不是两侧 —— 没有 L/R 就不拆', () => {
+    expect(averageOf('4/5级')).toBe(4.5);
+  });
+
+  it('两侧照常原样显示，分隔符也照原样', () => {
+    expect(buildStrengthSummary({ deltoidStrength: 'L4 / R2' }).summary).toContain('三角肌L4 / R2');
+  });
+});

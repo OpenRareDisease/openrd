@@ -280,6 +280,19 @@ export const FIXTURE_GENERATED_AT = '2026-01-15T08:00:00.000Z';
  *
  * NOT used by the goldens. They pin a realistic profile, and a profile
  * with every column populated is not one.
+ *
+ * 「MAXIMAL」 NOW INCLUDES EVERY CELL `REPORT_FIELD_SPECS` CAN READ, and
+ * it did not before — it carried a CK and an FVC%pred and nothing else,
+ * so ten of the fourteen specs were exercised by no test in this
+ * directory at all. A spec whose value is absent from the fixture is a
+ * spec whose disappearance from an export nothing can show, which is
+ * precisely how a whole category came to reach two of three documents
+ * with no declaration anywhere. omissions-coverage.test.ts now walks
+ * `REPORT_FIELD_SPECS` at runtime and asserts a home for each, and that
+ * assertion is only worth anything over a profile that has them all.
+ *
+ * EVERY VALUE HERE IS INVENTED. No part of this profile is a real
+ * reading, a real name, or a real patient.
  */
 export const EXPORT_FIXTURE_PROFILE_MAXIMAL: PatientProfileDTO = {
   ...EXPORT_FIXTURE_PROFILE,
@@ -331,6 +344,39 @@ export const EXPORT_FIXTURE_PROFILE_MAXIMAL: PatientProfileDTO = {
       submissionId: null,
     },
   ],
+  measurements: [
+    ...EXPORT_FIXTURE_PROFILE.measurements,
+    /**
+     * THE ROW WITH NO MUSCLE GROUP.
+     *
+     * `measurementSchema` accepts 「metricKey or muscleGroup」, and the
+     * shipped 用力闭眼 self-test takes the metricKey-only branch on every
+     * submission: `SELF_TEST_ACTIONS[0]` (apps/mobile) has no
+     * `muscleGroup` because the face has no cohort group, and
+     * `buildSelfTestPayload` omits the key. `addMeasurement` stores the
+     * NOT NULL column as `COALESCE($3, 'custom')`, so this is exactly the
+     * shape the DTO carries — the sentinel, not a null.
+     *
+     * With no such row in any fixture, every export published
+     * 「custom肌力」 for the most characteristic finding in this disease
+     * and no test in this directory saw it.
+     */
+    {
+      id: '33333333-3333-4333-8333-33333333333e',
+      muscleGroup: 'custom',
+      metricKey: 'eye_closure',
+      bodyRegion: 'face',
+      side: 'none',
+      strengthScore: 4,
+      method: 'MRC 自评',
+      entryMode: 'self_report',
+      deviceUsed: null,
+      notes: null,
+      recordedAt: '2025-06-05T02:00:00.000Z',
+      createdAt: '2025-06-05T02:01:00.000Z',
+      submissionId: null,
+    },
+  ],
   documents: [
     {
       ...EXPORT_FIXTURE_PROFILE.documents[0],
@@ -346,8 +392,76 @@ export const EXPORT_FIXTURE_PROFILE_MAXIMAL: PatientProfileDTO = {
         },
       },
     },
-    ...EXPORT_FIXTURE_PROFILE.documents.slice(1),
+    {
+      ...EXPORT_FIXTURE_PROFILE.documents[1],
+      ocrPayload: {
+        fields: {
+          reportTime: '2025-05-09',
+          // The two the fixture already had.
+          creatineKinase: '1245 U/L',
+          fvcPredPct: '78%',
+          // AND THE TEN IT DID NOT. One cell per remaining
+          // `REPORT_FIELD_SPECS` entry, in the rendered form
+          // `embedded-report-ocr.ts` writes: the laboratory panel, the
+          // pulmonary panel, the cardiac panel, the imaging grade, and
+          // the five MRC grades the parser reads off 体格检查 prose.
+          myoglobin: '86 ng/mL',
+          LDH: '312 U/L',
+          CKMB: '28 U/L',
+          tlcPredPct: '84%',
+          dlcoPredPct: '71%',
+          LVEF: '62%',
+          qtcMs: '431 ms',
+          serratusFatigueGrade: '2 级',
+          // 「L4 / R3」 is `formatAggregateStrength`'s own encoding of the
+          // two sides of one muscle — the notation the exports have to
+          // gloss, or the weak side and the strong side swap.
+          deltoidStrength: 'L4 / R3',
+          bicepsStrength: 'L4 / R4',
+          // The snake_case spelling, on purpose: archived payloads hold
+          // it, the app's report table reads both, and the export used to
+          // read neither.
+          triceps_strength: '4',
+          quadricepsStrength: 'L5 / R4',
+          // A range the parser declined to type. It must travel as the
+          // examiner wrote it, not folded into one number.
+          tibialisStrength: 'L4-5级 / R4级',
+        },
+      },
+    },
+    ...EXPORT_FIXTURE_PROFILE.documents.slice(2),
   ],
+};
+
+/**
+ * A GENETIC VALUE THAT IS IN THE ARCHIVE AND NOT ON THE REPORT.
+ *
+ * The baseline questionnaire's 甲基化 box is answered; the document this
+ * platform reads as the profile's genetic evidence says nothing about
+ * methylation. That is the ordinary lifecycle — `applyGeneticReportAutofill`
+ * fills an EMPTY slot from the evidence report and never corrects a full
+ * one, so a patient who answered the form before uploading anything keeps
+ * their answer beside a report that is silent.
+ *
+ * It is its own fixture because the three documents used to give three
+ * different answers here: TREAT-NMD printed the value, the Phenopacket
+ * declared it AND pointed at a FHIR bundle that did not have it, and the
+ * FHIR bundle said nothing at all.
+ */
+export const EXPORT_FIXTURE_PROFILE_ARCHIVE_ONLY_GENETICS: PatientProfileDTO = {
+  ...EXPORT_FIXTURE_PROFILE,
+  baseline: {
+    ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+    diseaseBackground: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).diseaseBackground as Record<
+        string,
+        unknown
+      >),
+      methylation: '甲基化水平 32%',
+    },
+  },
+  // documents untouched: the genetic report carries d4z4 and haplotype
+  // and no methylation cell.
 };
 
 /**

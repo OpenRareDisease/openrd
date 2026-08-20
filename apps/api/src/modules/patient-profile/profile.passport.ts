@@ -1619,8 +1619,10 @@ const STRENGTH_PLUS = /[+＋﹢]/;
  * cell and took any following 「+」/「-」 as the MRC modifier, so 「三角肌
  * 4-5级」 — an examiner declining to choose between 4 and 5 — averaged as
  * 3.7, and 「3-4级」 as 2.7: a number BELOW both bounds of the interval it
- * was read off, printed as 平均肌力 on the passport, in the markdown
- * export and in the referral pack's motor row. Nobody measured it.
+ * was read off, printed as 平均肌力 on the passport tile, on the share
+ * page a clinician is handed, and in the markdown export. Nobody
+ * measured it. (Not the referral pack — that document carries 功能测试
+ * and has no motor row; the claim was here and was stale.)
  * `parseD4Z4Reading` asks this question of the genetics cell; this is
  * the same question asked of the examination cell, and the answer for a
  * range is the same: no number.
@@ -1642,6 +1644,73 @@ const parseScore = (value: string) => {
   return clamp(base + modifier, 0, 5);
 };
 
+/**
+ * A TWO-SIDED MMT CELL, AS THE PARSER PUBLISHES ONE.
+ *
+ * 「L4 / R2」 — the left deltoid at grade 4 and the right at grade 2, in
+ * one string. It is not a notation an examiner writes; it is the shape
+ * this platform's own bridge mints, in two places that agree:
+ * `_format_strength` in apps/report-manager/app/services/fshd_report_service.py
+ * and `formatAggregateStrength` in apps/api/src/services/ocr/embedded-report-ocr.ts
+ * both fold the per-side `mrc_score` rows the physical-exam extractor
+ * emits into `f"L{left} / R{right}"`, and that string is what lands on
+ * `deltoid_strength` and its four siblings.
+ *
+ * WHICH MEANS THE CELL HOLDS TWO MEASUREMENTS, AND `parseScore` READ
+ * ONE. It scans for the first grade-shaped number, so 「L4 / R2」 came
+ * back 4 — the LEFT grade alone, voted into 平均肌力 as if it were the
+ * muscle's strength, with the right side dropped in silence. Measured
+ * on synthetic cells: 「L4 / R2」 published 4.0 against a true 3.0, and
+ * 「L2 / R4」 published 2.0 against the same 3.0. The error does not even
+ * have a direction — it is whichever side the parser printed first, so
+ * one patient is read stronger than they are and the next weaker, off
+ * the identical defect.
+ *
+ * FSHD IS CHARACTERISTICALLY ASYMMETRIC, WHICH IS WHY THIS CELL EXISTS.
+ * The two sides are not a redundancy to be collapsed; the gap between
+ * them is the finding, and the parser carries a whole asymmetry reader
+ * (`_read_asymmetry`) to keep it. A reader that takes the left grade and
+ * calls it the muscle publishes the one number that is guaranteed not to
+ * be the patient's strength on either side.
+ *
+ * THE SAME RULE THE IN-APP PATH ALREADY FOLLOWS. `buildClinicalPassportSummary`
+ * averages over the latest reading of each measured (group, SIDE), so a
+ * left deltoid of 2 and a right of 5 average to 3.5 and neither
+ * disappears. A grade off a report is the same kind of thing as a grade
+ * typed into the app, and it is now counted the same way: one vote per
+ * side measured, not one vote per muscle named.
+ *
+ * THE SIDE MARKER IS REQUIRED ON BOTH HALVES, so this can only fire on
+ * the string the bridge builds. In particular 「4/5」 is left alone — it
+ * is grade 4 out of 5, the commonest way an MMT sheet writes ONE grade,
+ * and it wears no `L`/`R`. The left half is captured lazily up to the
+ * slash that a side marker follows, so a cell whose own grade carries a
+ * slash still splits at the join and not inside a grade.
+ */
+const TWO_SIDED_STRENGTH_CELL = /^\s*L\s*(.+?)\s*\/\s*R\s*(.+?)\s*$/i;
+
+/**
+ * EVERY MRC GRADE ONE EXAMINATION CELL STATES — none, one, or one per
+ * side.
+ *
+ * A range still states none (`parseScore` refuses it), and it refuses it
+ * PER SIDE: 「L4-5 / R3」 used to lose the whole cell, because the range
+ * test scanned the string end to end and found 「4-5」 in it. The left
+ * side of that cell is an examiner declining to choose and has no
+ * number; the right side is a determinate grade 3 that nobody disputes,
+ * and it now votes. What an indeterminate half costs is its own vote,
+ * not its partner's.
+ *
+ * The cell is still DISPLAYED verbatim by `buildStrengthSummary`, both
+ * sides and the separator as the bridge wrote them. What changes is only
+ * how many votes it casts into the average.
+ */
+const readStrengthCellGrades = (value: string): number[] => {
+  const sides = TWO_SIDED_STRENGTH_CELL.exec(value);
+  const halves = sides ? [sides[1], sides[2]] : [value];
+  return halves.map((half) => parseScore(half)).filter((score): score is number => score !== null);
+};
+
 const buildStrengthSummary = (fields?: Record<string, unknown>) => {
   const entries = [
     { label: '三角肌', key: 'deltoidStrength', alt: 'deltoid_strength' },
@@ -1658,10 +1727,7 @@ const buildStrengthSummary = (fields?: Record<string, unknown>) => {
     const value = pickField(fields, [entry.key, entry.alt]);
     if (!value) return;
     parts.push(`${entry.label}${value}`);
-    const score = parseScore(value);
-    if (score !== null) {
-      scores.push(score);
-    }
+    scores.push(...readStrengthCellGrades(value));
   });
 
   const average =

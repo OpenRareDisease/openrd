@@ -880,6 +880,124 @@ describe('哪一份报告撑起护照的诊断这一段', () => {
     expect(diagnosis.latestDocumentId).toBe('new-full');
   });
 
+  /**
+   * 复检报告是现在这一份，护照就该印它的数 —— 连同这条规则的代价。
+   *
+   * 「读出来更多的」曾经排在「更新的」前面，于是一份 2019 年把七个键都
+   * 读出来的 Southern blot 压过了患者刚传上来的 2025 年复检。重复数是
+   * FSHD1 边界、灰区说明与 可用于入组 都挂在上面的那个值，印一个被复检
+   * 修正过的旧数，不是「显示得旧」，是把一次已被推翻的测量说成当前的。
+   */
+  describe('两份报告都测了这一段时，晚的那一份说了算', () => {
+    const older = {
+      ...geneticReport({
+        diagnosisType: 'FSHD1',
+        d4z4Repeats: '9',
+        haplotype: '4qA',
+        methylationValue: '28%',
+        geneticTestMethod: 'southern_blot',
+        diagnosisDate: '2019-05-01',
+      }),
+      id: 'blot-2019',
+      uploadedAt: '2019-05-02T00:00:00.000Z',
+    };
+
+    it('印的是复检的数，灰区那段话也跟着不再出现', () => {
+      // 9 落在指南说的 8–10 灰区，6 不落。旧规则会把灰区那整段咨询写给
+      // 一位实验室已经测出 6 的患者。
+      const summary = buildClinicalPassportSummary(
+        base({
+          documents: [
+            older,
+            {
+              ...geneticReport({
+                d4z4Repeats: '6',
+                haplotype: '4qA',
+                geneticTestMethod: 'optical_genome_mapping',
+              }),
+              id: 'ogm-2025',
+              uploadedAt: '2025-11-20T00:00:00.000Z',
+            },
+          ],
+        } as never),
+      );
+
+      expect(summary.diagnosis.d4z4Repeats).toBe('6');
+      expect(summary.diagnosis.latestDocumentId).toBe('ogm-2025');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('ogm-2025');
+      // 单倍型也在复检那一份上，所以确诊照旧成立。
+      expect(summary.diagnosis.confirmation).toBe('genetic');
+      expect(JSON.stringify(summary)).not.toContain('灰区');
+    });
+
+    it('复检没读出单倍型时，确诊会掉 —— 这是选了「更新的」要付的代价，写在这里', () => {
+      // 指南按两项评级，两项都必须在被评级的那一份报告上；本平台不把两
+      // 份报告拼成一份。所以复检只读出长度、没读出单倍型时，这位患者从
+      // genetic 掉成 none。
+      //
+      // 这条被钉在这里而不是被绕开，是因为它是明写的取舍：护照说的是
+      // 「这是你的基因证据，读自报告 X」，而「这一份报告只有长度、没有
+      // 单倍型」是关于报告 X 的真话 —— 它看得见、有自己的等级（结果不
+      // 全）、有一条点名缺项的下一步，重新识别就能补回来。反过来那句
+      // 「你的基因证据是 2019 年那份，重复数 9」则是关于这位患者当前状
+      // 态的假话，而且没有任何一页会告诉他还有一份更新的报告存在。
+      const summary = buildClinicalPassportSummary(
+        base({
+          documents: [
+            older,
+            {
+              ...geneticReport({
+                d4z4Repeats: '6',
+                geneticTestMethod: 'optical_genome_mapping',
+              }),
+              id: 'ogm-2025-no-haplotype',
+              uploadedAt: '2025-11-20T00:00:00.000Z',
+            },
+          ],
+        } as never),
+      );
+
+      expect(summary.diagnosis.d4z4Repeats).toBe('6');
+      expect(summary.diagnosis.confirmation).toBe('none');
+      // 而且缺的那一项被点名了 —— 掉下来的确诊是有出口的。
+      expect(JSON.stringify(summary)).toContain('单倍型');
+    });
+
+    it('没测这一段的新报告不算复检 —— 短读长测序顶不掉 Southern blot', () => {
+      // 指南原文写着 D4Z4 的长度与单倍型「cannot be determined by short
+      // read WES- or WGS-like technologies」。让它凭更新顶上来，这位患者
+      // 会从 基因确诊 掉成 未确诊，而那份报告根本没测过这一段。
+      const summary = buildClinicalPassportSummary(
+        base({
+          documents: [
+            {
+              ...geneticReport({
+                diagnosisType: 'FSHD1',
+                d4z4Repeats: '4',
+                haplotype: '4qA',
+                geneticTestMethod: 'southern_blot',
+              }),
+              id: 'blot-2019-sized',
+              uploadedAt: '2019-05-02T00:00:00.000Z',
+            },
+            {
+              ...geneticReport({
+                haplotype: '4qA',
+                geneticTestMethod: 'short_read_sequencing',
+              }),
+              id: 'wes-2026',
+              uploadedAt: '2026-09-01T00:00:00.000Z',
+            },
+          ],
+        } as never),
+      );
+
+      expect(summary.diagnosis.d4z4Repeats).toBe('4');
+      expect(summary.diagnosis.latestDocumentId).toBe('blot-2019-sized');
+      expect(summary.diagnosis.confirmation).toBe('genetic');
+    });
+  });
+
   it('病历摘要抄得再全，护照印的也是基因报告那一份', () => {
     // A 病历摘要 quoting a repeat count is a transcription; a genetics
     // report is the laboratory. Asking how much a document carries

@@ -449,6 +449,65 @@ describe('基因数值只从一份文档上读，而且是同一份', () => {
     expect(result.methylationValue).toBe('8%');
   });
 
+  it('两份都报了重复数时，晚的那一份说了算 —— 哪怕它读出来的格数更少', () => {
+    // 复检正是因为它是现在这一份才被传上来的。「读出来几格」是抽取管线
+    // 的属性，不是报告的属性 —— 同样两份报告会因为 OCR 变好或变坏而重新
+    // 排序，患者身上什么都没变。这一条要和 API 的
+    // genetic-evidence.test.ts 保持同一个答案。
+    const result = insights([
+      RICH_OLD,
+      doc({
+        id: 'lab-retest-2025',
+        uploadedAt: '2025-11-20T00:00:00.000Z',
+        ocrPayload: { fields: { d4z4Repeats: '6', geneticTestMethod: 'optical_genome_mapping' } },
+      }),
+    ]);
+    expect(result.d4z4Repeats).toBe('6');
+    // 旧报告上的 单倍型 / 甲基化 不会被借来填补 —— 那是把两份报告拼成
+    // 一份。它们照旧留在各自的报告详情页上。
+    expect(result.haplotype).toBe('—');
+    expect(result.methylationValue).toBe('—');
+  });
+
+  it('没报重复数的新报告，压不过报了的旧报告 —— 短读长测序测不了这一段', () => {
+    // 指南原文：D4Z4 的长度与单倍型「cannot be determined by short read
+    // WES- or WGS-like technologies」。让它凭更新顶掉 Southern blot，
+    // 患者会从 基因确诊 掉成 未确诊。
+    const result = insights([
+      RICH_OLD,
+      doc({
+        id: 'wes-2026',
+        uploadedAt: '2026-09-01T00:00:00.000Z',
+        ocrPayload: {
+          fields: { haplotype: '4qA', geneticTestMethod: 'short_read_sequencing' },
+        },
+      }),
+    ]);
+    expect(result.d4z4Repeats).toBe('4');
+  });
+
+  it('只读出检测方法的基因报告，算什么都没说 —— 记账不是结果', () => {
+    // 检测方法与诊断日期是记账，不是关于这位患者的结论。这一条曾经让
+    // 那份报告压过唯一抄着重复数的病历摘要，数字从每一个界面上消失。
+    const result = insights([
+      doc({
+        id: 'lab-method-only',
+        uploadedAt: '2026-09-01T00:00:00.000Z',
+        ocrPayload: { fields: { geneticTestMethod: 'southern_blot' } },
+      }),
+      doc({
+        id: 'summary-with-count',
+        documentType: 'medical_summary',
+        uploadedAt: '2020-01-01T00:00:00.000Z',
+        ocrPayload: {
+          extractedText: '门诊病历摘要\n主诉：双上肢无力5年',
+          fields: { classifiedType: 'medical_summary', documentType: 'other', d4z4Repeats: '7' },
+        },
+      }),
+    ]);
+    expect(result.d4z4Repeats).toBe('7');
+  });
+
   it('病历摘要抄下来的重复数：抄写不是化验，压不过实验室自己的报告', () => {
     const result = insights([
       doc({

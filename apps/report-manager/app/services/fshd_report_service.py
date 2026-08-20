@@ -466,7 +466,7 @@ MUSCLE_KEYWORDS: Dict[str, Dict[str, Any]] = {
     # 双大腿MRI does not report groups: the report reads 「股外侧肌、
     # 股中间肌脂肪浸润，股直肌相对保留」, because WHICH heads of the
     # quadriceps are involved and which are spared is the finding. Every
-    # one of those names fell outside the map, `_muscle_from_sentence`
+    # one of those names fell outside the map, the muscle reader
     # answered None, and the sentence produced NOTHING AT ALL — no
     # fatty-infiltration field, no map entry, no trace in the payload
     # that the page had said anything. On the imaging this disease is
@@ -530,9 +530,34 @@ _MUSCLE_TERM = re.compile(r"[一-龥]{2,6}肌(?:群)?(?![肉力张电酶酸病�
 
 #: The qualifiers a report prints in front of a muscle name. Stripped so
 #: that 「双侧股直肌」 and 「股直肌」 are one term rather than two.
-_MUSCLE_TERM_QUALIFIERS = re.compile(
-    r"^(?:双侧|两侧|左侧|右侧|对侧|患侧|健侧|以|及|和|与|、|,|其余|部分|余|各|双|左|右)+"
+_MUSCLE_QUALIFIER_WORDS = (
+    "双侧|两侧|左侧|右侧|对侧|患侧|健侧|以|及|和|与|、|,|其余|部分|余|各|双|左|右"
 )
+_MUSCLE_TERM_QUALIFIERS = re.compile(rf"^(?:{_MUSCLE_QUALIFIER_WORDS})+")
+
+#: A MUSCLE ENUMERATED INTO SOMEBODY ELSE'S STATEMENT.
+#:
+#: 「三角肌、肱二头肌肌力均4级」 is one predicate over two subjects, and
+#: the first subject's own span holds NOTHING but its name and the
+#: enumeration comma. Such a muscle shares the statement it was
+#: enumerated into; a span that says something of its own —
+#: 「三角肌萎缩明显、肱二头肌肌力3级」 — does not, and reading the next
+#: clause's grade against it would publish a number the examiner never
+#: wrote about that muscle. Built from the qualifier list above so the
+#: two questions cannot drift apart.
+_MUSCLE_ENUMERATED_ONLY = re.compile(rf"^(?:{_MUSCLE_QUALIFIER_WORDS}|\s)*$")
+
+#: WHERE ONE MUSCLE'S STATEMENT STOPS AND THE NEXT ONE'S BEGINS.
+#:
+#: Both commas are here, and that is the difference from `_CLAUSE_BREAK`
+#: and from `_mri_clauses`. 「、」 does not separate STATEMENTS, but a
+#: 查体 line uses it to separate MUSCLES — 「三角肌肌力4级、肱二头肌肌力
+#: 3级」 is two measurements, not one measurement of two muscles — and
+#: what this class divides is the sentence among the muscles it names,
+#: which is a different question from what a clause asserts. Where the
+#: enumeration really does share one predicate the span is caught by
+#: `_MUSCLE_ENUMERATED_ONLY` instead. See `_muscle_statements`.
+_MUSCLE_STATEMENT_BREAK = re.compile(r"[,;、]")
 
 #: TERMS THAT END IN 肌 AND NAME NO MUSCLE. A tissue type (心肌, 骨骼肌)
 #: and a body region (大腿肌群, 下肢肌) are not muscles this module
@@ -1604,8 +1629,8 @@ _NOTE_LEAD = re.compile(
 #: head, and the head cannot be recognised by shape: 说明 and 注释 look
 #: exactly like 血糖 and 尿酸 to a reader that has only characters to go
 #: on. What bounds the damage is the other half of this round — a note
-#: region now ends at the first row that prints a reading beside its
-#: interval (`_ends_a_note_region`), so a head this list does not carry
+#: region now ends at the first row that prints a READING and does not
+#: read as prose (`_ends_a_note_region`), so a head this list does not carry
 #: costs a footnote read as prose, and a head it carries wrongly costs a
 #: line, not a panel. Add to it; do not expect to finish it.
 #:
@@ -2183,11 +2208,18 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
 
     AND IT IS BOUNDED BY THE PAGE FIRST AND BY THE FUSE ONLY AFTER. A
     region ends at the next labelled row, at a blank line, and at the
-    first row that prints a reading beside its reference interval — see
-    `_ends_a_note_region`. The fuse is what is left when the page shows
-    none of those, not the boundary itself.
+    first row that prints a READING without reading as prose — see
+    `_ends_a_note_region`, which is asked of the LINE rather than of a
+    laboratory table's furniture, because a genetics page has no such
+    furniture and its footnotes are the dangerous ones. The fuse is what
+    is left when the page shows none of those, not the boundary itself.
     """
     kinds: List[str] = [_KIND_PLAIN] * len(lines)
+    # WHAT A ROW LOOKS LIKE IS A PROPERTY OF THE PAGE, asked once here
+    # and not once per line: a laboratory panel prints every row against
+    # a reference interval and a molecular report prints none at all.
+    # See `_ends_a_note_region`.
+    wears_an_interval = _page_rows_wear_an_interval(lines)
     section: Optional[str] = None
     pending: Optional[str] = None
     block: Optional[str] = None
@@ -2210,7 +2242,9 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
             if (
                 block is not None
                 and block_left > 0
-                and not _ends_a_note_region(stripped)
+                and not _ends_a_note_region(
+                    stripped, wears_an_interval=wears_an_interval
+                )
             ):
                 # Inside a footnote region, and it outranks the section
                 # because it is the nearer statement about this row: the
@@ -3094,14 +3128,6 @@ def _canonical_side(text: str) -> str:
     return "bilateral" if names_pair else "unspecified"
 
 
-def _muscle_from_sentence(sentence: str) -> Optional[Tuple[str, str]]:
-    lowered = sentence.lower()
-    for canonical_name, meta in MUSCLE_KEYWORDS.items():
-        if any(keyword.lower() in lowered for keyword in meta["keywords"]):
-            return canonical_name, meta["region"]
-    return None
-
-
 class _NamedMuscle(NamedTuple):
     """One muscle a sentence names — identified, or merely recognised."""
 
@@ -3122,14 +3148,22 @@ def _names_no_muscle(term: str) -> bool:
     return term.endswith("肌群") or term in _NOT_A_MUSCLE_NAME
 
 
-def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
+class _MuscleHit(NamedTuple):
+    """One muscle a sentence names, and WHERE the sentence names it."""
+
+    start: int
+    end: int
+    muscle: _NamedMuscle
+
+
+def _muscle_hits_in_sentence(sentence: str) -> List[_MuscleHit]:
     """EVERY muscle the sentence names, identified where it can be.
 
     TWO THINGS CHANGED HERE AND THEY ARE THE SAME THING.
 
-    IT READS EVERY MUSCLE, NOT THE FIRST. `_muscle_from_sentence`
-    returns on its first hit, and a radiology sentence names muscles in
-    a LIST — 「右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润」 is one
+    IT READS EVERY MUSCLE, NOT THE FIRST. The reader this replaced
+    returned on its first keyword hit, and a report names muscles in a
+    LIST — 「右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润」 is one
     sentence (a Chinese enumeration comma is not a sentence break), so
     two of its three muscles were dropped without trace. WHICH muscles
     are involved and which are spared IS the finding on this modality;
@@ -3143,9 +3177,13 @@ def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
     A term OVERLAPPING a name the lexicon already matched is that same
     muscle under its qualifiers — 「双侧股直肌」 covers 股直肌 — and is
     not reported twice.
+
+    THE SPANS ARE RETURNED AND NOT ONLY THE MUSCLES, because the second
+    reader of this list needs to know which part of the sentence speaks
+    about which muscle. See `_muscle_statements`.
     """
     lowered = sentence.lower()
-    hits: List[Tuple[int, _NamedMuscle]] = []
+    hits: List[_MuscleHit] = []
     claimed: List[Tuple[int, int]] = []
     for canonical_name, meta in MUSCLE_KEYWORDS.items():
         for keyword in meta["keywords"]:
@@ -3161,7 +3199,13 @@ def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
             if not spans:
                 continue
             claimed.extend(spans)
-            hits.append((spans[0][0], _NamedMuscle(canonical_name, meta["region"], None)))
+            hits.append(
+                _MuscleHit(
+                    spans[0][0],
+                    spans[0][1],
+                    _NamedMuscle(canonical_name, meta["region"], None),
+                )
+            )
             break
     seen_terms: set = set()
     for match in _MUSCLE_TERM.finditer(sentence):
@@ -3171,10 +3215,81 @@ def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
         if not term or _names_no_muscle(term) or term in seen_terms:
             continue
         seen_terms.add(term)
-        hits.append((match.start(), _NamedMuscle(None, None, term)))
+        hits.append(_MuscleHit(match.start(), match.end(), _NamedMuscle(None, None, term)))
     # In the order the report printed them, which is the order a reader
     # of `mri_map` is looking at the sentence in.
-    return [muscle for _, muscle in sorted(hits, key=lambda hit: hit[0])]
+    return sorted(hits, key=lambda hit: hit.start)
+
+
+def _muscles_in_sentence(sentence: str) -> List[_NamedMuscle]:
+    """EVERY muscle the sentence names — see `_muscle_hits_in_sentence`."""
+    return [hit.muscle for hit in _muscle_hits_in_sentence(sentence)]
+
+
+class _MuscleStatement(NamedTuple):
+    """One muscle, and the span of the sentence that speaks about it."""
+
+    muscle: _NamedMuscle
+    start: int
+    end: int
+    #: The span holds nothing but this muscle's own name, so whatever is
+    #: said about it is said in the statement it was enumerated into.
+    #: See `_MUSCLE_ENUMERATED_ONLY`.
+    enumerated: bool
+
+
+def _muscle_statements(sentence: str) -> List[_MuscleStatement]:
+    """The sentence divided among the muscles it names.
+
+    A 查体 SENTENCE NAMES AS MANY MUSCLES AS THE EXAMINER MEASURED, and
+    each of them has a grade of its own:
+
+        双侧三角肌肌力4级、肱二头肌肌力3级、股四头肌肌力5级、胫骨前肌肌力2级
+
+    Reading one muscle off that sentence drops three grades silently;
+    reading four muscles off it with ONE sentence-wide grade regex
+    publishes 4 for all four, which is worse. So the sentence is divided
+    where it changes subject and each muscle is read inside its own
+    span.
+
+    WHERE THE CUT FALLS IS AT THE SEPARATOR AND NOT AT THE NAME, because
+    a side word stands IN FRONT of the muscle it qualifies —
+    「右侧三角肌肌力3级, 左侧肱二头肌肌力4级」 — and a cut made at the
+    name would leave 左侧 with the previous muscle and publish the
+    biceps' grade against the deltoid's side. So the boundary between
+    two muscles is the LAST separator printed between them, and where a
+    report prints none it is the second name itself.
+
+    A muscle whose span holds nothing but its own name was enumerated
+    into the next statement rather than given one — 「三角肌、肱二头肌
+    肌力均4级」 — and is marked so. See `_MUSCLE_ENUMERATED_ONLY`.
+    """
+    hits = _muscle_hits_in_sentence(sentence)
+    if not hits:
+        return []
+    starts = [0]
+    for previous, current in zip(hits, hits[1:]):
+        between = list(
+            _MUSCLE_STATEMENT_BREAK.finditer(sentence[previous.start:current.start])
+        )
+        starts.append(
+            previous.start + between[-1].end() if between else current.start
+        )
+    ends = starts[1:] + [len(sentence)]
+    statements: List[_MuscleStatement] = []
+    for hit, start, end in zip(hits, starts, ends):
+        beside_the_name = (
+            sentence[start:hit.start] + sentence[hit.end:end]
+        )
+        statements.append(
+            _MuscleStatement(
+                hit.muscle,
+                start,
+                end,
+                bool(_MUSCLE_ENUMERATED_ONLY.match(beside_the_name)),
+            )
+        )
+    return statements
 
 
 #: HOW A CHINESE MUSCLE MRI SAYS ONE SIDE IS WORSE.
@@ -5886,7 +6001,27 @@ def _mrc_grade_cell(printed: str) -> str:
 #: The same grade, reached across a side word. The gap excludes the grade
 #: digits themselves so that 「左侧」 binds to the next grade printed and
 #: not to one further down the sentence.
-_MRC_SIDE_GAP = r"[^0-5\n(]{0,12}"
+#:
+#: AND IT STOPS AT A CLAUSE BOUNDARY, for the same reason
+#: `_MRC_LABEL_GAP` does and by the same list. The class excluded the
+#: grade digits and the newline and NOT THE COMMA, so a side word bound
+#: straight across the clause break to the OTHER side's grade:
+#:
+#:     三角肌: 左侧未测, 右侧肌力4级
+#:
+#: put 「左」 eight characters in front of the 4 that belongs to the
+#: right side, so the left deltoid was published `mrc_score: 4` typed
+#: 4.0 at 0.95 — the confidence reserved for a grade read against a side
+#: the examiner actually named — on a sentence saying in words that the
+#: left side was not measured. It lands on `deltoid_strength`, on the
+#: 平均肌力 average and on the muscle map the patient sees.
+#:
+#: 、 IS DELIBERATELY STILL ADMITTED. It is the ENUMERATION comma —
+#: 「左、右上肢肌力均4级」 is one statement about both sides — and this is
+#: the same split `_CLAUSE_BREAK` and `_mri_clauses` already make. A side
+#: word introduces what follows it, and it stops introducing at the
+#: clause break, not at the enumeration.
+_MRC_SIDE_GAP = r"[^0-5\n,;.()]{0,12}"
 
 #: WHAT MAKES A GRADE-SHAPED NUMBER AN MRC GRADE — and the whole of what
 #: was missing.
@@ -5941,12 +6076,6 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
     muscle_strength: List[Dict[str, Any]] = []
 
     for sentence in sentences:
-        muscle = _muscle_from_sentence(sentence)
-        if not muscle:
-            continue
-        canonical_name, body_region = muscle
-        side = _canonical_side(sentence)
-
         # THE SIDE ANCHORS READ THE SENTENCE WITHOUT ITS 左右, for the
         # same reason `_canonical_side` does. 「三角肌肌力左右均为4级」 put
         # a 左 twelve characters in front of the grade and a 右 the same
@@ -5956,56 +6085,70 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         # examiner wrote. See `_SIDE_PAIR_WORD`.
         sided, _ = _read_side_pair(sentence)
 
-        left_match, _ = _find_regex(
-            sided, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
-        )
-        right_match, _ = _find_regex(
-            sided, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
-        )
+        # ONE SENTENCE, AS MANY MUSCLES AS IT NAMES, EACH READ INSIDE ITS
+        # OWN SPAN. See `_muscle_statements` for why the span and not the
+        # sentence: a sentence-wide grade regex over four muscles
+        # publishes the FIRST grade against all four.
+        for statement in _muscle_statements(sentence):
+            canonical_name = statement.muscle.canonical_name
+            if canonical_name is None:
+                # A muscle this module recognises but cannot identify is
+                # `_extract_mri`'s to publish as an unread term. It is
+                # still a boundary here, so the muscle after it does not
+                # inherit a grade printed against a name nobody read.
+                continue
+            body_region = statement.muscle.region
+            scope = slice(statement.start, statement.end)
+            printed = sentence if statement.enumerated else sentence[scope]
+            graded = sided if statement.enumerated else sided[scope]
 
-        if left_match or right_match:
-            if left_match:
-                score = _mrc_grade_cell(left_match.group(1))
-                muscle_strength.append(
-                    {
-                        "muscle_name": canonical_name,
-                        "side": "left",
-                        "mrc_score": score,
-                        "mrc_numeric": MRC_NORMALIZATION.get(score),
-                        "source_text": sentence,
-                        "confidence": 0.95,
-                        "body_region": body_region,
-                    }
-                )
-            if right_match:
-                score = _mrc_grade_cell(right_match.group(1))
-                muscle_strength.append(
-                    {
-                        "muscle_name": canonical_name,
-                        "side": "right",
-                        "mrc_score": score,
-                        "mrc_numeric": MRC_NORMALIZATION.get(score),
-                        "source_text": sentence,
-                        "confidence": 0.95,
-                        "body_region": body_region,
-                    }
-                )
-            continue
+            # A SPAN THAT NAMES NO SIDE FALLS BACK TO THE SENTENCE'S,
+            # because a leading 双侧 governs the whole enumeration:
+            # 「双侧三角肌肌力4级、肱二头肌肌力3级」 measures both sides of
+            # both muscles and says so once.
+            side = _canonical_side(printed)
+            if side == "unspecified":
+                side = _canonical_side(sentence)
 
-        generic_match, _ = _find_regex(sided, _mrc_grade_patterns())
-        if generic_match:
-            score = _mrc_grade_cell(generic_match.group(1))
-            muscle_strength.append(
-                {
-                    "muscle_name": canonical_name,
-                    "side": side,
-                    "mrc_score": score,
-                    "mrc_numeric": MRC_NORMALIZATION.get(score),
-                    "source_text": sentence,
-                    "confidence": 0.88,
-                    "body_region": body_region,
-                }
+            left_match, _ = _find_regex(
+                graded, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
             )
+            right_match, _ = _find_regex(
+                graded, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
+            )
+
+            if left_match or right_match:
+                for named_side, match in (("left", left_match), ("right", right_match)):
+                    if not match:
+                        continue
+                    score = _mrc_grade_cell(match.group(1))
+                    muscle_strength.append(
+                        {
+                            "muscle_name": canonical_name,
+                            "side": named_side,
+                            "mrc_score": score,
+                            "mrc_numeric": MRC_NORMALIZATION.get(score),
+                            "source_text": sentence,
+                            "confidence": 0.95,
+                            "body_region": body_region,
+                        }
+                    )
+                continue
+
+            generic_match, _ = _find_regex(graded, _mrc_grade_patterns())
+            if generic_match:
+                score = _mrc_grade_cell(generic_match.group(1))
+                muscle_strength.append(
+                    {
+                        "muscle_name": canonical_name,
+                        "side": side,
+                        "mrc_score": score,
+                        "mrc_numeric": MRC_NORMALIZATION.get(score),
+                        "source_text": sentence,
+                        "confidence": 0.88,
+                        "body_region": body_region,
+                    }
+                )
 
     for item in muscle_strength:
         _append_field(
@@ -7852,46 +7995,108 @@ _ROW_BOUND = re.compile(rf"({_COMPARATOR})\s*({_NUMBER_SOURCE})(?![\d.])")
 #: A number that could be a READING — not a digit inside a Latin name.
 #: 「D4Z4」, 「FSHD1」 and 「4qA」 are names with digits in them, and a scan
 #: that counts those as numbers finds a reading on every genetics
-#: sentence ever printed. `_unit_digit_spans` takes out the other half —
-#: the 10 in 「10^9/L」. See `_prints_a_reading_beside_an_interval`.
+#: sentence ever printed. `_unit_digit_spans` takes out one more half —
+#: the 10 in 「10^9/L」 — and `_prints_a_reading` takes out the rest.
 _ROW_READING_NUMBER = re.compile(
     rf"(?<![\d.]){_NOT_INSIDE_A_LATIN_TOKEN}{_NUMBER_SOURCE}(?![\d.])"
 )
 
 
-def _prints_a_reading_beside_an_interval(line: str) -> bool:
-    """Is `line` a RESULTS ROW — a reading printed beside its interval?
+def _prints_a_reading(line: str) -> bool:
+    """Does `line` print a number that is THIS PATIENT'S, not a reference?
 
-    THE ONE PIECE OF TABLE FURNITURE A FOOTNOTE NEVER PRINTS, and that
-    is the whole of why this is the test. A footnote states ONE
-    threshold — 「血红蛋白量低于 60 g/L 为危急值」, 「D4Z4 重复单元数低于
-    10 个即为缩短」 — and a results row states a measurement AND the
-    interval it is to be read against: 「白细胞计数(WBC) 6.69 3.5-9.5
-    10^9/L」. Both shapes name an analyte and print a number, so neither
-    「it names an analyte」 nor 「it carries a number」 separates them;
-    「reading AND interval」 does.
+    THE FOUR THINGS A PRINTED NUMBER CAN BE, and this file already
+    writes down three of them:
 
-    IT IS DELIBERATELY NOT 「the line quotes an interval」. A footnote
-    quotes one as often as a table prints one — 「备注: D4Z4 重复单元数
-    1-10 为缩短范围」 is the grey zone restated, and the interval is the
-    only number on it. So a second number, outside the interval and
-    outside any unit that spells itself with digits, is required: that
-    second number is the READING, and a footnote has none.
+      - one end of a reference INTERVAL (`_ROW_RANGE`),
+      - a digit a UNIT spells itself with (`_unit_digit_spans` — the 10
+        of 「10^9/L」),
+      - a THRESHOLD, which is a number a bound word governs on one side
+        or the other (`_BOUND_BEFORE_VALUE` / `_BOUND_AFTER_VALUE`, the
+        same grammar `_extract_genetic` refuses a count by),
+      - or a READING.
+
+    A footnote states the first three and never the fourth: 「血红蛋白量
+    低于 60 g/L 为危急值」 and 「D4Z4 重复单元数低于 10 个即为缩短」 are
+    bounds, 「参考区间 130-175 g/L」 is an interval. A results row states
+    a reading, and — see `_ends_a_note_region` — states it whether or
+    not it prints an interval beside it.
+
+    EVERY interval on the line is reserved, not the first. 「儿童参考区间
+    110-160 g/L 成人参考区间 130-175 g/L」 is one footnote item quoting
+    two ranges, and reserving only the first leaves the second reading as
+    though the item stated a measurement.
     """
-    interval = _ROW_RANGE.search(line)
-    if interval is None:
-        return False
-    reserved = ((interval.start(), interval.end()), *_unit_digit_spans(line))
-    return any(
-        not any(
+    reserved = tuple(match.span() for match in _ROW_RANGE.finditer(line))
+    reserved += _unit_digit_spans(line)
+    for number in _ROW_READING_NUMBER.finditer(line):
+        if any(
             start < number.end() and number.start() < end
             for start, end in reserved
-        )
-        for number in _ROW_READING_NUMBER.finditer(line)
+        ):
+            continue
+        if _BOUND_BEFORE_VALUE.search(line[: number.start()]):
+            continue
+        if _BOUND_AFTER_VALUE.match(line, number.end()):
+            continue
+        return True
+    return False
+
+
+def _reads_as_prose(line: str) -> bool:
+    """Is `line` a SENTENCE rather than a row of cells?
+
+    A row's cells are separated by WHITESPACE; a footnote item is prose
+    and separates its clauses with punctuation. `_CLAUSE_BREAK` is where
+    this file already spells that break, and `_strip_group_separators`
+    is where it already spells the one comma that is not one — the
+    thousands separator inside 「3,250」.
+    """
+    return _CLAUSE_BREAK.search(_strip_group_separators(line)) is not None
+
+
+def _reads_as_a_result_row(line: str, *, wears_an_interval: bool) -> bool:
+    """Is `line` a RESULTS ROW of a page whose rows look like this one?
+
+    THREE THINGS A ROW IS AND A FOOTNOTE ITEM IS NOT:
+
+      - it PRINTS A READING — a number that is not an interval end, not
+        a digit a unit spells itself with, and not a threshold that a
+        bound word governs (`_prints_a_reading`);
+      - it is not PROSE — a row separates its cells with whitespace and a
+        footnote item separates its clauses with punctuation
+        (`_reads_as_prose`);
+      - and it wears whatever furniture the rest of THIS PAGE's rows
+        wear, which is what `wears_an_interval` carries.
+
+    THE THIRD ONE CANNOT BE ANSWERED OFF THE LINE, and that is not a
+    shortcut — it is the finding. 「血小板计数 20」 under a 危急值提示
+    header and 「D4Z4 重复单元数 18」 under a 备注 header are THE SAME
+    STRING SHAPE: a name and a number. One is a panic threshold and the
+    other is the cell this whole product turns on, and nothing on either
+    line says which. What says it is the page. See `_ends_a_note_region`.
+    """
+    text = line.strip()
+    if _reads_as_prose(text) or not _prints_a_reading(text):
+        return False
+    return not wears_an_interval or _ROW_RANGE.search(text) is not None
+
+
+def _page_rows_wear_an_interval(lines: Iterable[str]) -> bool:
+    """Do THIS page's result rows print a reference interval beside them?
+
+    Asked once per page, by `_row_kinds`, and handed to
+    `_ends_a_note_region`. A line counts only where it is a row under
+    the STRICT reading, so a footnote item that happens to quote a range
+    — 「参考区间 130-175 g/L, 检测周期 3 个工作日」 — cannot put a page
+    into a mode that none of its own rows can then satisfy.
+    """
+    return any(
+        _reads_as_a_result_row(line, wears_an_interval=True) for line in lines
     )
 
 
-def _ends_a_note_region(line: str) -> bool:
+def _ends_a_note_region(line: str, *, wears_an_interval: bool) -> bool:
     """Does `line` END the footnote region opened above it?
 
     A NOTE REGION HAS AN END, AND `_NOTE_BLOCK_MAX_ROWS` WAS NOT IT.
@@ -7901,13 +8106,47 @@ def _ends_a_note_region(line: str) -> bool:
     own closes the region (a column heading, a section header and a
     table header row all do), and so does a blank line.
 
+    IT WAS A STATEMENT ABOUT A LABORATORY TABLE, ASKED ON EVERY PAGE.
+    The test used to be 「a reading printed BESIDE ITS INTERVAL」, spelled
+    as a property of the LINE, and that one assumption made it wrong in
+    both directions at once:
+
+      - A GENETICS PAGE PRINTS NO INTERVALS, so NOTHING on it could ever
+        end a region and the sixteen-line fuse was the only boundary
+        left — on exactly the page where the footnote 「D4Z4 重复单元数
+        低于 10 个即为缩短」 is most dangerous. Measured on a synthetic
+        report with that block printed ABOVE its readings:
+        `d4z4_repeat_pathogenic`, `haplotype` and `diagnosis_type` all
+        None, with an empty `review_queue` reporting nothing amiss — the
+        cell the passport, the exports and `applyGeneticReportAutofill`
+        all turn on, lost to a footnote.
+      - AND A FOOTNOTE QUOTES AN INTERVAL AND CARRIES A SECOND NUMBER
+        ALL THE TIME — a turnaround time, a paediatric range, a second
+        interval. 「1. 本项目参考区间 130-175 g/L, 检测周期 3 个工作日」
+        satisfied 「a reading beside an interval」 exactly, so the block
+        REOPENED at item one and every item under it went back to being
+        a candidate result row. Measured on a synthetic 血常规 laid out
+        that way: `plt: 20` off 「2. 血小板计数 20 为危急值」 — a
+        critical-value threshold published as this patient's platelet
+        count.
+
+    ONE ANSWER, BECAUSE IT IS ONE QUESTION: a note region ends at the
+    first line that reads like a RESULT ROW OF THIS PAGE. Grounding
+    「result row」 in the page instead of in a universal shape is what
+    makes the interval a requirement where the page prints intervals and
+    no requirement at all where it prints none.
+
     THE FUSE DIRECTION IS REVERSED HERE, and that is the point. A line
     this file is unsure about is READ, not swallowed: admitting one
     footnote costs one threshold in the review queue, and swallowing a
     results table costs every number a clinician came to the report for.
-    See `_NOTE_BLOCK_MAX_ITEMS`.
+    So the residue is named rather than hidden — on a page that prints
+    no intervals anywhere, a footnote item stating a bare quantity in
+    ONE clause with no bound word on it still ends the region, and that
+    is the side of the line this file chooses to be wrong on. See
+    `_NOTE_BLOCK_MAX_ITEMS`.
     """
-    return _prints_a_reading_beside_an_interval(line.strip())
+    return _reads_as_a_result_row(line, wears_an_interval=wears_an_interval)
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:

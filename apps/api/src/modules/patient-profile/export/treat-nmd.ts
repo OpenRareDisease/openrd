@@ -12,7 +12,9 @@ import {
   fallsDiaryOmission,
   heldDatePrecision,
   instrumentOmission,
+  reportReadingsOmission,
   withOriginNote,
+  REPORT_READING_KEYS,
   ECORI_FRAGMENT_NOT_JUDGED_ZH,
   METHYLATION_NOT_JUDGED_ZH,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
@@ -26,10 +28,14 @@ import {
   FOLLOWUP_EVENT_LABELS,
   FOLLOWUP_EVENT_SEVERITY_LABELS,
   FUNCTION_TEST_LABELS,
-  MUSCLE_GROUP_LABELS,
   SIDE_LABELS,
   SYMPTOM_LABELS,
+  UNNAMED_MEASUREMENT_SUBJECT_ZH,
   labelFor,
+  measurementMovementZh,
+  measurementSubjectZh,
+  recognisedMuscleGroup,
+  unnamedMeasurementNoteZh,
 } from './labels.js';
 import type { OccurrenceDate } from './occurrence-date.js';
 import { serialiseYear, type SerialisedYear } from './year-value.js';
@@ -912,6 +918,29 @@ export const buildTreatNmdExport = (
     field: 'subject（出生年份、性别、常住地区、体格测量与联系方式）',
     reasonZh: `本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：${BIRTH_FIELD_ZH[birthPrecision]}、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。出生时间与性别在 FHIR 导出里各有对应字段（Patient.birthDate 与 Patient.gender），本文件两个都没有；${BIRTH_IN_FHIR_ZH[birthPrecision]}联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。`,
   });
+  // THE READINGS PARSED OFF THE PATIENT'S OWN UPLOADED REPORTS.
+  //
+  // Unconditional, and the count in the sentence is what carries the
+  // per-profile part. See `reportReadingsOmission` for why this document
+  // declares them rather than adding a seventh section: the six sections
+  // are the six mandatory content areas the corpus establishes, and
+  // laboratory / pulmonary / cardiac / imaging / examination results are
+  // not among them.
+  //
+  // AND THE SECOND SENTENCE IS THE ONE THAT MATTERS. This document's
+  // `codingProvenance` block already publishes the ledger entry for
+  // `pft.fvcPercentPredicted` — 「FVC percent predicted」 is printed in
+  // this very file's output — so a receiver could see that the platform
+  // knows the concept, find no value, and find nothing saying a value
+  // existed. That is the exact reading envelope.ts calls a claim that
+  // nothing was left out.
+  omissions.push(
+    reportReadingsOmission(
+      'sections（检验、肺功能、心脏、影像与体格检查的报告解析读数）',
+      source.reportFields.filter((field) => REPORT_READING_KEYS.includes(field.key)).length,
+      '本文件按该核心数据集的六个强制性内容领域组织，检验、肺功能、心脏、影像与体格检查的结果不属于这六个领域中的任何一个，本导出因此没有为它们建立对齐位置——凭空加一节等于把数据映射到该数据集没有问的问题上。这些读数连同各自的来源文件在 FHIR 导出里以 Observation 给出（Phenopacket 导出同样不承载它们，并在它自己的 omissions 里说明）。',
+    ),
+  );
   omissions.push({
     field: 'sections（用药记录、日常记录、档案备注与基线备注）',
     reasonZh: `本文件不承载三类内容：${profile.medications.length} 条用药记录（药名、剂量、频次、给药途径、起止日期与状态）、${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分），以及两处自由文本备注——「档案备注」（档案上的备注栏）与「基线备注」（基线问卷自己的备注栏，后台也能编辑）。这是两个不同的存储，本文件哪一个都不承载。该核心数据集列出的强制性领域里没有这三类，本导出也没有为它们建立对齐位置；自由文本尤其不适合塞进带 provenanceZh 的条目里当作一次记录来读。三份可携带导出都不承载它们——本文件里没有用药记录，不表示患者没有在用药。完整内容请改用不带 format 参数的数据导出。`,
@@ -983,21 +1012,54 @@ export const buildTreatNmdExport = (
 const latestMeasurements = (measurements: NormalisedSource['profile']['measurements']) => {
   const latest = new Map<string, (typeof measurements)[number]>();
   measurements.forEach((measurement) => {
-    const key = `${measurement.muscleGroup}::${measurement.side ?? 'unspecified'}`;
+    // `metricKey ?? muscleGroup`, which is the series key the REST of
+    // this product already uses: migration 004's index is on
+    // `COALESCE(metric_key, muscle_group)`, and profile.service.ts keys
+    // its own trend series the same way.
+    //
+    // ON `muscleGroup` ALONE THIS MAP SILENTLY DISCARDED ROWS. Every
+    // measurement written with no muscle group is stored as the sentinel
+    // 「custom」 (see labels.ts), so any two group-less actions recorded
+    // for the same side collapsed onto one key 「custom::none」 and the
+    // older one vanished from the document with nothing declaring it.
+    // Today only 用力闭眼 takes that branch, so the collision is latent
+    // rather than live — and 噘嘴/鼓腮 is already in the label tables
+    // waiting to become the second one.
+    const key = `${measurement.metricKey ?? measurement.muscleGroup}::${measurement.side ?? 'unspecified'}`;
     const previous = latest.get(key);
     if (!previous || Date.parse(measurement.recordedAt) > Date.parse(previous.recordedAt)) {
       latest.set(key, measurement);
     }
   });
-  return [...latest.values()].map((measurement) => ({
-    muscleGroup: measurement.muscleGroup,
-    muscleGroupLabelZh: labelFor(MUSCLE_GROUP_LABELS, measurement.muscleGroup),
-    side: measurement.side,
-    sideLabelZh: measurement.side === null ? null : labelFor(SIDE_LABELS, measurement.side),
-    strengthScore: measurement.strengthScore,
-    entryMode: measurement.entryMode,
-    recordedAt: measurement.recordedAt,
-  }));
+  return [...latest.values()].map((measurement) => {
+    // See fhir-r4.ts and labels.ts: this used to be
+    // `labelFor(MUSCLE_GROUP_LABELS, …)`, which published
+    // `muscleGroupLabelZh: 「custom」` for every 用力闭眼 self-test — the
+    // storage sentinel for 「no muscle group」, handed to a registry as
+    // the name of a muscle.
+    const subjectZh = measurementSubjectZh(measurement.muscleGroup, measurement.metricKey);
+    const movementZh = measurementMovementZh(measurement.muscleGroup, measurement.metricKey);
+    return {
+      // Null rather than 「custom」 — see `recognisedMuscleGroup`.
+      muscleGroup: recognisedMuscleGroup(measurement.muscleGroup),
+      // The row's own `metric_key`, which no export carried. It is the
+      // only column that says WHICH movement was graded, and for a
+      // group-less row it is the only thing that identifies the
+      // measurement at all.
+      metricKey: measurement.metricKey,
+      subjectLabelZh: subjectZh ?? UNNAMED_MEASUREMENT_SUBJECT_ZH,
+      movementLabelZh: movementZh,
+      side: measurement.side,
+      sideLabelZh: measurement.side === null ? null : labelFor(SIDE_LABELS, measurement.side),
+      strengthScore: measurement.strengthScore,
+      entryMode: measurement.entryMode,
+      recordedAt: measurement.recordedAt,
+      unnamedSubjectNoteZh:
+        subjectZh === null
+          ? unnamedMeasurementNoteZh(measurement.muscleGroup, measurement.metricKey)
+          : null,
+    };
+  });
 };
 
 const latestFunctionTests = (tests: NormalisedSource['profile']['functionTests']) => {

@@ -7337,25 +7337,33 @@ class ANoteHeaderDoesNotSwallowTheResultsTableTest(unittest.TestCase):
         self._assert_whole_panel(panel)
 
     def test_a_footnote_quoting_an_interval_does_not_end_its_own_region(self):
-        """`_ends_a_note_region` asks for a READING BESIDE an interval,
-        not for an interval: a footnote quotes one, a row prints both."""
+        """A footnote QUOTES an interval; a row prints a READING against
+        one. On a page whose rows wear intervals the quote is not a row,
+        and the reading is."""
         self.assertFalse(
             fshd_report_service._ends_a_note_region(
-                "D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1 分子诊断标准"
+                "D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1 分子诊断标准",
+                wears_an_interval=True,
             )
         )
         self.assertFalse(
-            fshd_report_service._ends_a_note_region("血红蛋白量参考区间 130-175 g/L")
+            fshd_report_service._ends_a_note_region(
+                "血红蛋白量参考区间 130-175 g/L", wears_an_interval=True
+            )
         )
         self.assertTrue(
-            fshd_report_service._ends_a_note_region("血红蛋白量(HGB) 155 130-175 g/L")
+            fshd_report_service._ends_a_note_region(
+                "血红蛋白量(HGB) 155 130-175 g/L", wears_an_interval=True
+            )
         )
 
     def test_a_unit_that_spells_itself_with_digits_is_not_a_reading(self):
         """「10^9/L」 is the 单位 cell of half a 血常规, and a scan that
         counts its 10 as a reading ends every region on the first line."""
         self.assertFalse(
-            fshd_report_service._ends_a_note_region("白细胞计数参考区间 3.5-9.5 10^9/L")
+            fshd_report_service._ends_a_note_region(
+                "白细胞计数参考区间 3.5-9.5 10^9/L", wears_an_interval=True
+            )
         )
 
 
@@ -7671,6 +7679,309 @@ class AnAlternationIsAlsoARefusalToChooseTest(unittest.TestCase):
         )
         self.assertEqual(known & set(fshd_report_service._ALTERNATION_WORDS), set())
 
+
+class ANoteRegionEndsAtARowOfThisPageTest(unittest.TestCase):
+    """WHAT ENDS A NOTE REGION ON A PAGE THAT HAS NO TABLE.
+
+    The end test was 「a reading printed BESIDE ITS INTERVAL」 — a
+    statement about a laboratory panel's layout, asked of every page —
+    and that one assumption was wrong in both directions at once. A
+    genetics page prints no intervals, so nothing on it could ever close
+    a region; and a footnote item quotes an interval and carries a
+    second number all the time, so a block reopened in the middle of
+    itself. Every fixture below is synthetic.
+    """
+
+    #: A molecular report laid out with its footnote block ABOVE the
+    #: readings, which is the shape that had no boundary at all. Every
+    #: value is invented.
+    GENETICS_NOTE_FIRST = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "备注",
+        "D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        "D4Z4 重复单元数 18",
+        "4q35 单倍型 4qA",
+        "本报告仅对本次送检标本负责。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_genetics_page_can_close_a_note_region_at_all(self):
+        """THE REGRESSION, HALF ONE. No line on a molecular report wears
+        a reference interval, so the sixteen-line fuse was the only
+        boundary and the readings under the footnote were all refused."""
+        summary = self._genetic(*self.GENETICS_NOTE_FIRST)
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_the_threshold_that_footnote_defines_is_still_not_a_diagnosis(self):
+        """The other direction, unchanged: the block that DEFINES the
+        FSHD1 boundary must not type the patient with it."""
+        summary = self._genetic(*self.GENETICS_NOTE_FIRST)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_a_multi_item_genetics_footnote_is_refused_to_its_last_item(self):
+        """Relaxing the interval requirement must not reopen a block
+        that states its threshold across several numbered items."""
+        summary = self._genetic(
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "检测结果: D4Z4 重复单元数 18",
+            "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+            "备注",
+            "1. D4Z4 重复单元数低于 10 个即为缩短",
+            "2. 重复单元数 11 以上为正常参考范围",
+            "3. 符合 FSHD1 分子诊断标准者建议遗传咨询",
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_a_footnote_item_quoting_an_interval_does_not_reopen_the_block(self):
+        """THE REGRESSION, HALF TWO. A turnaround time beside a quoted
+        reference interval satisfied 「a reading beside an interval」
+        exactly, so item one ended the block and item two went back to
+        being a candidate result row: a panic threshold published as this
+        patient's platelet count."""
+        panel = self._panel(
+            "血红蛋白量(HGB) 155 130-175 g/L",
+            "说明",
+            "1. 本项目参考区间 130-175 g/L, 检测周期 3 个工作日",
+            "2. 血小板计数 20 为危急值",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+
+    def test_a_second_interval_in_one_item_does_not_reopen_the_block_either(self):
+        """A paediatric range printed beside the adult one is two
+        intervals on one line and no reading at all."""
+        panel = self._panel(
+            "血红蛋白量(HGB) 155 130-175 g/L",
+            "说明",
+            "1. 儿童参考区间 110-160 g/L 成人参考区间 130-175 g/L",
+            "2. 血小板计数 20 为危急值",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+
+    def test_the_same_string_shape_is_read_two_ways_by_the_page(self):
+        """THE WHOLE REASON THE PAGE HAS TO BE ASKED. 「血小板计数 20」
+        and 「D4Z4 重复单元数 18」 are a name and a number in both cases;
+        one is a panic threshold and the other is the cell this product
+        turns on, and only the page says which."""
+        self.assertFalse(
+            fshd_report_service._ends_a_note_region(
+                "血小板计数 20", wears_an_interval=True
+            )
+        )
+        self.assertTrue(
+            fshd_report_service._ends_a_note_region(
+                "D4Z4 重复单元数 18", wears_an_interval=False
+            )
+        )
+
+    def test_the_page_is_read_off_its_own_rows(self):
+        self.assertTrue(
+            fshd_report_service._page_rows_wear_an_interval(
+                ("血红蛋白量(HGB) 155 130-175 g/L", "备注")
+            )
+        )
+        self.assertFalse(
+            fshd_report_service._page_rows_wear_an_interval(
+                self.GENETICS_NOTE_FIRST
+            )
+        )
+
+    def test_a_quoted_interval_does_not_make_a_page_a_table(self):
+        """A footnote item that quotes a range is not one of the page's
+        rows, and counting it would put a genetics page into a mode none
+        of its own lines could then satisfy."""
+        self.assertFalse(
+            fshd_report_service._page_rows_wear_an_interval(
+                (
+                    "示例医学检验所 FSHD1 基因检测报告单",
+                    "备注",
+                    "1. 本项目参考区间 11-100, 检测周期 3 个工作日",
+                    "D4Z4 重复单元数 18",
+                )
+            )
+        )
+
+    def test_a_bound_word_keeps_a_threshold_from_being_a_reading(self):
+        """The same grammar `_extract_genetic` refuses a count by. A
+        footnote states a bound; a row states a value."""
+        for line in ("血红蛋白量低于 60 g/L", "重复单元数 11 以上为正常参考范围",
+                     "重复单元数不足 10 个", "血小板计数 <20"):
+            with self.subTest(line=line):
+                self.assertFalse(fshd_report_service._prints_a_reading(line), line)
+        self.assertTrue(fshd_report_service._prints_a_reading("D4Z4 重复单元数 18"))
+
+    def test_a_thousands_separator_is_not_a_clause_break(self):
+        """`_reads_as_prose` must not read 「3,250」 as two clauses, or a
+        creatine kinase row stops being a row."""
+        self.assertFalse(
+            fshd_report_service._reads_as_prose("肌酸激酶(CK) 3,250 50-310 U/L")
+        )
+        self.assertTrue(
+            fshd_report_service._reads_as_prose("血清钾低于 2.8 为危急值, 请通知临床")
+        )
+
+
+class ASideWordStopsAtTheClauseBreakTest(unittest.TestCase):
+    """THE SIDE GAP EXCLUDED THE GRADE DIGITS AND NOT THE COMMA.
+
+    So a side word bound straight across a clause break to the OTHER
+    side's grade, and the untested side was published at the confidence
+    reserved for a side the examiner actually named. Synthetic
+    throughout.
+    """
+
+    def _grades(self, line):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录", line)),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("muscle_strength", [])
+
+    def test_a_side_that_was_not_measured_gets_no_grade(self):
+        """THE REGRESSION. 「左侧未测」 was published as a left deltoid of
+        grade 4, off the 4 belonging to the right side."""
+        grades = self._grades("三角肌: 左侧未测, 右侧肌力4级。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("right", "4")]
+        )
+
+    def test_neither_side_reaches_across_the_break_in_either_direction(self):
+        grades = self._grades("三角肌: 左侧肌力3级, 右侧未查。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("left", "3")]
+        )
+
+    def test_the_enumeration_comma_is_still_crossed(self):
+        """、 separates the two sides INSIDE one statement, which is the
+        same split `_CLAUSE_BREAK` and `_mri_clauses` already make."""
+        grades = self._grades("左、右上肢三角肌肌力均4级。")
+        self.assertEqual(
+            {g["side"]: g["mrc_score"] for g in grades}, {"left": "4", "right": "4"}
+        )
+
+    def test_the_side_gap_spells_the_same_break_as_the_label_gap(self):
+        """Two gaps in one reader disagreeing about where a clause ends
+        is how this defect got in."""
+        for char in ",;.":
+            with self.subTest(char=char):
+                self.assertIn(char, fshd_report_service._MRC_SIDE_GAP)
+                self.assertIn(char, fshd_report_service._MRC_LABEL_GAP)
+
+
+class OneExamSentenceNamesAsManyMusclesAsItMeasuresTest(unittest.TestCase):
+    """A 查体 SENTENCE LISTS MUSCLES AND THE READER TOOK THE FIRST ONE.
+
+    A Chinese enumeration comma is not a sentence break, so an examiner
+    recording four muscles in one breath had three of those grades
+    dropped without trace — and reading four muscles off ONE
+    sentence-wide grade regex would have published the first grade
+    against all four, which is worse. Synthetic throughout.
+    """
+
+    def _grades(self, *lines):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录",) + lines),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return [
+            (g["muscle_name"], g["side"], g["mrc_score"])
+            for g in result["fshd"]["normalized_summary"].get("muscle_strength", [])
+        ]
+
+    def test_four_muscles_in_one_sentence_keep_four_grades(self):
+        """THE REGRESSION. One sentence, four measurements, one entry."""
+        self.assertEqual(
+            self._grades(
+                "双侧三角肌肌力4级、肱二头肌肌力3级、股四头肌肌力5级、胫骨前肌肌力2级。"
+            ),
+            [
+                ("deltoid", "bilateral", "4"),
+                ("biceps", "bilateral", "3"),
+                ("quadriceps", "bilateral", "5"),
+                ("tibialis_anterior", "bilateral", "2"),
+            ],
+        )
+
+    def test_each_muscle_gets_its_own_grade_and_not_the_first_one(self):
+        grades = self._grades("三角肌肌力4级、肱二头肌肌力2级。")
+        self.assertEqual(
+            grades, [("deltoid", "unspecified", "4"), ("biceps", "unspecified", "2")]
+        )
+
+    def test_a_side_word_belongs_to_the_muscle_it_stands_in_front_of(self):
+        """The cut falls at the separator and not at the name, because a
+        Chinese side word PRECEDES what it qualifies."""
+        self.assertEqual(
+            self._grades("右侧三角肌肌力3级, 左侧肱二头肌肌力4级。"),
+            [("deltoid", "right", "3"), ("biceps", "left", "4")],
+        )
+
+    def test_a_leading_双侧_governs_the_whole_enumeration(self):
+        self.assertEqual(
+            self._grades("双侧股四头肌肌力4级、胫骨前肌肌力3级。"),
+            [("quadriceps", "bilateral", "4"), ("tibialis_anterior", "bilateral", "3")],
+        )
+
+    def test_a_muscle_enumerated_into_one_predicate_shares_it(self):
+        """「三角肌、肱二头肌肌力均4级」 is one predicate over two
+        subjects, and the first subject's span holds nothing but its own
+        name. See `_MUSCLE_ENUMERATED_ONLY`."""
+        self.assertEqual(
+            self._grades("三角肌、肱二头肌肌力均4级。"),
+            [("deltoid", "unspecified", "4"), ("biceps", "unspecified", "4")],
+        )
+
+    def test_a_muscle_with_a_statement_of_its_own_borrows_no_grade(self):
+        """The other side of the same rule: a span that says something
+        of its own did not share the next clause's measurement, and
+        publishing that grade would be a number nobody wrote."""
+        self.assertEqual(
+            self._grades("三角肌萎缩明显、肱二头肌肌力3级。"),
+            [("biceps", "unspecified", "3")],
+        )
+
+    def test_one_muscle_named_twice_still_reads_both_of_its_sides(self):
+        """The sentence is divided among the muscles it NAMES, and a
+        muscle named twice is one muscle: its span is the whole
+        sentence, so both sides are still read off it."""
+        self.assertEqual(
+            self._grades("左侧三角肌肌力4级, 右侧三角肌肌力5级。"),
+            [("deltoid", "left", "4"), ("deltoid", "right", "5")],
+        )
+
+    def test_a_sentence_that_records_no_grade_still_records_none(self):
+        """The anchor is untouched: a sibling count is not a grade, on
+        any of the muscles the sentence names."""
+        self.assertEqual(
+            self._grades("双侧三角肌与肱二头肌肌力检查配合欠佳, 患者共有3个兄弟姐妹同患此病。"),
+            [],
+        )
+
+    def test_the_statement_spans_cover_the_sentence_without_overlapping(self):
+        sentence = "双侧三角肌肌力4级、肱二头肌肌力3级、股四头肌肌力5级"
+        statements = fshd_report_service._muscle_statements(sentence)
+        self.assertEqual([s.start for s in statements][0], 0)
+        self.assertEqual([s.end for s in statements][-1], len(sentence))
+        for previous, current in zip(statements, statements[1:]):
+            self.assertEqual(previous.end, current.start)
 
 if __name__ == "__main__":
     unittest.main()

@@ -345,12 +345,22 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       }
     });
 
-    it('OCR 补进基线的重复数：报告被后一份盖过之后，这个数不再作数', () => {
+    it('OCR 补进基线的重复数：那份报告不在档案里之后，这个数不再作数', () => {
       // The sizing report's count was copied into the empty baseline at
-      // read time. A later FSHD2 methylation workup is now the newest
-      // genetic report, and the passport only ever opens that one — so
-      // the number on the page is the archive's, and this platform
+      // read time, and that report has since been deleted. What is still
+      // on file is an FSHD2 methylation workup, which carries no count —
+      // so the number on the page is the archive's, and this platform
       // cannot say whether the archive got it from a report.
+      //
+      // THE SIZING REPORT IS OFF THE DOCUMENT LIST, NOT OUTRANKED. This
+      // fixture used to keep it on file and rely on the later workup
+      // outranking it. It no longer does, and must not:
+      // `pickGeneticEvidenceDocument` puts a report that states a D4Z4
+      // length above one that does not, precisely so a later workup that
+      // never measured the array cannot delete a count this platform
+      // holds. With both on file the count is read off the sizing report
+      // and this step does not arise at all — which is the point of that
+      // rule, and is covered in genetic-evidence.test.ts.
       const sizing = geneticReport(
         { d4z4Repeats: '3' },
         { id: 'sizing', uploadedAt: SIZING_REPORT_AT },
@@ -361,7 +371,7 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       );
       const profile = base({
         baseline: autofilledFrom([sizing]) as never,
-        documents: [sizing, later] as never,
+        documents: [later] as never,
       });
       const summary = buildClinicalPassportSummary(profile);
 
@@ -378,21 +388,17 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       expect(step?.description).not.toContain('不是本平台从基因报告里读出来的');
     });
 
-    it('新报告盖过旧报告：旧报告上的数字还在档案里，但不再是本护照读到的', () => {
-      // Same document pair, but the count in the baseline is the
+    it('档案里有报告、但那份报告没有这个数：登记表里的数字仍然作不了数', () => {
+      // Same document on file, but the count in the baseline is the
       // patient's own typing. The passport cannot tell this apart from
       // the case above, and says so rather than picking one.
-      const sizing = geneticReport(
-        { d4z4Repeats: '3' },
-        { id: 'sizing', uploadedAt: SIZING_REPORT_AT },
-      );
       const later = geneticReport(
         { methylationValue: '25%' },
         { id: 'fshd2', uploadedAt: LATER_REPORT_AT },
       );
       const profile = base({
         baseline: { diseaseBackground: { d4z4: '3' } } as never,
-        documents: [sizing, later] as never,
+        documents: [later] as never,
       });
       const summary = buildClinicalPassportSummary(profile);
 
