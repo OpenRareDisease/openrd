@@ -6,6 +6,15 @@ import {
   requestAccountDeletion,
   type DeletionRequestStatus,
 } from './account-deletion.js';
+import type { FallDTO } from './falls/falls.service.js';
+import {
+  FALL_DIARY_SQL,
+  isFallActivity,
+  isFallLocation,
+  type FallDiaryRow,
+} from './falls/falls.sql.js';
+import { InstrumentsService, type AdministrationDTO } from './instruments/instruments.service.js';
+import { PassportShareService, type PassportShareLink } from './passport-share.service.js';
 import { applyGeneticReportAutofill } from './profile.autofill.js';
 import {
   buildClinicalPassportExport,
@@ -37,6 +46,7 @@ import {
 import type { AppLogger } from '../../config/logger.js';
 import { maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { AppError } from '../../utils/app-error.js';
+import { flagKey, referenceKey } from '../ai-agents/security/allowlist.js';
 import {
   ConsentMutationError,
   getConsentDetails,
@@ -170,6 +180,83 @@ const DELETABLE_RECORD_TABLES: Record<DeletableRecordKind, string> = {
   followup_event: 'patient_followup_events',
 };
 
+/**
+ * The falls diary's live predicate takes a window in days, and the
+ * portability export is NOT a window.
+ *
+ * Every other reader of `patient_falls` is a screen or a summary and
+ * legitimately asks 「最近」 — the diary caps at 730 days for the reason
+ * falls.schema.ts records. A file handed over under 个保法可携带权 has
+ * no such horizon: a fall the patient logged in 2019 is part of the
+ * record they are entitled to take with them, and answering with the
+ * last two years would be the same silent drop this section exists to
+ * close, just smaller.
+ *
+ * FALL_DIARY_SQL requires `$2`, so this passes one wide enough that no
+ * storable row can fall outside it. `occurred_on` is a DATE and
+ * `fallDateString` refuses future dates, so every row that exists is in
+ * the past; 400,000 days is ~1,095 years, which no patient's past is.
+ */
+const EXPORT_FALLS_WINDOW_DAYS = 400_000;
+
+/**
+ * `PassportShareService.list` ends in `LIMIT 50`. Mirrored here — not
+ * imported, because it is a literal inside that query — so the export
+ * can say it was capped instead of presenting a truncated list of
+ * doors as the complete one.
+ *
+ * If that literal ever changes, this flag mis-reports by exactly the
+ * difference and nothing else breaks; the list itself is whatever the
+ * one query returns.
+ */
+const PASSPORT_SHARE_LIST_LIMIT = 50;
+
+/** Item responses come back from `listAdministrations` already
+ *  attached; 200 is that endpoint's own schema ceiling per call. */
+const EXPORT_INSTRUMENT_PAGE_SIZE = 200;
+
+/** One acceptance row per (document, version) the user ever tapped
+ *  through, withdrawals included. Bounded anyway — the CHECK admits
+ *  four document ids — so this cap only ever fires on a pathological
+ *  account. */
+const EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS = 500;
+
+/** One row of `legal_document_acceptances`, as the portability export
+ *  carries it.
+ *
+ *  `withdrawnAt` is carried rather than filtered, which is the one way
+ *  this read differs from both live readers in legal.service.ts. They
+ *  ask 「is this consent in force」 and must drop withdrawn rows; this
+ *  asks 「what did I authorise and when did I take it back」, and a
+ *  withdrawal the patient cannot see in their own授权历史 is the half
+ *  of the story they are most likely to need. */
+export interface LegalAcceptanceExportDTO {
+  document: string;
+  version: string;
+  acceptedAt: string;
+  withdrawnAt: string | null;
+}
+
+/** Same shape `GET /me/falls` returns, field for field, so the export
+ *  and the diary screen cannot disagree about one fall. Built here
+ *  rather than imported because `toFallDTO` is private to
+ *  falls.service.ts; `FallDTO` itself is imported, so a drift in that
+ *  shape is a compile error rather than a quiet difference. */
+const toExportFallDTO = (row: FallDiaryRow): FallDTO => ({
+  id: row.id,
+  occurredOn: row.occurred_on,
+  daysAgo: Math.max(0, row.fall_day_age),
+  activity: isFallActivity(row.activity) ? row.activity : null,
+  location: isFallLocation(row.location) ? row.location : null,
+  handsFull: row.hands_full,
+  gotUpUnaided: row.got_up_unaided,
+  injured: row.injured,
+  createdAt:
+    row.created_at instanceof Date
+      ? row.created_at.toISOString()
+      : new Date(row.created_at).toISOString(),
+});
+
 export interface PatientMedicationDTO {
   id: string;
   medicationName: string;
@@ -227,11 +314,43 @@ export interface BaselineProfileDTO {
   updatedAt: string;
 }
 
+/**
+ * 「WE HAVE NOT MEASURED THIS」 IS ITS OWN BAND, AND IT IS NOT `high`.
+ *
+ * Each axis is a reading of a record, and a record can be empty. An
+ * empty one used to be graded anyway — `activityLevel` fell to `high`
+ * and `strengthLevel` to `medium` — so a patient who registered five
+ * minutes ago and has typed nothing was handed the same 高关注 chip, in
+ * the same red, as a patient whose logs stopped six weeks ago. There is
+ * no reading behind that chip: nothing has been observed to be wrong,
+ * and 「nothing observed」 is what the axis actually knows.
+ *
+ * `unknown` is what it says instead. The client already renders it
+ * correctly without being changed — `getRiskMeta`
+ * (apps/mobile/lib/clinical-visuals.ts) answers anything outside the
+ * three graded bands with a grey 「暂无评估」, which is the sentence
+ * this state means, and it chose grey deliberately so an unloaded
+ * summary could not read as reassurance either.
+ *
+ * This is the rule the surveillance rows already follow: they print
+ * 「本平台没有你的疼痛记录」 rather than 「不适用」, because a platform
+ * that has not been told something must say so rather than answer for
+ * the patient. A risk band is the same statement in a stronger form —
+ * it is the one line on the screen a patient acts on — so it is the
+ * last place absence may be read as evidence.
+ */
+export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
+
 export interface RiskSummary {
-  overallLevel: 'low' | 'medium' | 'high';
-  strengthLevel: 'low' | 'medium' | 'high';
-  activityLevel: 'low' | 'medium' | 'high';
+  overallLevel: RiskLevel;
+  strengthLevel: RiskLevel;
+  activityLevel: RiskLevel;
   latestMeasurement?: PatientMeasurementDTO;
+  /**
+   * The DAY of the newest activity log, not an instant.
+   * `patient_activity_logs.log_date` is a `date` column; see
+   * `toRequiredDateString`.
+   */
   lastActivityAt?: string | null;
   notes: string[];
 }
@@ -385,6 +504,49 @@ const toDateString = (value: string | Date | null): string | null => {
 
 const toTimestampString = (value: Date | null): string => {
   return value ? value.toISOString() : new Date().toISOString();
+};
+
+/**
+ * A `date` COLUMN IS A DAY, AND `toISOString` IS NOT HOW YOU READ ONE.
+ *
+ * node-postgres decodes `date` (OID 1082) as `new Date(y, m - 1, d)` —
+ * midnight in the SERVER PROCESS'S ZONE. `toISOString` then re-reads
+ * that instant in UTC, and east of Greenwich midnight local is the
+ * previous day in UTC: an activity log the patient dated 2026-08-19
+ * came back as `2026-08-18T16:00:00.000Z` under `TZ=Asia/Shanghai`,
+ * which is where this product runs. Every caller of `logDate` therefore
+ * showed and sorted a day that was one early, and printed a
+ * time-of-day for a column that has never held one.
+ *
+ * `toDateString` is the reader that already gets this right — it takes
+ * the local Y/M/D back out, which are the three numbers Postgres sent.
+ * This wrapper is that function for the columns declared NOT NULL, so
+ * the DTO can keep promising a `string`. The throw is unreachable
+ * through SQL (`log_date DATE NOT NULL DEFAULT CURRENT_DATE`) and is
+ * here because the alternative — an empty string — would reach
+ * `new Date('')` in the passport's sort comparators as a silent NaN.
+ */
+const toRequiredDateString = (value: string | Date): string => {
+  const day = toDateString(value);
+  if (day === null) {
+    throw new AppError('Stored date column came back empty', 500);
+  }
+  return day;
+};
+
+/**
+ * Midnight of the local calendar day a value falls on.
+ *
+ * Used to count whole days between two things that are days. Measuring
+ * from an instant instead makes the answer depend on what time it is:
+ * the same 7-day-old log reads as 6 days before noon and 7 after, so a
+ * band boundary moves during the afternoon. Both operands go through
+ * here so only the calendar difference survives.
+ */
+const startOfLocalDay = (value: string | Date): Date => {
+  const day = toRequiredDateString(value);
+  const [year, month, date] = day.split('-').map(Number);
+  return new Date(year, month - 1, date);
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -604,8 +766,715 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
   CASE WHEN ocr_payload IS NULL THEN NULL ELSE jsonb_build_object(
     'fields', ocr_payload -> 'fields',
     'extractedText', coalesce(ocr_payload -> 'extractedText', ocr_payload -> 'extracted_text'),
-    'provider', ocr_payload -> 'provider'
+    'provider', ocr_payload -> 'provider',
+    -- What the last re-run did to this row. Small, absent on every row
+    -- nobody has reparsed, and the only channel by which「some values
+    -- you used to see are gone, and here is which」reaches a screen that
+    -- reads the profile rather than the single-document endpoint.
+    'reparse', ocr_payload -> 'reparse',
+    'analyteReferences', (
+      SELECT jsonb_object_agg(
+               entry.key,
+               jsonb_build_object(
+                 'low', entry.value -> 'reference_low',
+                 'high', entry.value -> 'reference_high'
+               )
+             )
+      FROM jsonb_each(
+             coalesce(ocr_payload -> 'aiExtraction' -> 'latest_summary' -> 'by_analyte', '{}'::jsonb)
+           ) AS entry
+      WHERE jsonb_typeof(entry.value -> 'reference_low') = 'number'
+         OR jsonb_typeof(entry.value -> 'reference_high') = 'number'
+    )
   ) END AS ocr_payload`;
+
+/**
+ * WHERE A STORED READING IS CHECKED BEFORE IT IS PRINTED, AND THE ONLY
+ * PLACE IT IS.
+ *
+ * Everything below this comment exists because a parser fix does not
+ * reparse. `ocr_payload.fields` is written once, at upload, by whatever
+ * the extractor was on that day, and the passport, the share page, the
+ * referral pack, the three exports and the report screen all read that
+ * record and print the number in it. When the extractor was wrong the
+ * number stays wrong on every one of those surfaces for as long as the
+ * row exists — which is how seven archived documents came to carry an
+ * LDH that is the CK value off the same report, or a table row index.
+ *
+ * So the guard is not on a screen. It is on the payload, at the two
+ * points the service hands one out, and `reparseDocument` is the repair
+ * rather than the defence: there will be a next generation of parser
+ * bug and it will land in rows nobody reparses either.
+ *
+ * TWO QUESTIONS, ASKED OF THE ROW ITSELF — no external reference table,
+ * no per-analyte physiology, nothing this repo would have to keep
+ * current against a laboratory:
+ *
+ *  1. DOES THIS NUMBER BELONG TO SOMEONE ELSE ON THE SAME REPORT? Two
+ *     different analytes carrying the identical reading CAN be the
+ *     signature of a column that slipped: CK, CK-MB, 肌酐 and LDH all
+ *     reading 693 is one cell copied four times, and no laboratory
+ *     printed that. When the answer is yes both readings are WITHHELD,
+ *     not one — the payload does not say which of the two is the cell
+ *     that was really read, and picking would be this file inventing a
+ *     clinical value. The same question asked of ONE analyte's own
+ *     spellings — `ldh` against `table_ldh` — is the sharper form of
+ *     it, and catches the archived document whose LDH is a row index
+ *     while the laboratory's real LDH sits beside it under the other
+ *     key.
+ *
+ *     BUT 「TWO ANALYTES, ONE NUMBER」 IS NOT BY ITSELF THE SIGNATURE,
+ *     AND TREATING IT AS ONE DELETED CORRECT DATA. ALT and AST at the
+ *     same figure is an everyday biochemistry result — the two enzymes
+ *     leak from the same muscle — and so is CK-MB with myoglobin, or
+ *     albumin with ALP. Measured against this deployment's own archive
+ *     the previous shape of this rule was wrong on nearly half the rows
+ *     it fired on: nine documents carry a repeated reading, seven of
+ *     them the four-way CK/CK-MB/肌酐/LDH collapse, and the other TWO
+ *     are ordinary pairs — 8 correct readings across 4 documents, each
+ *     one blanked on the passport, the share page and the exports by a
+ *     guard that exists to protect them. Over-deleting a correct
+ *     reading is a clinical defect in its own right, not a safe
+ *     direction to err in.
+ *
+ *     SO THE PAYLOAD IS MADE TO CORROBORATE THE SLIP BEFORE ANYTHING IS
+ *     DELETED, out of what it already holds and nothing else:
+ *
+ *       THE REPORT'S OWN PAGE. `extractedText` is the OCR dump of the
+ *       paper, and a laboratory that really printed the figure on two
+ *       rows printed it TWICE. Counting the figure among the page's
+ *       numeric tokens separates the two cases outright, and on this
+ *       archive it separates them completely: on all seven collapsed
+ *       documents the number appears ONCE while four analytes claim it,
+ *       and on all four ordinary pairs it appears at least as often as
+ *       the analytes claiming it. This is the strongest signal and it
+ *       is asked first.
+ *
+ *       THREE ROWS, ONE FIGURE. No panel prints one number on three
+ *       different rows by chance, so a group of three or more is a slip
+ *       whatever the page says — and it is the archived shape.
+ *
+ *       THE KNOWN COLLISION. `ck` against `ldh` is this parser's own
+ *       documented defect, five archived documents of it, and it is
+ *       taken as corroboration on a row whose page cannot be read.
+ *
+ *       ONE UNIT AND ONE INTERVAL. Two DIFFERENT analytes carrying the
+ *       same number under the same unit AND the same printed reference
+ *       interval is one whole row read twice; two real rows would
+ *       differ somewhere.
+ *
+ *     WHERE THE PAGE IS ILLEGIBLE AND NOTHING ELSE CORROBORATES, THE
+ *     PAIR IS MARKED RATHER THAN DELETED. 「I cannot tell」 is a true
+ *     thing to say and a blank cell is not.
+ *
+ *  2. DOES IT SIT OUTSIDE THE INTERVAL THIS SAME REPORT PRINTED NEXT
+ *     TO IT? The parser archives 「50-310」 off the CK row into
+ *     `latest_summary.by_analyte`, so the row carries its own answer.
+ *     This one is MARKED, not withheld, and the difference is the
+ *     whole of the judgement: on this platform a CK outside its
+ *     interval is usually the disease, not the parser. Withholding
+ *     everything abnormal would blank precisely the readings the
+ *     passport exists to carry. Marking says 「this is outside the
+ *     range the report itself printed」, which is true of the elevated
+ *     CK and true of the LDH that is really a row index, and leaves
+ *     the reader to weigh it.
+ *
+ * WHAT A WITHHELD READING LEAVES BEHIND. The cell is deleted from
+ * `fields` under every spelling it has — snake, camel, and the generic
+ * table reader's `table_*` twin — so a reader that never heard of this
+ * guard cannot print it by reaching for another alias. In its place the
+ * payload carries `unsafeReadings` and `unsafeReadingsNotice`, at the
+ * TOP LEVEL and deliberately not inside `fields`: `fields` is the
+ * record of what the report said, every reader walks it, and one screen
+ * (report detail) decides whether to offer 重新识别 by asking whether
+ * any non-bookkeeping key survives in it. A review note filed among the
+ * readings would answer that question 「yes, this report still has
+ * data」 — and suppress the offer to repair the very row this guard just
+ * emptied.
+ *
+ * AND WHAT A FLAGGED READING LEAVES BEHIND IS A JOB FOR THE SURFACES,
+ * WHICH IS THE HALF OF THIS DEFENCE THAT LIVES OUTSIDE THIS FILE.
+ * `flagged` deletes nothing. It exists so that a reading outside the
+ * interval the report itself printed — or a duplicate the page could
+ * not settle — is not printed as an ordinary number. Every surface that
+ * renders `ocrPayload.fields` gets `unsafeReadings` on the SAME object
+ * and can join the two on `keys`:
+ *
+ *     const marks = new Map<string, UnsafeReading>();
+ *     for (const item of payload.unsafeReadings ?? [])
+ *       for (const key of item.keys) marks.set(key, item);
+ *     // then, per rendered cell: marks.get(fieldKey)
+ *
+ * A surface that renders the payload and never reads this array prints
+ * a flagged value as fact, and a defence that marks where nothing shows
+ * the mark is a defence that does nothing. The surfaces are named in
+ * the module note at the top of the guard: the passport, the share
+ * page, the referral pack, the three exports and the report screen.
+ * `unsafeReadingsNotice` is the one-line form for a surface with no
+ * room to mark cells individually.
+ */
+export interface UnsafeReading {
+  /** Canonical analyte name, as the parser names it (`ldh`, `uric_acid`). */
+  analyte: string;
+  /**
+   * Every `fields` spelling that carried it.
+   *
+   * THIS IS THE JOIN, AND IT IS WHY IT IS A LIST. A surface marking a
+   * flagged reading is holding a `fields` cell keyed by SPELLING —
+   * `ldh`, `table_ldh`, `creatineKinase` — and has no way back to the
+   * canonical name. Matching a rendered cell against these keys is the
+   * whole of what a surface has to do to find its mark. On a WITHHELD
+   * entry the keys are the cells that are no longer there, which is how
+   * a screen says WHICH value it stopped showing.
+   */
+  keys: string[];
+  disposition: 'withheld' | 'flagged';
+  reason: 'duplicate_reading' | 'contradictory_aliases' | 'outside_reference_interval';
+  /** The other analytes sharing this value (duplicate_reading only). */
+  sharedWith?: string[];
+  /**
+   * Why this duplicate was believed, in one word, so a surface can say
+   * 「报告原件只印了一次」 rather than the generic sentence — and so
+   * this file's judgement is legible in an audit rather than only in
+   * its own comments. Absent on the other two reasons.
+   */
+  corroboration?: 'page_prints_it_once' | 'three_or_more_rows' | 'known_pair' | 'one_row_twice';
+}
+
+/**
+ * A reading is NEVER accompanied by its value in this record.
+ *
+ * `unsafeReadings` travels on the same payload the withheld cell was
+ * deleted from, and every surface that prints `fields` can print this
+ * too. A `value` here would hand the number straight back under a
+ * second key and the deletion would be theatre. The analyte, its
+ * spellings and the reason are everything a surface needs to place the
+ * mark; the number is the one thing it must not be given.
+ */
+
+/**
+ * Canonical names of the laboratory analytes this pipeline extracts —
+ * `analytes` in `_extract_biochemistry` / `_extract_muscle_enzymes`
+ * (apps/report-manager/app/services/fshd_report_service.py).
+ *
+ * THE LIST IS THE SCOPE, AND THE SCOPE IS THE SAFETY. Question 1 asks
+ * whether two readings are identical, and outside a laboratory panel
+ * that question has ordinary true answers: a D4Z4 repeat count of 4 and
+ * a 4qA haplotype's leading 4, two MRC grades of 5, two 0-10 symptom
+ * scores. Restricting the comparison to analytes off the same results
+ * table is what keeps this from deleting a genetics cell because a
+ * number appeared twice on a page.
+ */
+const LAB_ANALYTE_CANONICAL_KEYS = [
+  'a_g_ratio',
+  'alb',
+  'alp',
+  'alt',
+  'apo_a1',
+  'apo_b',
+  'ast',
+  'calcium',
+  'chloride',
+  'cholesterol',
+  'ck',
+  'ckmb',
+  'co2cp',
+  'creatinine',
+  'dbil',
+  'ggt',
+  'globulin',
+  'glucose',
+  'hdl_c',
+  'ibil',
+  'il6',
+  'ldh',
+  'ldl_c',
+  'lp_a',
+  'magnesium',
+  'mb',
+  'phosphorus',
+  'potassium',
+  'sodium',
+  'tbil',
+  'tp',
+  'triglyceride',
+  'urea',
+  'uric_acid',
+  'vldl_c',
+] as const;
+
+const flattenKey = (key: string) => key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+
+/** `table_ldh` → `tableLdh`. The bridge writes an analyte's flag and
+ *  reference under the CAMEL spelling of the value's key and no other
+ *  (allowlist.ts states the rule), so retiring a spelling means asking
+ *  for its siblings under that form. */
+const flattenToCamelKey = (key: string) =>
+  key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+
+const LAB_ANALYTE_BY_FLAT_KEY = new Map<string, string>(
+  LAB_ANALYTE_CANONICAL_KEYS.map((key) => [flattenKey(key), key]),
+);
+
+/**
+ * Spellings the TypeScript bridge mints for a cell the parser already
+ * named. `buildFields` writes `creatineKinase = ck` and `myoglobin = mb`
+ * beside the parser's own keys, and both spellings reach the passport —
+ * so a guard that withheld `ck` and left `creatineKinase` standing
+ * would have withheld nothing at all.
+ */
+const LAB_ANALYTE_BRIDGE_ALIASES: Record<string, string> = {
+  creatinekinase: 'ck',
+  myoglobin: 'mb',
+};
+
+/**
+ * The abbreviations the generic table reader slugs a row name into —
+ * `table_k`, `tableCrea` — for rows a named extractor also publishes.
+ * Honoured ONLY under the `table` prefix: bare `p` or `k` is not an
+ * analyte anywhere else in this payload, and reading it as one is how a
+ * guard starts deleting fields it was never pointed at.
+ */
+const LAB_TABLE_SLUG_ALIASES: Record<string, string> = {
+  k: 'potassium',
+  na: 'sodium',
+  cl: 'chloride',
+  ca: 'calcium',
+  mg: 'magnesium',
+  p: 'phosphorus',
+  crea: 'creatinine',
+  ua: 'uric_acid',
+  glu: 'glucose',
+  tg: 'triglyceride',
+  tcho: 'cholesterol',
+  apoa1: 'apo_a1',
+  apob: 'apo_b',
+  ag: 'a_g_ratio',
+};
+
+const resolveLabAnalyte = (key: string): string | null => {
+  const trimmed = key.trim();
+  if (!trimmed) return null;
+  const tableMatch = /^table[_]?(.+)$/i.exec(trimmed);
+  const bare = tableMatch ? tableMatch[1] : trimmed;
+  const flat = flattenKey(bare);
+  if (!flat) return null;
+  if (tableMatch && LAB_TABLE_SLUG_ALIASES[flat]) {
+    return LAB_TABLE_SLUG_ALIASES[flat];
+  }
+  return LAB_ANALYTE_BY_FLAT_KEY.get(flat) ?? LAB_ANALYTE_BRIDGE_ALIASES[flat] ?? null;
+};
+
+/**
+ * The reading as a number, or nothing.
+ *
+ * Leading-token only, because `formatStructuredValue` staples the
+ * laboratory's own unit on — 「693 U/L」 — and a comparison that
+ * demanded a bare number would simply never fire on a report whose unit
+ * column the OCR recovered. A value that does not START with a number
+ * (「阴性」, 「未见异常」) is not a reading either question can be asked
+ * of, and is left alone.
+ */
+const readNumericReading = (raw: unknown): number | null => {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const match = /^-?\d+(?:\.\d+)?/.exec(text);
+  if (!match) return null;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : null;
+};
+
+/**
+ * The unit the laboratory printed beside the number, lowercased, or
+ * nothing.
+ *
+ * `formatStructuredValue` staples the unit on — 「693 U/L」 — so the
+ * cell already carries it and no lookup table is needed. Compared only
+ * ever against another cell off the SAME payload, so the casing and
+ * spacing of whatever the OCR read is consistent on both sides.
+ */
+const readReadingUnit = (raw: unknown): string | null => {
+  const text = String(raw ?? '').trim();
+  const match = /^-?\d+(?:\.\d+)?\s*(.*)$/.exec(text);
+  const unit = match?.[1]?.trim() ?? '';
+  return unit ? unit.toLowerCase() : null;
+};
+
+const FULL_WIDTH_DIGITS = '０１２３４５６７８９';
+
+/**
+ * The page's digits as ASCII, with thousands separators removed, so
+ * 「１，６９３」 and 「1,693」 and 「1693」 all count as the same figure.
+ * A page read by OCR carries whichever of the three the scan produced.
+ */
+const normalisePageDigits = (text: string) =>
+  text
+    .replace(/[０-９．]/g, (char) =>
+      char === '．' ? '.' : String(FULL_WIDTH_DIGITS.indexOf(char)),
+    )
+    .replace(/,(?=\d{3}(?!\d))/g, '');
+
+/**
+ * HOW OFTEN THE REPORT'S OWN PAGE PRINTS EACH FIGURE — the corroboration
+ * that decides question 1, and the only one drawn from outside `fields`.
+ *
+ * `null` means the page cannot answer: absent, blank, or carrying no
+ * number at all. That is deliberately distinct from 「the number is not
+ * there」, which is an answer and a damning one. A row whose page is
+ * missing gets the weaker signals and, failing those, a mark instead of
+ * a deletion.
+ *
+ * Counting NUMERIC TOKENS rather than substrings, because 「693」 is
+ * inside 「1693」 and a substring search would find the figure on a page
+ * that never printed it. Parsed as numbers, so 693 and 693.0 are one
+ * figure — the OCR and the extractor do not agree on trailing zeros.
+ */
+const readPageFigureCounts = (record: Record<string, unknown>): Map<number, number> | null => {
+  const raw = record.extractedText ?? record.extracted_text;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const counts = new Map<number, number>();
+  for (const match of normalisePageDigits(raw).matchAll(/-?\d+(?:\.\d+)?/g)) {
+    const value = Number(match[0]);
+    if (!Number.isFinite(value)) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts.size ? counts : null;
+};
+
+/**
+ * THIS PARSER'S OWN DOCUMENTED COLLISION.
+ *
+ * Five archived documents publish an LDH that is the CK value off the
+ * same report. That is not a hypothesis about laboratories, it is a
+ * defect this repository has measured in its own archive, so the pair
+ * is corroboration on a row whose page cannot be read. Kept to what the
+ * archive actually shows: a list grown by guesswork would put this rule
+ * back where it started, deleting ordinary pairs on suspicion.
+ */
+const KNOWN_COLLISION_PAIRS = new Set(['ck|ldh']);
+
+const isKnownCollisionPair = (analytes: readonly string[]) =>
+  analytes.length === 2 && KNOWN_COLLISION_PAIRS.has([...analytes].sort().join('|'));
+
+/**
+ * No panel prints one figure on this many different rows by chance.
+ * Three is the smallest group for which that is true; the archived
+ * collapse is four.
+ */
+const DUPLICATE_GROUP_IS_A_COLLAPSE = 3;
+
+/**
+ * Is this group of analytes sharing one figure a slipped column, an
+ * ordinary coincidence, or something this payload cannot say?
+ *
+ * Three answers, not two, and the third is the point. `slipped` is
+ * deleted, `sound` is an ordinary reading and falls through to question
+ * 2 like any other, and `unknown` — the page is illegible and nothing
+ * else corroborates — is MARKED. Collapsing `unknown` into `slipped` is
+ * exactly what deleted 8 correct readings off this archive; collapsing
+ * it into `sound` would publish a collapsed column in silence on any
+ * row whose page never landed.
+ *
+ * Ordered strongest first.
+ */
+type DuplicateVerdict =
+  | { verdict: 'slipped'; corroboration: NonNullable<UnsafeReading['corroboration']> }
+  | { verdict: 'sound' }
+  | { verdict: 'unknown' };
+
+const corroborateDuplicateGroup = (input: {
+  analytes: readonly string[];
+  value: number;
+  pageFigures: Map<number, number> | null;
+  unitOf: (analyte: string) => string | null;
+  intervalOf: (analyte: string) => string | null;
+}): DuplicateVerdict => {
+  const { analytes, value, pageFigures } = input;
+
+  if (analytes.length >= DUPLICATE_GROUP_IS_A_COLLAPSE) {
+    return { verdict: 'slipped', corroboration: 'three_or_more_rows' };
+  }
+
+  if (pageFigures) {
+    // The page is legible, so it is the answer — in BOTH directions. A
+    // figure printed as often as it is claimed is two real rows and
+    // this function has nothing to say about it.
+    return (pageFigures.get(value) ?? 0) >= analytes.length
+      ? { verdict: 'sound' }
+      : { verdict: 'slipped', corroboration: 'page_prints_it_once' };
+  }
+
+  if (isKnownCollisionPair(analytes)) {
+    return { verdict: 'slipped', corroboration: 'known_pair' };
+  }
+
+  const units = analytes.map(input.unitOf);
+  const intervals = analytes.map(input.intervalOf);
+  const sameUnit = units[0] !== null && units.every((unit) => unit === units[0]);
+  const sameInterval = intervals[0] !== null && intervals.every((iv) => iv === intervals[0]);
+  if (sameUnit && sameInterval) {
+    return { verdict: 'slipped', corroboration: 'one_row_twice' };
+  }
+
+  return { verdict: 'unknown' };
+};
+
+const readReferenceLimits = (payload: Record<string, unknown>) => {
+  const projected = asRecord(payload.analyteReferences);
+  if (projected) return projected;
+  const aiExtraction = asRecord(payload.aiExtraction);
+  const latestSummary = asRecord(aiExtraction?.latest_summary);
+  return asRecord(latestSummary?.by_analyte) ?? null;
+};
+
+const readLimit = (source: Record<string, unknown> | null, keys: readonly string[]) => {
+  if (!source) return null;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+/**
+ * THE NOTICE SAYS WHAT HAPPENED TO THIS PAYLOAD, NOT WHAT THIS FILE CAN
+ * DO IN GENERAL.
+ *
+ * One fixed string stood here and it asserted a withholding on every
+ * payload it was attached to — including the payloads where nothing was
+ * withheld at all. A report whose only finding is an elevated CK, still
+ * printed, still on the passport, told its reader 「已经不再显示」 about
+ * values that are right there on the screen. A patient who then goes
+ * looking for the missing number cannot find it, because it was never
+ * missing, and the one sentence this platform gives them about the
+ * trustworthiness of their own report is the sentence that was false.
+ *
+ * So it is composed from the dispositions actually present. A payload
+ * that only marks says only that it marked, and the closing sentence
+ * changes with it: 「必要时重新识别一次」 is advice about a hole in the
+ * data and is not offered where there is no hole.
+ */
+const buildUnsafeReadingNotice = (unsafe: readonly UnsafeReading[]): string => {
+  const has = (disposition: UnsafeReading['disposition'], reason: UnsafeReading['reason']) =>
+    unsafe.some((item) => item.disposition === disposition && item.reason === reason);
+
+  const clauses: string[] = [];
+  if (has('withheld', 'duplicate_reading')) {
+    clauses.push('与同一份报告上另一个项目重复、而报告原件核对不上的数值已经不再显示');
+  }
+  if (has('withheld', 'contradictory_aliases')) {
+    clauses.push('同一个项目出现了两个互相矛盾的数值，已经不再显示');
+  }
+  if (has('flagged', 'duplicate_reading')) {
+    clauses.push('与同一份报告上另一个项目完全相同、但无法用报告原件核对的数值已标注');
+  }
+  if (has('flagged', 'outside_reference_interval')) {
+    clauses.push('超出报告自己印的参考区间的数值已标注');
+  }
+
+  const withheldAnything = unsafe.some((item) => item.disposition === 'withheld');
+  const head = withheldAnything ? '这份报告里有数值没有通过核对：' : '这份报告里有数值需要你留意：';
+  const tail = withheldAnything
+    ? '。请以报告原件为准，必要时重新识别一次。'
+    : '。这些数值仍按报告原样显示，请以报告原件为准。';
+  return head + clauses.join('；') + tail;
+};
+
+/**
+ * Run both questions over one payload and return a copy fit to print.
+ *
+ * Pure, and returns a NEW payload: `reparseDocument` reads the stored
+ * payload to decide what a re-run may replace, and a guard that mutated
+ * it in place would have the repair path comparing against a record
+ * this function had already edited.
+ */
+export const withholdUnsafeReadings = <T>(payload: T): T => {
+  const record = asRecord(payload);
+  if (!record) return payload;
+  const fields = asRecord(record.fields);
+
+  // EVERY SPELLING'S VALUE, NOT THE FIRST ONE SEEN.
+  //
+  // This collected one value per analyte and dropped the rest, and that
+  // was a hole big enough to hide a whole document in. `fields` carries
+  // the same analyte under a named key and under the generic table
+  // reader's slug — `ldh` and `table_ldh`, `potassium` and `tableK` —
+  // and on a report whose columns slipped the two DISAGREE: the
+  // archived document that publishes an LDH of 9 has the laboratory's
+  // real LDH sitting beside it under `table_ldh`. Keeping only whichever
+  // key `Object.entries` happened to yield first made the guard's answer
+  // depend on key order, and on that document it silently chose the row
+  // index and then found nothing wrong with it.
+  //
+  // Two spellings of one cell disagreeing is not a tie to break. It is
+  // the strongest statement this payload can make that it does not know
+  // what the laboratory printed, so it is withheld on its own account.
+  const readings = new Map<string, { keys: string[]; values: Set<number>; unit: string | null }>();
+  if (fields) {
+    for (const [key, raw] of Object.entries(fields)) {
+      const analyte = resolveLabAnalyte(key);
+      if (!analyte) continue;
+      const value = readNumericReading(raw);
+      if (value === null) continue;
+      const unit = readReadingUnit(raw);
+      const existing = readings.get(analyte);
+      if (existing) {
+        existing.keys.push(key);
+        existing.values.add(value);
+        existing.unit ??= unit;
+        continue;
+      }
+      readings.set(analyte, { keys: [key], values: new Set([value]), unit });
+    }
+  }
+
+  const byValue = new Map<number, string[]>();
+  for (const [analyte, reading] of readings) {
+    if (reading.values.size !== 1) continue;
+    const [value] = reading.values;
+    byValue.set(value, [...(byValue.get(value) ?? []), analyte]);
+  }
+
+  const references = readReferenceLimits(record);
+  const limitsOf = (analyte: string) => asRecord(references?.[analyte]);
+  const lowOf = (analyte: string) => readLimit(limitsOf(analyte), ['low', 'reference_low']);
+  const highOf = (analyte: string) => readLimit(limitsOf(analyte), ['high', 'reference_high']);
+  const intervalOf = (analyte: string) => {
+    const low = lowOf(analyte);
+    const high = highOf(analyte);
+    // No interval archived is not an interval two rows can be said to
+    // SHARE. Returning a placeholder here would make every pair on the
+    // 120 archived payloads that predate the reference column look like
+    // one row read twice.
+    if (low === null && high === null) return null;
+    return `${low ?? ''}|${high ?? ''}`;
+  };
+  const unitOf = (analyte: string) => readings.get(analyte)?.unit ?? null;
+
+  // Read once, not once per group: it walks the whole OCR page.
+  const pageFigures = readPageFigureCounts(record);
+
+  // One verdict per FIGURE, so both sides of a collision are given the
+  // same answer. Asking per analyte would let the two halves of one
+  // group disagree the moment a signal is asymmetric.
+  const duplicateVerdicts = new Map<number, DuplicateVerdict>();
+  for (const [value, analytes] of byValue) {
+    if (analytes.length < 2) continue;
+    duplicateVerdicts.set(
+      value,
+      corroborateDuplicateGroup({ analytes, value, pageFigures, unitOf, intervalOf }),
+    );
+  }
+
+  const unsafe: UnsafeReading[] = [];
+
+  for (const [analyte, reading] of readings) {
+    if (reading.values.size !== 1) {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'withheld',
+        reason: 'contradictory_aliases',
+      });
+      continue;
+    }
+    const [value] = reading.values;
+    const shared = (byValue.get(value) ?? []).filter((other) => other !== analyte);
+    const verdict = shared.length ? duplicateVerdicts.get(value) : undefined;
+    if (verdict && verdict.verdict === 'slipped') {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'withheld',
+        reason: 'duplicate_reading',
+        sharedWith: shared,
+        corroboration: verdict.corroboration,
+      });
+      continue;
+    }
+    if (verdict && verdict.verdict === 'unknown') {
+      // Marked and still printed. The reader is told the two rows agree
+      // and that the page could not settle it; the number stays, because
+      // a coincidence is the likelier of the two and a blank cell is not
+      // a safer answer than a marked one.
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'flagged',
+        reason: 'duplicate_reading',
+        sharedWith: shared,
+      });
+      continue;
+    }
+    const low = lowOf(analyte);
+    const high = highOf(analyte);
+    if ((low !== null && value < low) || (high !== null && value > high)) {
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'flagged',
+        reason: 'outside_reference_interval',
+      });
+    }
+  }
+
+  // `analyteReferences` is a working column, not a payload key: it is
+  // selected so this function has an interval to compare against and is
+  // dropped here, so a clean report's payload leaves this file byte
+  // for byte the shape it arrived in.
+  const hadReferences = 'analyteReferences' in record;
+  if (!unsafe.length && !hadReferences) return payload;
+
+  const next: Record<string, unknown> = { ...record };
+  delete next.analyteReferences;
+
+  if (unsafe.length) {
+    /**
+     * THE WHOLE READING GOES, NOT JUST ITS NUMBER.
+     *
+     * This deleted the value spellings and left `ckFlag` / `ckReference`
+     * standing beside the hole, because `resolveLabAnalyte` does not
+     * recognise a sibling key as an analyte — and it must not, or the
+     * guard would start reading 「high」 as a reading. So a payload whose
+     * LDH was withheld for being a row index went out carrying
+     * `ldhFlag: high` and `ldhReference: 120-250`: the laboratory's
+     * verdict on a number this file had just decided the payload does
+     * not know. The passport resolves an analyte's marker off the
+     * spelling list rather than off one key (`pickLabReading`), so an
+     * orphaned sibling is not inert — it is a bracket looking for
+     * somewhere to print.
+     *
+     * DERIVED FROM THE KEYS RATHER THAN LISTED. `UnsafeReading.keys`
+     * already carries every `fields` spelling that held the cell; the
+     * siblings are a pure function of a spelling, and the bridge writes
+     * them under the CAMEL form only (allowlist.ts states that rule).
+     * Both forms are cleared anyway, so a payload written by some older
+     * shape of the bridge, or hand-patched, cannot keep one.
+     */
+    const withheldKeys = new Set(
+      unsafe
+        .filter((item) => item.disposition === 'withheld')
+        .flatMap((item) => item.keys)
+        .flatMap((key) => {
+          const camel = flattenToCamelKey(key);
+          return [key, flagKey(key), referenceKey(key), flagKey(camel), referenceKey(camel)];
+        }),
+    );
+    if (fields && withheldKeys.size) {
+      const nextFields: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(fields)) {
+        if (withheldKeys.has(key)) continue;
+        nextFields[key] = value;
+      }
+      next.fields = nextFields;
+    }
+    unsafe.sort((a, b) => a.analyte.localeCompare(b.analyte));
+    next.unsafeReadings = unsafe;
+    next.unsafeReadingsNotice = buildUnsafeReadingNotice(unsafe);
+  }
+
+  return next as T;
+};
 
 /**
  * Fewest distinct patients before a cohort distribution is shown.
@@ -745,7 +1614,7 @@ export class PatientProfileService {
         status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
         checksum: row.checksum,
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
         submissionId: row.submission_id ?? null,
       }));
 
@@ -845,7 +1714,7 @@ export class PatientProfileService {
         })),
         activityLogs: activityLogsResult.rows.map((row) => ({
           id: row.id,
-          logDate: row.log_date.toISOString?.() ?? row.log_date,
+          logDate: toRequiredDateString(row.log_date),
           source: row.source,
           content: row.content,
           moodScore: row.mood_score === null ? null : Number(row.mood_score),
@@ -883,7 +1752,43 @@ export class PatientProfileService {
   }
 
   /**
-   * Four scalars, and it used to read eight tables to get them.
+   * `baseline_payload` as it is ON DISK — no autofill, no merge.
+   *
+   * Exists for one caller, `PatientProfileController.updateMyBaseline`, and
+   * the reason it cannot use `getBaselineByUserId` is the reason
+   * `AdminService.getStoredProfile` exists on the other side: that
+   * method applies `applyGeneticReportAutofill`, which fills a missing
+   * D4Z4 / haplotype / diagnosis year out of the patient's latest
+   * genetic report at READ time. `applyPatientBaselineWrite` derives
+   * the patient's changed set by diffing against what it is given, so
+   * diffing against the merged payload would report every autofilled
+   * field as unchanged when it is not even stored — and, worse,
+   * whenever the report later changes, as changed by the patient.
+   *
+   * Returns `null` for an account with no profile row, which is not
+   * the same as a profile whose column is NULL (`{ payload: null }`).
+   * The caller does not act on the distinction today — it passes
+   * `stored?.payload ?? null` either way, and `upsertBaseline` answers
+   * the no-row case with `ensureProfileForUser`'s 404 rather than
+   * creating one — but collapsing it here would mean a future caller
+   * could not get it back.
+   */
+  async getStoredBaselinePayload(
+    userId: string,
+  ): Promise<{ payload: Record<string, unknown> | null } | null> {
+    const result = await this.pool.query<{ baseline_payload: unknown }>(
+      'SELECT baseline_payload FROM patient_profiles WHERE user_id = $1',
+      [userId],
+    );
+    if (!result.rowCount) {
+      return null;
+    }
+    return { payload: asRecord(result.rows[0].baseline_payload) };
+  }
+
+  /**
+   * Four scalars and the baseline, and it used to read eight tables to
+   * get them.
    *
    * `getProfileByUserId` loads the patient's entire history — every
    * measurement, function test, symptom score, daily impact, follow-up
@@ -892,9 +1797,10 @@ export class PatientProfileService {
    * screen polls this on every open.
    *
    * It does genuinely need the documents: `applyGeneticReportAutofill`
-   * fills a missing diagnosis date or D4Z4 result from the most recent
-   * genetic report, so a baseline built without them would show blanks
-   * the full profile fills in. The other seven tables it never touched.
+   * fills a missing diagnosis date or D4Z4 result off the report
+   * `pickGeneticEvidenceDocument` names, so a baseline built without
+   * them would show blanks the full profile fills in. The other seven
+   * tables it never touched.
    */
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
     const profileResult = await this.pool.query<PatientProfileRecord>(
@@ -911,7 +1817,7 @@ export class PatientProfileService {
 
     const profile = profileResult.rows[0];
     const documentsResult = await this.pool.query(
-      `SELECT id, document_type, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
+      `SELECT id, document_type, status, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
        FROM patient_documents
        WHERE profile_id = $1
        ORDER BY uploaded_at DESC`,
@@ -924,10 +1830,16 @@ export class PatientProfileService {
         geneticMutation: profile.genetic_mutation,
         baseline: asRecord(profile.baseline_payload),
       },
+      // `status` is selected for the picker, which will not take a
+      // document whose parse has not landed over one that has. A
+      // projection that dropped it would have this screen filling from
+      // a report the passport does not read.
       documentsResult.rows.map((row) => ({
+        id: row.id,
         documentType: row.document_type,
+        status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
       })),
     );
 
@@ -1024,24 +1936,198 @@ export class PatientProfileService {
     const foundation = payload.foundation ?? {};
     const diagnosisYear =
       typeof foundation.diagnosisYear === 'number' ? `${foundation.diagnosisYear}-01-01` : null;
-    const regionLabel =
-      typeof foundation.regionLabel === 'string' ? foundation.regionLabel.trim() : '';
 
+    // 「The key is absent」 and 「the key is present and null」 are
+    // different writes, and only the second one is an erase. COALESCE
+    // collapsed them: a SET propagated to the mirrored column and a
+    // CLEAR never did, so a cleared 姓名 emptied `baseline_payload` and
+    // left `full_name` standing — while the back office's confirm
+    // dialog (apps/mobile/screens/p-admin/patient-record.tsx) promised
+    // the operator the field 「会被清空」, and the same stale column
+    // went on feeding the page header, the masked patient list and the
+    // full-cohort CSV. These four fields are all `.optional()
+    // .nullable()` in `baselineProfileSchema` (profile.schema.ts), so a
+    // parsed payload keeps an explicit null rather than stripping it —
+    // the distinction survives the wire, and these four flags carry it
+    // into the SQL. `undefined`
+    // rather than `in`: JSON has no undefined, so an absent key is the
+    // only way to get one, whichever way Zod represents it.
+    const setsFullName = foundation.fullName !== undefined;
+    const setsPreferredName = foundation.preferredName !== undefined;
+    const setsDiagnosisYear = foundation.diagnosisYear !== undefined;
+
+    /**
+     * ══════════════════════════════════════════════════════════════════
+     * A YEAR AND A DATE IN ONE COLUMN, WITHOUT THE YEAR EATING THE DATE.
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * There are two stores and they hold different things.
+     * `foundation.diagnosisYear` is the questionnaire's only
+     * diagnosis-time control — four digits, labelled 确诊年份 — and it
+     * lives in `baseline_payload`, which is where it stays.
+     * `patient_profiles.diagnosis_date` is a `date`: it can hold a day,
+     * and for the profiles that have one the day came from somewhere
+     * that knew it — the patient's own profile endpoint, the back
+     * office, or `applyGeneticReportAutofill` copying a 诊断日期 the
+     * laboratory printed.
+     *
+     * THE WRITE THIS REPLACES DESTROYED THE SECOND WITH THE FIRST. It
+     * mirrored the year in as `${year}-01-01` unconditionally, so a
+     * profile whose column held 2019-05-03 came out of the next
+     * questionnaire save holding 2019-01-01 — and the year the patient
+     * had typed was 2019, the same year, which is to say the save
+     * carried no new information about the diagnosis time at all. It
+     * did not even need the patient to touch the field:
+     * `applyGeneticReportAutofill` fills an empty 确诊年份 box FROM this
+     * column at read time, so the form hands the year straight back on
+     * the next submit and the day dies to a save about something else.
+     *
+     * Nobody saw it because every renderer reduces a year-start the
+     * evidence report does not corroborate back to a bare year before
+     * printing (profile.passport.ts, and both machine exports emit the
+     * year by construction). That is a display rule. The column is the
+     * stored fact underneath it, the exports read the column, and 5月3日
+     * is not recoverable from 1月1日.
+     *
+     * SO THE RULE IS: the year may REFINE the column, never coarsen it.
+     *
+     *   · Column already inside that year → LEAVE IT. 2019-05-03 under
+     *     a saved 2019 is the same fact said precisely; the save agrees
+     *     with the column and has nothing to add to it.
+     *   · Column in a DIFFERENT year → the patient is correcting the
+     *     year, and a day in the year they just rejected is not a day
+     *     in the new one. `${year}-01-01` goes in, which is all a
+     *     `date` column can be given, and the renderers reduce it.
+     *   · Column empty → `${year}-01-01` as before. Same reduction.
+     *   · Year explicitly null → the column is cleared. That is the
+     *     erase the four `sets*` flags above exist to carry, and it is
+     *     the patient asking for it rather than a side effect.
+     *   · Key absent → untouched, as for the other three columns.
+     *
+     * Deciding this in SQL rather than by reading the column first is
+     * not an optimisation: a read-then-write would let a concurrent
+     * profile update land between the two and be overwritten by a
+     * decision made about the value it replaced.
+     *
+     * ROWS ALREADY FLATTENED STAY FLATTENED, AND CANNOT BE REPAIRED.
+     * The old day was overwritten in place and no copy of it was kept
+     * anywhere — `baseline_payload` only ever stored the year, and the
+     * questionnaire never had a control that could hold a day. A
+     * migration would have nothing to read. Nor can such a row be
+     * IDENTIFIED: a genuine 1 January diagnosis is byte-identical to a
+     * flattened one. This fix is therefore forward-only — it stops the
+     * next save from destroying a day, and every day already destroyed
+     * before it is gone. What limits the damage is that those rows
+     * already print as a bare year everywhere a human reads them, so
+     * no reader is being shown a false day today; they are being shown
+     * a year, which is now also all the column claims to know.
+     *
+     * ══════════════════════════════════════════════════════════════════
+     * AND THE SAME STATEMENT USED TO DO IT AGAIN, ONE LINE LOWER, TO
+     * THE CITY.
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * `region_city = CASE WHEN $8 THEN NULLIF($9,'') ELSE region_city
+     * END` mirrored `foundation.regionLabel` into the city column. That
+     * write is gone, and this is why.
+     *
+     * THE TWO STORES HOLD DIFFERENT THINGS, exactly as above.
+     * `region_province` / `region_city` / `region_district` are three
+     * separate answers off a CLOSED-LIST picker (`RegionPickers`, over
+     * `CHINA_REGIONS` in apps/mobile/lib/demographics-options.ts),
+     * written by `createProfile` / `updateProfile`.
+     * `foundation.regionLabel` is the questionnaire's single free-text
+     * 所在地区 box — 「省 / 市 / 区县」 in one string, at whatever
+     * granularity whoever typed it felt like: 「上海市 浦东新区」,
+     * 「广东 深圳」, 「四川 成都」.
+     *
+     * SO THE MIRROR HAD NO TRUE FORM. Unlike 确诊年份, which is the same
+     * fact as `diagnosis_date` said less precisely, a whole-region label
+     * is not a coarser city — it is a DIFFERENT field, and there is no
+     * rule under which 「上海市 浦东新区」 is a better `region_city` than
+     * 「成都市」. It could not refine the column, so it could only
+     * destroy it.
+     *
+     * AND IT DID, ON THE ORDINARY PATH, EVERY TIME. The patient's own
+     * profile screen (apps/mobile/screens/p-register_profile/index.tsx)
+     * saves twice in one tap: `upsertPatientProfile` writes the three
+     * picker columns correctly, and then `updateMyBaseline` posts
+     * `regionLabel: buildRegionLabel({province, city, district})` — the
+     * three joined by spaces — and landed here milliseconds later to
+     * overwrite `region_city` with the join. A patient who picked
+     * 四川省 / 成都市 / 武侯区 ended the save with:
+     *
+     *     region_province  四川省
+     *     region_city      四川省 成都市 武侯区   ← was 成都市
+     *     region_district  武侯区
+     *
+     * The back office did the same thing with an arbitrary string: an
+     * operator transcribing a phone intake types 所在地区「上海市
+     * 浦东新区」 and `region_city` came out holding a province and a
+     * district while `region_province` still said 四川省.
+     *
+     * IT ALSO FED ITSELF. On the next load the form fills the CITY
+     * picker from `profile.regionCity`, which is now a string no option
+     * in `CHINA_REGIONS` matches, so the picker shows nothing selected
+     * — and the next `upsertPatientProfile` writes that same corrupted
+     * string straight back into `region_city` through `updateProfile`.
+     * The corruption became self-sustaining and the real city was gone
+     * with no copy anywhere.
+     *
+     * WHY NOTHING NEEDS THE MIRROR. The label's authoritative home is
+     * `baseline_payload.foundation.regionLabel`, which the `$1` write
+     * at the top of this same statement stores, and every reader that
+     * wants the LABEL either reads it there already or prefers it:
+     * the full-cohort CSV has its own `baseline_region_label` column
+     * off the payload (admin.csv.ts), 病程管理 reads
+     * `foundation?.regionLabel ?? profile.regionCity`, and 我的档案
+     * reads `baseline?.foundation?.regionLabel` first and only falls
+     * back to joining the three columns.
+     *
+     * THE ONE READER THAT STILL GOES THROUGH THE COLUMN is
+     * `AdminService.getStoredProfile`, which maps `region_city` to
+     * `AdminStoredProfile.regionLabel` and renders it as the back
+     * office record header's 所在地区. That is not this module's file
+     * and is not changed here. Its own query already selects
+     * `baseline_payload` beside `region_city`, so the fix there is to
+     * read `foundation.regionLabel` out of the payload — the same place
+     * the editable 所在地区 field two blocks down that screen already
+     * reads. Until it does, that ONE header line shows the patient's
+     * picked city (or 未填 for a patient who only ever had a
+     * transcribed label) while the authoritative, editable value sits
+     * correct on the same screen. That is a stale duplicate label; what
+     * it replaces was the permanent destruction of a patient's own
+     * answer on every save, and those are not the same size of wrong.
+     */
     await this.pool.query(
       `UPDATE patient_profiles
        SET baseline_payload = $1,
-           full_name = COALESCE($2, full_name),
-           preferred_name = COALESCE($3, preferred_name),
-           diagnosis_date = COALESCE($4::date, diagnosis_date),
-           region_city = COALESCE(NULLIF($5, ''), region_city),
+           full_name = CASE WHEN $2::boolean THEN $3::text ELSE full_name END,
+           preferred_name = CASE WHEN $4::boolean THEN $5::text ELSE preferred_name END,
+           -- 确诊年份 IS A COARSER STATEMENT OF THE COLUMN, NOT A REPLACEMENT
+           -- FOR IT. See the block above the statement.
+           diagnosis_date = CASE
+             WHEN NOT $6::boolean THEN diagnosis_date
+             WHEN $7::date IS NULL THEN NULL
+             WHEN diagnosis_date IS NOT NULL
+                  AND date_part('year', diagnosis_date) = date_part('year', $7::date)
+               THEN diagnosis_date
+             ELSE $7::date
+           END,
+           -- region_city IS NOT WRITTEN HERE. 所在地区 is a whole-region
+           -- free-text label and this column means a city off a closed
+           -- list; the label lives in 「baseline_payload」 ($1) and
+           -- nowhere else. See the block above the statement.
            updated_at = NOW()
-       WHERE id = $6`,
+       WHERE id = $8`,
       [
         payload,
+        setsFullName,
         foundation.fullName ?? null,
+        setsPreferredName,
         foundation.preferredName ?? null,
+        setsDiagnosisYear,
         diagnosisYear,
-        regionLabel,
         profileId,
       ],
     );
@@ -1291,7 +2377,7 @@ export class PatientProfileService {
 
     return {
       id: row.id,
-      logDate: row.log_date?.toISOString?.() ?? row.log_date,
+      logDate: toRequiredDateString(row.log_date),
       source: row.source,
       content: row.content,
       moodScore: row.mood_score === null ? null : Number(row.mood_score),
@@ -1361,7 +2447,7 @@ export class PatientProfileService {
       status: row.status,
       uploadedAt: toTimestampString(row.uploaded_at),
       checksum: row.checksum,
-      ocrPayload: row.ocr_payload ?? null,
+      ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
       submissionId: row.submission_id ?? null,
     };
   }
@@ -1390,6 +2476,25 @@ export class PatientProfileService {
       mime_type: string | null;
       ocr_payload: unknown | null;
       uploaded_at: Date | string;
+    };
+  }
+
+  /**
+   * The single document's payload AS IT MAY BE PRINTED.
+   *
+   * `getDocumentForUser` deliberately hands back the row untouched:
+   * `reparseDocument` reads it to decide what a re-run is allowed to
+   * replace, and that decision has to be taken against what is actually
+   * stored. Every OTHER reader of one document's payload wants the
+   * guarded copy, and the two used to be the same call — which is how
+   * GET …/documents/:id/ocr became the one door into `fields` that the
+   * projection's guard did not cover.
+   */
+  async getDocumentOcrForUser(userId: string, documentId: string) {
+    const document = await this.getDocumentForUser(userId, documentId);
+    return {
+      status: document.status ?? null,
+      ocrPayload: withholdUnsafeReadings(document.ocr_payload ?? null),
     };
   }
 
@@ -1485,7 +2590,24 @@ export class PatientProfileService {
       { userId, documentId, keys: Object.keys(patch) },
       'Report OCR fields hand-corrected',
     );
-    return updated.rows[0];
+    // THE CORRECTION SCREEN IS WHERE THE WITHHELD READINGS CAME BACK.
+    //
+    // This returned `ocr_payload` exactly as it was just written, and
+    // the mobile client renders the returned payload — so PATCH
+    // …/documents/:id/ocr republished every cell the guard deletes, on
+    // the one screen a patient opens PRECISELY BECAUSE the report looks
+    // wrong. GET on this same path has gone through the guard since it
+    // was built; the PATCH beside it had not, and a door is a door
+    // whichever verb opens it.
+    //
+    // The hand-corrected cells are not the ones at risk — zod admits
+    // only reportName / reportTime / diagnosisType / d4z4Repeats /
+    // haplotype / methylationValue, none of them laboratory analytes.
+    // What came back was the REST of the stored payload, carried along
+    // for the ride: a patient fixing their report's date was handed the
+    // collapsed CK column again in the same response.
+    const patched = updated.rows[0];
+    return { ...patched, ocr_payload: withholdUnsafeReadings(patched.ocr_payload ?? null) };
   }
 
   /**
@@ -2078,43 +3200,79 @@ export class PatientProfileService {
         : measurementRows.reduce((sum, row) => sum + Number(row.strength_score), 0) /
           measurementRows.length;
 
+    // No measurements is not a middling reading — it is no reading. See
+    // `RiskLevel`.
     const strengthLevel: RiskSummary['strengthLevel'] =
       avgStrength === null
-        ? 'medium'
+        ? 'unknown'
         : avgStrength < 3
           ? 'high'
           : avgStrength < 4
             ? 'medium'
             : 'low';
 
-    const latestActivity = activityResult.rows[0];
-    const lastActivityDate = latestActivity?.log_date ? new Date(latestActivity.log_date) : null;
+    /**
+     * `log_date` is a `date` column, so the DAY is the whole of what is
+     * stored and `toRequiredDateString` is how it is read back. What
+     * this axis grades is how long ago that day was, and 「no log at
+     * all」 has no such distance: the branch below used to answer it
+     * `high`, putting a patient who registered this morning in the same
+     * band as one whose last log is a fortnight old.
+     *
+     * `daysSince` is computed from the same local Y/M/D — via
+     * `startOfLocalDay` on both sides — rather than from an instant, so
+     * the boundary between 7 and 8 days falls where a calendar puts it
+     * and not where the server's clock happens to be inside a day.
+     */
+    const lastActivityDay = activityResult.rows[0]?.log_date
+      ? toRequiredDateString(activityResult.rows[0].log_date)
+      : null;
 
-    let activityLevel: RiskSummary['activityLevel'] = 'medium';
-    if (!lastActivityDate) {
-      activityLevel = 'high';
-    } else {
+    let activityLevel: RiskSummary['activityLevel'] = 'unknown';
+    if (lastActivityDay) {
       const daysSince = Math.floor(
-        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24),
+        (startOfLocalDay(new Date()).getTime() - startOfLocalDay(lastActivityDay).getTime()) /
+          (1000 * 60 * 60 * 24),
       );
       activityLevel = daysSince > 14 ? 'high' : daysSince > 7 ? 'medium' : 'low';
     }
 
+    /**
+     * The overall band is the worst of the axes THAT HAVE A READING.
+     *
+     * An `unknown` axis contributes nothing rather than a rank, so a
+     * patient with weak measurements and no activity log still surfaces
+     * as `high` — that is a real observation and it must not be
+     * softened — while a patient with neither comes out `unknown`, and
+     * the chip goes grey 「暂无评估」 instead of red 高关注. A summary
+     * built out of nothing is a summary of nothing.
+     */
     const levelRank = { low: 1, medium: 2, high: 3 } as const;
-    const overallLevel =
-      levelRank[strengthLevel] >= levelRank[activityLevel] ? strengthLevel : activityLevel;
+    const gradedAxes = [strengthLevel, activityLevel].filter(
+      (level): level is Exclude<RiskLevel, 'unknown'> => level !== 'unknown',
+    );
+    const overallLevel: RiskSummary['overallLevel'] = gradedAxes.length
+      ? gradedAxes.reduce((worst, level) => (levelRank[level] > levelRank[worst] ? level : worst))
+      : 'unknown';
 
     const notes: string[] = [];
     if (avgStrength !== null) {
       notes.push(`最近平均肌力分数：${avgStrength.toFixed(1)}`);
     } else {
-      notes.push('暂无肌力评估数据');
+      // 「暂无」/「近期没有」 both read as a judgement about a recent
+      // stretch of time — as though the platform had looked at the last
+      // few weeks and found them empty. It has not looked at anything:
+      // there is no record here at all, which is a fact about this
+      // platform's files and not about the patient's health or habits.
+      // Same sentence shape as the surveillance rows' 「本平台没有你的
+      // 疼痛记录」.
+      notes.push('本平台还没有你的肌力评估记录');
     }
 
-    if (lastActivityDate) {
-      notes.push(`最近活动记录：${lastActivityDate.toISOString().split('T')[0]}`);
+    if (lastActivityDay) {
+      notes.push(`最近活动记录：${lastActivityDay}`);
     } else {
-      notes.push('近期没有活动记录');
+      notes.push('本平台还没有你的活动记录');
     }
 
     const latestMeasurementRow = measurementRows[0];
@@ -2141,7 +3299,11 @@ export class PatientProfileService {
       strengthLevel,
       activityLevel,
       latestMeasurement,
-      lastActivityAt: lastActivityDate ? lastActivityDate.toISOString() : null,
+      // The day, not a manufactured instant: this used to emit
+      // `2026-08-18T16:00:00.000Z` for a log the patient dated
+      // 2026-08-19, which is a time of day the column has never held
+      // and, read as a date, the wrong day.
+      lastActivityAt: lastActivityDay,
       notes,
     };
   }
@@ -2444,7 +3606,7 @@ export class PatientProfileService {
       if (!target) return;
       target.activityLogs.push({
         id: row.id,
-        logDate: row.log_date.toISOString?.() ?? row.log_date,
+        logDate: toRequiredDateString(row.log_date),
         source: row.source,
         content: row.content,
         moodScore: row.mood_score === null ? null : Number(row.mood_score),
@@ -2487,7 +3649,7 @@ export class PatientProfileService {
         status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
         checksum: row.checksum,
-        ocrPayload: row.ocr_payload ?? null,
+        ocrPayload: withholdUnsafeReadings(row.ocr_payload ?? null),
         submissionId,
       });
     });
@@ -3221,5 +4383,180 @@ export class PatientProfileService {
     removeFile: (storageUri: string) => Promise<void>,
   ): Promise<number> {
     return purgeDueAccountDeletions(this.pool, removeFile, this.logger);
+  }
+
+  /* ==================================================================
+   * PIPL 可携带权 — the record categories PatientProfileDTO does NOT
+   * carry.
+   * ==================================================================
+   *
+   * `getProfileByUserId` loads eight patient_* tables into one DTO, and
+   * for a while that set really was 「everything the platform stores
+   * about the caller」. Two features shipped afterwards and did not
+   * join it, both because they were deliberately built OUTSIDE this
+   * class: the falls diary (its write is a two-row transaction, see
+   * falls.service.ts) and the instrument engine (its rows are
+   * immutable, see instruments.service.ts). Neither appears in
+   * `PatientProfileDTO`, so `GET /me/data-export` — whose docstring
+   * claimed to hold everything, and whose button the privacy screen
+   * describes as 「把全部档案、记录、报告清单与授权历史下载成一个文件」
+   * — handed patients a file with every fall they recorded and every
+   * scale this product administered to them missing, and nothing in
+   * the file saying so.
+   *
+   * A patient reading that file sees 病程时间线 entries of type `fall`
+   * (the diary's twin event IS in `profile.followupEvents`) with none
+   * of what they answered about them, and no Brooke or Vignos grade at
+   * all. Both readings are wrong in the direction that matters: the
+   * record looks thinner than it is.
+   *
+   * The readers below exist so the export can carry those categories
+   * without merging either engine's write invariants into this class.
+   * They are EXPORT-shaped, not screen-shaped: no window, superseded
+   * rows included, and an explicit row cap the caller reports as a
+   * truncation flag rather than a short list presented as a whole one.
+   * Every bound is passed IN, so all of the export's limits stay
+   * legible in one place — profile.controller.ts.
+   */
+
+  /** Lazily composed, not constructed in `constructor`, so an account
+   *  that never exports never builds them. Both take the same pool and
+   *  logger this service already holds. */
+  private instrumentsForExport: InstrumentsService | null = null;
+  private passportSharesForExport: PassportShareService | null = null;
+
+  private instrumentsReader(): InstrumentsService {
+    this.instrumentsForExport ??= new InstrumentsService({
+      pool: this.pool,
+      logger: this.logger,
+    });
+    return this.instrumentsForExport;
+  }
+
+  private passportSharesReader(): PassportShareService {
+    this.passportSharesForExport ??= new PassportShareService(this.pool, this.logger);
+    return this.passportSharesForExport;
+  }
+
+  /**
+   * Every live diary entry the patient ever wrote, oldest fall
+   * included — see EXPORT_FALLS_WINDOW_DAYS for why this read has no
+   * window when every other reader of the table does.
+   *
+   * `FALL_DIARY_SQL` is imported rather than re-written: it carries the
+   * retraction rule (a diary row whose timeline twin was deleted is
+   * NOT live), and a second copy of that predicate is how the export
+   * would come to hand back falls the patient believes they retracted.
+   *
+   * Reads `maxRows + 1` so 「there are more」 is observed rather than
+   * inferred from a full page.
+   */
+  async listFallDiaryForExport(
+    userId: string,
+    maxRows: number,
+  ): Promise<{ falls: FallDTO[]; truncated: boolean }> {
+    const result = await this.pool.query<FallDiaryRow>(`${FALL_DIARY_SQL}\n       LIMIT $3`, [
+      userId,
+      String(EXPORT_FALLS_WINDOW_DAYS),
+      maxRows + 1,
+    ]);
+    const rows = result.rows ?? [];
+    return {
+      falls: rows.slice(0, maxRows).map(toExportFallDTO),
+      truncated: rows.length > maxRows,
+    };
+  }
+
+  /**
+   * Every instrument administration, item responses attached.
+   *
+   * `includeSuperseded: true`, which is the opposite of what a trend
+   * line wants and the only correct choice here. A completed
+   * administration is immutable (migration 022) and a correction is a
+   * NEW row naming the one it replaces; exporting only the survivors
+   * would hand the patient a history with their own corrections
+   * silently deleted — and `supersedesId` / `supersededById` travel
+   * with each row, so a reader can still draw the live series.
+   */
+  async listInstrumentAdministrationsForExport(
+    userId: string,
+    maxRows: number,
+  ): Promise<{ administrations: AdministrationDTO[]; truncated: boolean }> {
+    const reader = this.instrumentsReader();
+    const administrations: AdministrationDTO[] = [];
+    let truncated = false;
+
+    for (let offset = 0; offset < maxRows; offset += EXPORT_INSTRUMENT_PAGE_SIZE) {
+      const pageSize = Math.min(EXPORT_INSTRUMENT_PAGE_SIZE, maxRows - offset);
+      const page = await reader.listAdministrations(userId, {
+        limit: pageSize,
+        offset,
+        includeSuperseded: true,
+      });
+      administrations.push(...page);
+      if (page.length < pageSize) break;
+      if (offset + pageSize >= maxRows) truncated = true;
+    }
+
+    return { administrations, truncated };
+  }
+
+  /**
+   * 协议签署记录: which version of which document this account accepted,
+   * and when it was withdrawn.
+   *
+   * Queried here rather than through legal.service.ts because both of
+   * that module's readers answer a different question — 「is this
+   * consent in force right now」 — and are `DISTINCT ON (document)` with
+   * `withdrawn_at IS NULL`. Its own comment says the full history 「is
+   * not exposed over HTTP, because nothing needs it yet」. The
+   * portability export needs it: an authorisation the patient took
+   * back is part of what they authorised, and the newest row per
+   * document is not a history.
+   */
+  async listLegalAcceptancesForExport(
+    userId: string,
+  ): Promise<{ acceptances: LegalAcceptanceExportDTO[]; truncated: boolean }> {
+    const result = await this.pool.query<{
+      document: string;
+      version: string;
+      accepted_at: Date | string;
+      withdrawn_at: Date | string | null;
+    }>(
+      `SELECT document, version, accepted_at, withdrawn_at
+         FROM legal_document_acceptances
+        WHERE user_id = $1
+        ORDER BY accepted_at DESC
+        LIMIT $2`,
+      [userId, EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS + 1],
+    );
+    const rows = result.rows ?? [];
+    return {
+      acceptances: rows.slice(0, EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS).map((row) => ({
+        document: row.document,
+        version: row.version,
+        acceptedAt: new Date(row.accepted_at).toISOString(),
+        withdrawnAt: row.withdrawn_at === null ? null : new Date(row.withdrawn_at).toISOString(),
+      })),
+      truncated: rows.length > EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS,
+    };
+  }
+
+  /**
+   * 谁能看我的临床护照: every share link and pickup code this account
+   * ever minted, revoked and expired ones included, with no token or
+   * code digest in any of them (`PassportShareService.list` projects
+   * neither).
+   *
+   * Reuses that method rather than re-querying, because it is the one
+   * definition of 「every door into this record」 — it LEFT JOINs the
+   * pickup codes so a code read aloud in a clinic is a row in the same
+   * list as a link forwarded in WeChat.
+   */
+  async listPassportSharesForExport(
+    userId: string,
+  ): Promise<{ shares: PassportShareLink[]; truncated: boolean }> {
+    const shares = await this.passportSharesReader().list(userId);
+    return { shares, truncated: shares.length >= PASSPORT_SHARE_LIST_LIMIT };
   }
 }

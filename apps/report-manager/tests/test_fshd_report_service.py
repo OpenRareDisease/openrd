@@ -1,6 +1,12 @@
+import re
 import unittest
 
-from app.services.fshd_report_service import analyze_fshd_report, extract_lab_table_rows
+import app.services.fshd_report_service as fshd_report_service
+from app.services.fshd_report_service import (
+    MEDICAL_SUMMARY_STRUCTURE_MARKERS,
+    analyze_fshd_report,
+    extract_lab_table_rows,
+)
 
 
 class FshdReportServiceCoverageTest(unittest.TestCase):
@@ -641,6 +647,7711 @@ class GeneticMethodAndRangeTest(unittest.TestCase):
         self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
         self.assertEqual(summary["d4z4_repeat_other"], 11)
 
+
+class VerdictsAreNotReadingsTest(unittest.TestCase):
+    """A field may say what the report says, and nothing else.
+
+    Every case here is a cell this platform cannot read, and every one
+    of them used to come out of `_extract_genetic` as a confident
+    positive finding — carried on to the patient's document row, the
+    passport and the registry export under a laboratory's name.
+    """
+
+    @staticmethod
+    def _fields(result):
+        return {f["field_name"]: f for f in result["fshd"]["structured_fields"]}
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body, hint="genetic_report", name="G.pdf"):
+        return analyze_fshd_report("\n".join(("基因检测报告", "检测结果") + body), hint, name)
+
+    # --- the computed verdict, deleted -------------------------------
+
+    def test_no_field_claims_the_result_is_positive(self):
+        """`genetic_positive` could only ever answer 「yes」.
+
+        It was derived from the PRESENCE of a cell, so a count of 0, a
+        length in kb and a sentence saying nothing was found all
+        produced 「yes」. There is no honest version of a flag with no
+        「no」 in it, so the derivation is gone.
+        """
+        for body in (
+            "D4Z4重复单元数: 3",
+            "D4Z4重复单元数: 0",
+            "D4Z4 EcoRI 片段长度: 38 kb",
+            "D4Z4 未检出3个重复单元",
+            "本次未见异常。",
+        ):
+            with self.subTest(body=body):
+                result = self._analyze(body)
+                self.assertNotIn("genetic_positive", self._fields(result))
+                self.assertNotIn("genetic_positive", self._summary(result))
+                names = {o["analyte_name"] for o in result["observations"]}
+                self.assertNotIn("genetic_positive", names)
+                self.assertNotIn("genetic_positive", result["latest_summary"]["by_analyte"])
+
+    # --- a count cell that is not a count ----------------------------
+
+    def test_zero_is_kept_visible_but_never_typed_as_a_count(self):
+        """0 is what the cell prints and is not a reading.
+
+        Kept, so a reviewer sees it was read and refused rather than
+        finding the row missing — but never a number anything can use,
+        and always below the review threshold.
+        """
+        result = self._analyze("D4Z4重复单元数: 0")
+        field = self._fields(result)["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "0")
+        self.assertLess(field["confidence"], 0.75)
+        self.assertIn(
+            "d4z4_repeat_pathogenic",
+            [q["field_name"] for q in result["fshd"]["review_queue"]],
+        )
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertIsNone(result["d4z4_repeats"])
+
+    def test_a_length_in_kb_is_not_a_repeat_count(self):
+        """One number must not be reported under two names.
+
+        「D4Z4 EcoRI 片段长度: 38 kb」 set `d4z4_repeat_pathogenic` to 38
+        — well above the FSHD1 range — while `ecori_fragment_kb`
+        recorded the same 38 correctly. The length keeps its own name.
+        """
+        result = self._analyze("D4Z4 EcoRI 片段长度: 38 kb")
+        self.assertNotIn("d4z4_repeat_pathogenic", self._fields(result))
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertEqual(self._summary(result)["ecori_fragment_kb"], 38.0)
+
+    def test_a_negated_cell_reports_nothing(self):
+        """「未检出3个重复单元」 carries a 3 that is not a count."""
+        result = self._analyze("D4Z4 未检出3个重复单元")
+        self.assertNotIn("d4z4_repeat_pathogenic", self._fields(result))
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+
+    def test_a_stated_interval_never_becomes_a_number(self):
+        """The interval fix left two channels uncovered.
+
+        `observations[].result.value_num` and `latest_summary` both read
+        「1-10」 as 1.0 — inside the 1–4 window that gates a
+        recommendation.
+        """
+        result = self._analyze("D4Z4重复单元数: 1-10")
+        obs = next(
+            o for o in result["observations"] if o["analyte_name"] == "d4z4_repeat_pathogenic"
+        )
+        self.assertIsNone(obs["result"]["value_num"])
+        self.assertEqual(obs["result"]["value_text"], "1-10")
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["d4z4_repeat_pathogenic"]["value_num"]
+        )
+
+    # --- naming a type is not diagnosing it --------------------------
+
+    def test_an_excluded_or_suspected_type_is_not_a_diagnosis(self):
+        for body in (
+            "本次检测不支持 FSHD1，建议评估 FSHD2。",
+            "本次检测不支持 FSHD1。",
+            "临床怀疑 FSHD1，请进一步检查。",
+        ):
+            with self.subTest(body=body):
+                result = self._analyze(body)
+                self.assertNotIn("diagnosis_type", self._fields(result))
+                self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_the_excluding_sentence_is_still_displayed(self):
+        """Abstaining from the GRADE does not withhold the words.
+
+        Only the two sentences whose conclusion block survives
+        `_extract_block_after_header` are asserted here — a conclusion
+        containing 「建议」 is truncated away by that helper before this
+        code sees it, which is a separate pre-existing gap.
+        """
+        for body in ("本次检测不支持 FSHD1。", "临床怀疑 FSHD1，请进一步检查。"):
+            with self.subTest(body=body):
+                summary = self._summary(self._analyze(body))
+                self.assertIn("FSHD1", summary["interpretation_summary"])
+
+    def test_a_stated_type_still_lands(self):
+        result = self._analyze("检测结论: 符合 FSHD1。", "D4Z4重复单元数: 3")
+        self.assertEqual(self._summary(result)["diagnosis_type"], "FSHD1")
+
+    # --- the allele the whole reading rests on -----------------------
+
+    def test_a_negated_haplotype_is_not_a_haplotype(self):
+        result = self._analyze("未检出 4qA permissive 等位基因")
+        self.assertNotIn("haplotype", self._fields(result))
+        self.assertIsNone(self._summary(result)["haplotype"])
+
+    def test_both_alleles_named_is_withheld_not_queued_for_review(self):
+        """A LOW CONFIDENCE IS NOT A WARNING — NOTHING DOWNSTREAM READS IT.
+
+        This used to emit whichever allele was printed first at 0.60, on
+        the theory that dropping below the 0.75 review threshold put a
+        human on it. The queue is a human process and the value did not
+        wait for it: the bridge writes `fields.haplotype`
+        unconditionally, `parsePermissiveHaplotype` sees one token and
+        returns true, and the assistant prompt and the patient-facing
+        passport both assert a permissive allele in the meantime.
+
+        So the VALUE is withheld. The platform renders a missing one as
+        `unspecified_haplotype`, which every downstream reader already
+        handles, and the report's own sentence still travels on
+        `interpretation_summary`.
+        """
+        result = self._analyze("单倍型: 4qB/4qA 双等位基因均已分型，致病侧为 4qB")
+        self.assertNotIn("haplotype", self._fields(result))
+        self.assertIsNone(self._summary(result)["haplotype"])
+        self.assertNotIn("haplotype", [q["field_name"] for q in result["fshd"]["review_queue"]])
+
+    def test_a_single_stated_haplotype_keeps_its_confidence(self):
+        result = self._analyze("单倍型: 4qA", "D4Z4重复单元数: 3")
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+        self.assertGreaterEqual(self._fields(result)["haplotype"]["confidence"], 0.75)
+
+    def test_the_probe_pair_on_the_method_line_is_not_this_patients_allele(self):
+        """THE DEFECT THIS SECTION EXISTS FOR, ON A REAL REPORT.
+
+        The haplotype was `re.search(r"\\b(4qA|4qB)\\b")` over the whole
+        document — the FIRST token on the page. On a Southern blot report
+        that is the 检测方法 line naming the standard probe pair, and the
+        wording below is the exact wording this platform's own patient
+        copy tells people to ask their laboratory for. So a report whose
+        RESULT is 4qB was read as 4qA.
+
+        FSHD1 cannot be the mechanism on a 4qB allele, so this turned a
+        non-diagnosis into 基因确诊 and 可用于入组.
+        """
+        result = self._analyze(
+            "检测方法: 脉冲场凝胶电泳,联合 p13E-11 探针,再结合 4qA / 4qB 探针判断单倍型",
+            "检测结果",
+            "4q35 单倍型: 4qB",
+            "D4Z4重复单元数: 6",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_the_probe_pair_does_not_lower_a_genuine_4qa_reading(self):
+        """The same method line above a 4qA result is still a clean read.
+
+        Flagging on 「both tokens appear anywhere」 put every ordinary
+        Southern blot into the review queue at 0.60, because the probe
+        line names both on every one of them.
+        """
+        result = self._analyze(
+            "检测方法: 联合 p13E-11 探针,再结合 4qA / 4qB 探针判断单倍型",
+            "检测结果",
+            "4q35 单倍型: 4qA",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+        self.assertGreaterEqual(self._fields(result)["haplotype"]["confidence"], 0.75)
+
+    def test_a_footnote_defining_the_term_does_not_suppress_the_result(self):
+        """「附注: 4qA 为允许型单倍型」 is a definition, not a second result.
+
+        It contains 单倍型, so a line-contains test read it as a stated
+        result and withheld the 4qB printed above it — costing the
+        patient the one sentence that says a 4qB contraction does not
+        support FSHD1. The label sits AFTER the token in a footnote and
+        BEFORE it on every real result row, which is the same rule
+        `_find_adjacent_regex` applies to the numeric cells.
+        """
+        result = self._analyze(
+            "检测结果", "单倍型: 4qB", "附注: 4qA 为允许型单倍型"
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_a_bare_token_with_no_heading_is_still_read(self):
+        """An OCR that recovered the results and lost the headings.
+
+        Requiring a 单倍型 label outright would drop a real allele for
+        every report whose layout the OCR flattened, so an unlabelled
+        line is still read — but only when the whole document, method
+        lines aside, is unanimous about which allele it names.
+        """
+        self.assertEqual(
+            self._summary(self._analyze("FSHD1", "4qA", "D4Z4重复单元数: 4"))["haplotype"],
+            "4qA",
+        )
+
+    # --- a unit nobody printed ---------------------------------------
+
+    def test_methylation_carries_only_the_unit_the_report_printed(self):
+        """A bisulfite ratio is commonly printed as a fraction.
+
+        Defaulting the unit to 「%」 turned 甲基化 0.35 into 0.35% on the
+        patient's screen. This repo states no methylation boundary, so
+        the unit was the last way this field could say something false.
+        """
+        self.assertIsNone(
+            self._fields(self._analyze("甲基化 0.35"))["methylation_value"]["unit"]
+        )
+        self.assertEqual(
+            self._fields(self._analyze("甲基化 35%"))["methylation_value"]["unit"], "%"
+        )
+
+
+class TheNumberBelongsToTheLabelNextToItTest(unittest.TestCase):
+    """A cell label reached down into the line below it.
+
+    Every numeric pattern in `_extract_genetic` was written
+    `标签[^\\d]{0,N}(\\d+)`, and `[^\\d]` matches a newline — so a label
+    sitting on the 检测项目 line captured whatever number the NEXT line
+    happened to start with. On an FSHD report the next line is very
+    often the haplotype, and 「4qA」 starts with a digit.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_the_methylation_cell_is_not_read_out_of_the_haplotype(self):
+        """甲基化分析 is the name of the FSHD2 assay, not a reading of it.
+
+        With the 检测项目 line naming the method and the next line stating
+        the haplotype, `甲基化[^\\d]{0,12}` captured the 4 of 4qA — and
+        because the first match wins, the laboratory's own 甲基化 35%
+        further down was never reached. Precise mode handed the
+        assistant that 4; strict mode counted it in
+        `numericValuesWithheld`.
+        """
+        summary = self._summary(
+            self._analyze(
+                "示例医学检验实验室 基因检测报告",
+                "送检单位: 示例市第一人民医院神经内科",
+                "检测项目: FSHD 甲基化分析",
+                "单倍型: 4qA",
+                "D4Z4重复单元数: 4",
+                "甲基化: 35%",
+                "报告医师: 王某某",
+            )
+        )
+        self.assertEqual(summary["methylation_value"], 35.0)
+        self.assertNotEqual(summary["methylation_value"], 4.0)
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_the_repeat_count_is_not_read_out_of_the_haplotype(self):
+        """The same shape on the cell the whole FSHD1 reading rests on.
+
+        「检测项目: D4Z4 重复单元数检测」 above 「单倍型: 4qA」 reported a
+        repeat count of 4 at confidence 0.97 — a confirmed FSHD1-range
+        count taken from an allele name — while the report's own count,
+        9 and in the grey zone, sat unread below it.
+        """
+        summary = self._summary(
+            self._analyze(
+                "示例医学检验实验室 基因检测报告",
+                "检测项目: D4Z4 重复单元数检测",
+                "单倍型: 4qA",
+                "检测结果",
+                "D4Z4重复单元数: 9",
+                "报告医师: 王某某",
+            )
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 9)
+
+    def test_the_assay_name_may_still_label_its_own_result_row(self):
+        """「甲基化分析: 35%」 IS the result row, and must still read.
+
+        The gap is the same method word; what separates the two cases is
+        the colon. Forbidding the method word outright would have made
+        this laboratory's number disappear.
+        """
+        self.assertEqual(self._summary(self._analyze("基因检测报告", "甲基化分析: 35%"))["methylation_value"], 35.0)
+
+    def test_a_method_word_with_no_separator_reports_nothing(self):
+        summary = self._summary(
+            self._analyze("基因检测报告", "检测结果", "检测项目 甲基化分析 4qA")
+        )
+        self.assertIsNone(summary["methylation_value"])
+        # NOR IS THE 4qA A HAPLOTYPE. It sits on a 检测项目 line, which
+        # names the assay — the reason the methylation cell above it
+        # reports nothing is the same reason this one does. This
+        # assertion read `== "4qA"` while the haplotype was taken from
+        # the first token anywhere on the page.
+        self.assertIsNone(summary["haplotype"])
+
+    def test_a_methylation_row_is_never_a_repeat_count(self):
+        """ONE CELL, TWO ANSWERS ABOUT TWO DIFFERENT MEASUREMENTS.
+
+        「D4Z4」 labels the repeat count and also opens 「D4Z4甲基化」, so
+        the count's last-resort pattern reached into the methylation row.
+        The gap 「甲基化: 」 carries a colon, which is what
+        `_gap_names_a_method` treats as settling the question, so the
+        match was accepted at 0.97 — the confidence of a cell we really
+        read. The same cell was ALSO read correctly as
+        `methylation_value`, so one methylation reading became a
+        methylation value AND a fabricated repeat count, and the count
+        drove the FSHD1/FSHD2 branch.
+
+        This repo states no methylation boundary, and neither report
+        below contains a repeat count at all.
+        """
+        percent = self._summary(
+            self._analyze("基因检测报告", "检测结果", "D4Z4甲基化: 35%")
+        )
+        self.assertEqual(percent["methylation_value"], 35.0)
+        self.assertIsNone(percent["d4z4_repeat_pathogenic"])
+
+    def test_the_fraction_spelling_does_not_mint_a_count_of_zero(self):
+        """「D4Z4 甲基化水平：0.35」 gave `d4z4_repeat_pathogenic` = 0.
+
+        The pattern stopped at the 0 before the decimal point, and the
+        platform then told the patient the laboratory had printed a count
+        of zero with 报告读取 beside it. A bisulfite ratio is commonly
+        printed as a fraction, so this is the ordinary spelling.
+        """
+        summary = self._summary(
+            self._analyze("基因检测报告", "检测结果", "D4Z4 甲基化水平：0.35")
+        )
+        self.assertEqual(summary["methylation_value"], 0.35)
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_no_d4z4_cell_is_emitted_off_a_methylation_row(self):
+        """Not merely ungraded — the row must not exist.
+
+        `normalized_value` alone is not enough: the passport prints the
+        raw `field_value` with 报告读取 in its bracket, so a `d4z4` field
+        carrying 「35」 or 「0」 attributes a count to a report that states
+        none however the number is typed.
+        """
+        for row in ("D4Z4甲基化: 35%", "D4Z4 甲基化水平：0.35"):
+            with self.subTest(row=row):
+                names = {
+                    f["field_name"]
+                    for f in self._analyze("基因检测报告", "检测结果", row)["fshd"][
+                        "structured_fields"
+                    ]
+                }
+                self.assertNotIn("d4z4_repeat_pathogenic", names)
+
+    def test_a_methylation_row_does_not_hide_a_real_count_below_it(self):
+        """The match is refused, not the cell — so the scan goes on.
+
+        A report carrying both must still read the count the laboratory
+        printed.
+        """
+        summary = self._summary(
+            self._analyze(
+                "基因检测报告",
+                "检测结果",
+                "D4Z4甲基化: 28%",
+                "D4Z4 重复单元数: 7",
+            )
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 7)
+        self.assertEqual(summary["methylation_value"], 28.0)
+
+    def test_a_length_row_is_still_refused_by_its_unit(self):
+        """The `length_in_kb` refusal stays live for the bare spelling.
+
+        「D4Z4: 38 kb」 has a gap of just 「: 」 — no analyte word in it —
+        so the gap test cannot see it and the unit AFTER the number is
+        what catches it.
+        """
+        summary = self._summary(self._analyze("基因检测报告", "检测结果", "D4Z4: 38 kb"))
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+
+class AGeneticReportIsIdentifiedByItsStructureTest(unittest.TestCase):
+    """A 病历摘要 quoting a genetic result classified as the report.
+
+    `REPORT_TYPE_RULES` scores VOCABULARY, and a clinic letter that
+    transcribes the patient's own result contains every genetics word
+    the rules look for: measured on a real one, genetic_report 18
+    (基因检测 4 + fshd1 5 + d4z4 5 + 4qa 4) against medical_summary 16,
+    with the uploader's declared 「other」 losing to the classifier. The
+    label is what the API's `isLaboratoryGeneticReport` asks before
+    anything may GRADE a genetics cell, so the transcribed count was
+    graded on the FSHD1 boundary and the transcribed haplotype called
+    permissive.
+
+    The failure was self-reinforcing: the more of the result the letter
+    quoted, the more certainly it flipped.
+    """
+
+    SUMMARY = (
+        "示例市第一人民医院 门诊病历摘要",
+        "主诉: 双上肢抬举无力10年,加重2年。",
+        "现病史: 2019年于外院行基因检测,结果示 D4Z4 重复单元数 4 个,"
+        "单倍型 4qA,考虑 FSHD1。",
+        "既往史: 否认高血压、糖尿病史。",
+        "查体: 双侧翼状肩胛,面肌无力。",
+    )
+    REPORT = (
+        "示例医学检验实验室 基因检测报告",
+        "送检单位: 示例市第一人民医院神经内科",
+        "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+        "检测方法: 脉冲场凝胶电泳,p13E-11探针Southern blotting",
+        "检测结果",
+        "单倍型: 4qA",
+        "D4Z4重复单元数: 4",
+        "报告医师: 王某某",
+    )
+
+    @staticmethod
+    def _analyze(body, hint):
+        return analyze_fshd_report("\n".join(body), hint, "Upload.pdf")
+
+    def test_a_transcription_is_not_promoted_to_a_genetic_report(self):
+        result = self._analyze(self.SUMMARY, "other")
+        self.assertEqual(result["fshd"]["report_type"], "medical_summary")
+
+    def test_the_quoted_values_are_still_read_off_the_transcription(self):
+        """Refusing the LABEL must not lose the patient's numbers.
+
+        For some patients the 病历摘要 is the only page in the account
+        carrying the D4Z4 count, and the platform's answer has always
+        been 「display it with its origin, never grade it」. The API can
+        only stamp `not_read_off_a_laboratory_report` onto a cell that
+        exists.
+        """
+        summary = self._analyze(self.SUMMARY, "other")["fshd"]["normalized_summary"][
+            "genetic_summary"
+        ]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 4)
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_the_narrative_cells_are_still_read_as_well(self):
+        names = {
+            f["field_name"] for f in self._analyze(self.SUMMARY, "other")["fshd"]["structured_fields"]
+        }
+        self.assertIn("progression_node", names)
+
+    def test_the_uploader_calling_it_a_genetic_report_does_not_promote_it(self):
+        """Patients pick 基因检测报告 for the letter that quotes one."""
+        result = self._analyze(self.SUMMARY, "genetic_report")
+        self.assertEqual(result["fshd"]["report_type"], "medical_summary")
+
+    def test_a_real_report_is_still_a_genetic_report(self):
+        for hint in ("genetic_report", "other"):
+            with self.subTest(hint=hint):
+                result = self._analyze(self.REPORT, hint)
+                self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+
+    def test_a_signature_line_does_not_relabel_a_laboratory_report(self):
+        """医师签名 IS A SIGNATURE BLOCK, NOT A CLINICAL NARRATIVE.
+
+        It was added to MEDICAL_SUMMARY_STRUCTURE_MARKERS, where a single
+        hit is disqualifying on its own and outranks every laboratory
+        marker — so one extra line on an otherwise unchanged Southern
+        blot flipped it from 基因确诊 to self_reported and relabelled it
+        病历摘要 on the citation chip the patient taps.
+
+        Every genetics report is signed. This file already classifies the
+        string correctly in `_BLOCK_STOP_MARKERS`, under the note that
+        signature blocks are never part of a clinical conclusion.
+        """
+        signed = self.REPORT + ("医师签名：王医师",)
+        for hint in ("genetic_report", "other"):
+            with self.subTest(hint=hint):
+                self.assertEqual(self._analyze(signed, hint)["fshd"]["report_type"], "genetic_report")
+
+    def test_no_narrative_marker_appears_on_a_laboratory_report(self):
+        """The rule the list is audited against, kept executable.
+
+        A marker that a genetics laboratory prints is not a narrative
+        marker, and because a hit is disqualifying on its own, one such
+        entry demotes every report carrying it. The signatures, the
+        timestamps and the identifiers a report DOES print belong in
+        `_BLOCK_STOP_MARKERS`, which is where 医师签名 already was.
+        """
+        report = "\n".join(self.REPORT + (
+            "样本号: SB2024-0417",
+            "实验者: 周某某   复核者: 吴某某",
+            "审核医师: 赵某某",
+            "医师签名：王某某",
+            "报告日期: 2024-04-20   打印日期: 2024-04-21",
+            "本报告仅供临床参考,不作诊断依据。",
+        ))
+        for marker in MEDICAL_SUMMARY_STRUCTURE_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, report)
+
+    def test_a_report_with_no_recognisable_structure_is_still_promoted(self):
+        """Demoting here would lose the numbers, not just the grade.
+
+        Where neither structure appears — an OCR that recovered the
+        result lines and none of the headings — this rule abstains. The
+        API-side gate is what refuses to grade an unconfirmed document.
+        """
+        result = self._analyze(("FSHD1", "4qA", "D4Z4重复单元数: 4"), "other")
+        self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+
+
+class ANarrativeIsDemotedWhateverVocabularyItQuotesTest(unittest.TestCase):
+    """THE GUARD COVERED `genetic_report` AND NOTHING ELSE.
+
+    `REPORT_TYPE_RULES` scores vocabulary, and it is the QUOTED RESULT
+    that scores — so a 出院小结 describing the patient's muscle MRI wins
+    `muscle_mri` on exactly the mechanism a 病历摘要 quoting a D4Z4 count
+    wins `genetic_report`. The demotion only asked the question of the
+    one label.
+
+    That is not cosmetic. The assistant's eligibility gate
+    (`RESULT_DOCUMENT_TYPES` in
+    apps/api/src/modules/ai-agents/security/pii-redactor.ts) reads any
+    of the fifteen result labels as permission to send that document's
+    own impression to a model VERBATIM. A discharge summary labelled
+    `muscle_mri` is such a licence, and what identifies a person inside
+    one is not a pattern — 「其兄 2019 年因同病去世」 identifies a family
+    and cannot be scrubbed without deleting the sentence.
+
+    Measured through this function, eight result labels escaped.
+    """
+
+    CASES = {
+        "muscle_mri": (
+            "示例医院神经内科 出院小结",
+            "主诉: 进行性四肢无力10年。",
+            "现病史: 外院查双大腿磁共振示臀大肌、腓肠肌脂肪浸润,胫骨前肌相对保留。",
+            "诊疗经过: 入院后完善检查。",
+        ),
+        "pulmonary_function": (
+            "示例医院 门诊病历",
+            "主诉: 活动后气促2年。",
+            "现病史: 外院查肺功能 FVC 62%,FEV1 下降。",
+        ),
+        "echocardiography": (
+            "示例医院 入院记录",
+            "主诉: 心悸1月。",
+            "现病史: 外院心电图示窦性心律,心脏超声 LVEF 58%。",
+        ),
+        "muscle_enzyme": (
+            "示例医院 出院小结",
+            "主诉: 乏力3年。",
+            "现病史: 查生化示 ALT 43 U/L,肌酸激酶 CK 860 U/L,肌红蛋白升高。",
+        ),
+        "diaphragm_ultrasound": (
+            "病程记录",
+            "主诉: 夜间平卧憋气。",
+            "现病史: 膈肌超声示膈肌活动度下降。",
+        ),
+        "blood_routine": (
+            "示例医院 住院病历",
+            "主诉: 发热3天。",
+            "现病史: 血常规示白细胞 WBC 11.2,血红蛋白 HGB 132,血小板 PLT 210。",
+        ),
+        "abdominal_ultrasound": (
+            "示例医院 出院小结",
+            "主诉: 腹胀。",
+            "现病史: 腹部超声示肝脏回声均匀,胆囊未见结石,脾脏不大。",
+        ),
+        "coagulation": (
+            "示例医院 入院记录",
+            "主诉: 怕冷。",
+            "现病史: 甲功示 TSH 正常;凝血示 PT/INR 正常,纤维蛋白原正常。",
+        ),
+    }
+
+    @staticmethod
+    def _analyze(body):
+        return analyze_fshd_report("\n".join(body))["fshd"]
+
+    def test_every_quoted_vocabulary_is_demoted_to_the_narrative_it_is_written_in(self):
+        for escaped_label, body in self.CASES.items():
+            with self.subTest(label=escaped_label):
+                self.assertEqual(self._analyze(body)["report_type"], "medical_summary")
+
+    def test_the_demotion_keeps_the_values_the_narrative_quotes(self):
+        """The label is refused; the numbers are not.
+
+        The MRI rows an 出院小结 quotes are the patient's only copy as
+        often as a D4Z4 count is, so `analyze_fshd_report` runs the
+        quoted document's own extractor as well as the narrative one.
+        Trading one silent erasure for another is not a fix.
+        """
+        names = {
+            f["field_name"] for f in self._analyze(self.CASES["muscle_enzyme"])["structured_fields"]
+        }
+        self.assertIn("ck", names)
+        names = {
+            f["field_name"] for f in self._analyze(self.CASES["blood_routine"])["structured_fields"]
+        }
+        self.assertIn("wbc", names)
+
+    def test_a_physical_exam_is_not_demoted_by_the_sections_that_define_it(self):
+        """肌力 / 体格检查 / 查体 IS what a physical-exam document is.
+
+        Three of those strings are entries on
+        CLINICAL_STORY_SECTION_MARKERS, so a blanket demotion would
+        relabel every physical exam and lose `_extract_physical_exam`.
+        It needs none: the API's eligibility gate already counts
+        `physical_exam` as a non-result document.
+        """
+        result = self._analyze(
+            (
+                "神经科专科查体记录",
+                "体格检查: MRC 分级 上肢近端 3 级,翼状肩胛阳性,面肌无力,Beevor 征阳性。",
+            )
+        )
+        self.assertEqual(result["report_type"], "physical_exam")
+        self.assertIn("mrc_score", {f["field_name"] for f in result["structured_fields"]})
+
+
+class AResultReportKeepsItsLabelTest(unittest.TestCase):
+    """THE OTHER DIRECTION, AND IT IS THE SAME ROOT CAUSE.
+
+    A structure test that is a bare substring search reads a word a
+    result report prints as ordinary professional language as a witness
+    that the document is a narrative about a person. Two shapes, both
+    routine:
+
+      - the referring clinician's REQUISITION, printed across the top of
+        a radiology or EMG report, which carries 主诉 and 现病史 as form
+        COLUMNS beside 申请科室 and 申请医师;
+      - 请结合临床及查体 / 与主诉相符 / 结合既往史, the standard closing
+        of a Chinese radiology, EMG or muscle-MRI conclusion — the
+        radiologist REFERRING to the clinical history, which is the
+        opposite of the document being one.
+
+    Being wrong this way is not free either: the label decides whether
+    the report's own impression may be sent at all, and whether its
+    values are read by its own extractor.
+    """
+
+    @staticmethod
+    def _analyze(body):
+        return analyze_fshd_report("\n".join(body))["fshd"]
+
+    def test_a_requisition_header_does_not_relabel_the_report_under_it(self):
+        result = self._analyze(
+            (
+                "示例医院 医学影像科 检查报告单",
+                "申请科室: 神经内科 申请医师: 李某某",
+                "主诉: 双下肢无力5年 现病史: 进行性加重",
+                "检查项目: 双大腿MRI平扫",
+                "影像所见: 双侧臀大肌、股二头肌长头脂肪浸润,磁共振信号增高。",
+                "影像诊断: 双大腿肌群脂肪浸润,考虑肌营养不良。",
+            )
+        )
+        self.assertEqual(result["report_type"], "muscle_mri")
+
+    def test_a_conclusion_referring_to_the_clinical_history_is_not_one(self):
+        for closing in (
+            "影像诊断: 双大腿肌群脂肪浸润,请结合临床及查体。",
+            "影像诊断: 双大腿肌群脂肪浸润,请结合临床查体。",
+            "影像诊断: 双大腿肌群脂肪浸润,请结合既往史综合判断。",
+        ):
+            with self.subTest(closing=closing):
+                result = self._analyze(
+                    (
+                        "示例医院 医学影像科 检查报告单",
+                        "检查项目: 双大腿MRI平扫",
+                        "影像所见: 双侧臀大肌脂肪浸润,胫骨前肌相对保留,磁共振信号增高。",
+                        closing,
+                    )
+                )
+                self.assertEqual(result["report_type"], "muscle_mri")
+
+    def test_a_genetics_report_with_a_requisition_and_a_sign_off_keeps_its_label(self):
+        result = self._analyze(
+            (
+                "示例医学检验实验室 遗传病检测报告",
+                "送检单位: 神经内科 送检医师: 李某某",
+                "主诉: 双上肢无力8年 现病史: 进行性加重",
+                "检测项目: FSHD1 D4Z4 重复数检测",
+                "检测方法: Southern blot p13E-11 探针",
+                "检测结果: 4q35 D4Z4 重复单元 4 个,单倍型 4qA。",
+                "检测结论: 检出致病性 D4Z4 重复数收缩,请结合临床及查体。",
+            )
+        )
+        self.assertEqual(result["report_type"], "genetic_report")
+
+    def test_medical_summary_is_scored_on_structure_not_on_the_word(self):
+        """An EMG report was labelled 病历摘要 by one word in its conclusion.
+
+        This file has no EMG template, so 「与主诉相符」 scoring
+        `medical_summary` 2 was the only score on the page and won.
+        `other` is the honest answer for a document this parser cannot
+        name, and the assistant's gate refuses it as 「cannot tell」
+        rather than as somebody's medical record.
+        """
+        result = self._analyze(
+            (
+                "神经电生理室 肌电图检查报告",
+                "检查项目: 四肢肌电图",
+                "检查结论: 肌源性损害电生理表现,与主诉相符,请结合临床。",
+            )
+        )
+        self.assertNotEqual(result["report_type"], "medical_summary")
+
+    def test_a_narrative_section_alone_on_its_line_is_still_a_narrative(self):
+        """The direction of doubt.
+
+        A requisition that prints 主诉 alone on its line is
+        indistinguishable from a narrative that does, and where the
+        page's own layout cannot tell, the document stays a narrative.
+        """
+        result = self._analyze(
+            (
+                "示例医院 医学影像科 检查报告单",
+                "主诉: 双下肢无力5年",
+                "影像诊断: 双大腿肌群脂肪浸润,磁共振信号增高,胫骨前肌相对保留。",
+            )
+        )
+        self.assertEqual(result["report_type"], "medical_summary")
+
+
+class TheRowTheNumberSitsOnTest(unittest.TestCase):
+    """A NUMBER BELONGS TO THE ROW THAT PRINTED IT.
+
+    Every case here is a number this file used to read off a row that
+    was not stating a result — the assay's detection limit, a population
+    reference interval, a definition quoted back in the conclusion — and
+    publish as this patient's laboratory reading.
+    """
+
+    @staticmethod
+    def _fields(result):
+        return {f["field_name"]: f for f in result["fshd"]["structured_fields"]}
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_a_detection_limit_on_the_method_line_is_not_a_count(self):
+        """The measured report: EXCLUDES FSHD1, published as confirming it.
+
+        `_gap_names_a_method` refuses only a gap that is NOTHING BUT
+        method words and `_gap_names_another_analyte` refuses only a gap
+        naming a DIFFERENT analyte, so 「检测方法: D4Z4 重复单元数, 检测
+        下限 1 个重复单元」 passed both — it names the method AND the
+        right analyte. `re.finditer` returns the first accepted match,
+        so the report's own result row was never reached: a count of 18
+        with 结论 未见缩短 was published as a 1-repeat contraction at
+        0.97, graded `within_fshd1_repeat_range` in both prompt modes,
+        and it fired the AAN Level B ophthalmology recommendation.
+        """
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测方法: D4Z4 重复单元数, 检测下限 1 个重复单元",
+            "检测结果: D4Z4 重复单元数 18",
+            "结论: 未见 D4Z4 片段缩短",
+        )
+        self.assertEqual(self._summary(result)["d4z4_repeat_pathogenic"], 18)
+        self.assertEqual(self._fields(result)["d4z4_repeat_pathogenic"]["field_value"], "18")
+
+    def test_a_method_row_alone_states_no_count(self):
+        """No result row to fall back to is not a licence to read one."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测方法: D4Z4 重复单元数, 检测下限 1 个重复单元",
+        )
+        self.assertNotIn("d4z4_repeat_pathogenic", self._fields(result))
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+
+    def test_the_result_label_governs_when_both_labels_are_on_one_line(self):
+        """An OCR that flattened a table row carries both labels."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测项目: D4Z4 重复单元数检测 检测结果: 3",
+        )
+        self.assertEqual(self._summary(result)["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_population_interval_does_not_replace_the_stated_count(self):
+        """The interval outranked the count and emptied the typed value.
+
+        The range branch was searched over the WHOLE document before the
+        single-count branch was tried at all, so any interval printed
+        anywhere near the token D4Z4 won — and `normalized_value` went
+        empty, so the passport reported the item as having no
+        determinate result on a report that states one plainly.
+        """
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测结果: D4Z4 重复单元数 5",
+            "参考: 正常人群 D4Z4 重复单元数为 11-100 个",
+        )
+        self.assertEqual(self._summary(result)["d4z4_repeat_pathogenic"], 5)
+
+    def test_the_grey_zone_quoted_in_the_conclusion_is_not_the_count(self):
+        """Same defect where the interval sits on a RESULT row."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "D4Z4 重复单元数 5",
+            "结论: D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1",
+        )
+        self.assertEqual(self._summary(result)["d4z4_repeat_pathogenic"], 5)
+
+    def test_an_interval_is_still_the_reading_when_it_is_all_there_is(self):
+        """The single-count branch must not report 1 off 「1-10」."""
+        result = self._analyze("FSHD 基因检测报告", "D4Z4重复单元数: 1-10")
+        field = self._fields(result)["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "1-10")
+        self.assertIsNone(field["normalized_value"])
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+
+
+class TheCellPerLineTableTest(unittest.TestCase):
+    """The OCR layout this module documents as the norm.
+
+    One text box per table cell, so a label and its number are on
+    separate lines — and every gap in the genetics extractor is
+    `[^\\d\\n]`, deliberately. The rows were read only by
+    `_append_generic_table_fields`, whose slug DELETED EVERY CJK
+    CHARACTER: two Chinese genetics analytes whose only Latin content is
+    D4Z4 collapsed onto one key and the second was dropped.
+    """
+
+    ROWS = (
+        "FSHD 基因检测报告",
+        "检测方法",
+        "Southern blot",
+        "项目",
+        "结果",
+        "单位",
+        "D4Z4甲基化水平",
+        "35",
+        "%",
+        "D4Z4重复单元数",
+        "5",
+        "个",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+
+    def _fields(self):
+        return {f["field_name"]: f for f in self._result()["fshd"]["structured_fields"]}
+
+    def test_the_repeat_count_row_is_not_discarded(self):
+        """It was: the methylation row above it took the shared key."""
+        summary = self._result()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 5)
+
+    def test_the_methylation_row_lands_on_the_methylation_cell(self):
+        """And carries the unit the row printed, not the count's key."""
+        field = self._fields()["methylation_value"]
+        self.assertEqual(field["field_value"], "35")
+        self.assertEqual(field["unit"], "%")
+
+    def test_no_table_key_carries_a_genetics_dispatch_substring(self):
+        """A `table_*` name is arbitrary printed text.
+
+        The API's OCR projection dispatches its genetics readers on the
+        substrings d4z4 / ecori / methylation / haplotype, so a slug
+        containing one bought a reading on the FSHD1 repeat-count
+        boundary — measured, off a METHYLATION percentage, in BOTH
+        prompt modes. These cells have canonical keys; a table row must
+        not mint a second name for them.
+        """
+        for name in self._fields():
+            if not name.startswith("table_"):
+                continue
+            with self.subTest(name=name):
+                for token in ("d4z4", "ecori", "methylation", "haplotype"):
+                    self.assertNotIn(token, name.lower())
+
+    def test_a_header_row_on_one_line_is_not_an_analyte(self):
+        """It was, and its result was the first data row's index.
+
+        `_TABLE_HEADER_CELLS` is matched cell by cell, so the header
+        rendered as ONE line passed every test and published
+        `table_no: 1` on the patient's own report screen.
+        """
+        rows = extract_lab_table_rows([
+            "检验报告单",
+            "No 项目 结果 参考区间 单位 方法",
+            "1",
+            "游离T3(FT3)",
+            "6.000",
+            "3.5-6.59",
+            "pmol/L",
+        ])
+        names = [r["name"] for r in rows]
+        self.assertIn("游离T3(FT3)", names)
+        # Neither the header row nor the title above it claims the index.
+        self.assertFalse(any("项目" in n for n in names))
+        self.assertNotIn("检验报告单", names)
+
+    def test_two_cjk_analytes_are_two_keys(self):
+        """The slug deleted every CJK character, so they were one."""
+        rows = (
+            "检验报告单",
+            "血清铁蛋白",
+            "120",
+            "ng/mL",
+            "血清转铁蛋白",
+            "2.5",
+            "g/L",
+        )
+        fields = analyze_fshd_report("\n".join(rows), "other", "T.pdf")["fshd"][
+            "structured_fields"
+        ]
+        table_keys = [f["field_name"] for f in fields if f["field_name"].startswith("table_")]
+        self.assertEqual(len(table_keys), len(set(table_keys)))
+        self.assertEqual(len(table_keys), 2)
+
+
+class TheHaplotypeRowOutranksTheSentenceTest(unittest.TestCase):
+    """A dedicated result row beats a sentence that mentions both."""
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_a_biallelic_conclusion_does_not_wipe_out_the_stated_row(self):
+        """The routine bi-allelic Southern blot conclusion.
+
+        `_read_haplotype` unioned the labelled tokens across ALL lines
+        and then required unanimity of the union — and 结果 and 结论 were
+        both on the one label list, so a conclusion naming the contracted
+        4qA allele and the normal 4qB one in ONE SENTENCE wiped out the
+        haplotype the same report states on its own 单倍型 row. That is
+        how such a conclusion is written, so the reports that state the
+        allele most plainly were the ones this platform refused to read.
+        """
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "单倍型: 4qA",
+            "结论: 检测到一条缩短的 4qA 等位基因及一条正常的 4qB 等位基因",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+
+    def test_a_dedicated_row_naming_both_is_still_withheld(self):
+        """Unanimity is required INSIDE the tier that answers."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "单倍型: 4qB/4qA 双等位基因均已分型",
+            "结论: 致病侧为 4qB",
+        )
+        self.assertIsNone(self._summary(result)["haplotype"])
+
+    def test_a_conclusion_sentence_still_answers_when_it_is_all_there_is(self):
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "结论: 检测到缩短的 4qA 等位基因",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+
+
+class TheInlineLimitationsParagraphTest(unittest.TestCase):
+    """The one sentence this product exists to deliver.
+
+    `_before_disclaimer_section` only cut the tail when the marker word
+    sat on a line of at most 16 characters, so a limitations paragraph
+    written INLINE was not cut — and it is on every whole-exome report,
+    naming the two methods the exome did NOT use.
+    """
+
+    BODY = (
+        "基因检测报告",
+        "检测方法: 全外显子组测序(WES)",
+        "检测结果: 未检出与临床表型相关的致病变异",
+        "本次检测存在局限性: 本方法无法检测 D4Z4 重复序列长度, "
+        "该区域需通过 Southern blot 或分子梳(molecular combing) 等方法检测。",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.BODY), "genetic_report", "W.pdf")
+
+    def test_the_wes_report_is_named_as_a_wes_report(self):
+        """It came out 「ambiguous」 and the passport fell to unknown."""
+        summary = self._result()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["genetic_test_method"], "short_read_sequencing")
+
+    def test_the_caveat_fragment_is_not_shown_as_the_conclusion(self):
+        """Cutting at the marker left 「本次检测存在」 as the summary.
+
+        That string is what the patient reads under 报告详情 → 来源追溯.
+        """
+        summary = self._result()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["interpretation_summary"], "未检出与临床表型相关的致病变异")
+
+    def test_a_caveat_appended_to_a_real_sentence_keeps_the_sentence(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "基因检测报告",
+                "检测结果: 检出 D4Z4 重复单元数缩短。本报告存在局限性: 不能排除嵌合。",
+            )),
+            "genetic_report",
+            "W.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("缩短", summary["interpretation_summary"])
+        self.assertNotIn("嵌合", summary["interpretation_summary"])
+
+
+class TheNumbersInTheConclusionSurviveTest(unittest.TestCase):
+    """`_pick_finding_sentence` split on the ASCII dot.
+
+    `_normalize_text` folds 「。」 to 「.」 before any of this runs, so the
+    full stop and the decimal point are the same character by then — and
+    the report's own conclusion, shown to the patient verbatim under
+    报告详情 → 来源追溯, was cut mid-number.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_an_ecori_fragment_is_not_cut_to_its_decimals(self):
+        """18.5 kb came out 「5 kb」 — roughly one repeat unit."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测结果: EcoRI 片段长度 18.5 kb, 提示 D4Z4 重复单元数轻度缩短。",
+        )
+        self.assertIn("18.5", self._summary(result)["interpretation_summary"])
+
+    def test_a_sentence_ending_in_a_number_still_splits(self):
+        """A dot is a decimal point only with a digit on BOTH sides."""
+        result = self._analyze(
+            "FSHD 基因检测报告",
+            "检测结果: 检出 D4Z4 重复单元数为 3.本报告仅供临床参考,不作诊断依据。",
+        )
+        summary = self._summary(result)["interpretation_summary"]
+        self.assertIn("3", summary)
+        self.assertNotIn("仅供临床参考", summary)
+
+
+class ARefusedCellIsNotTypedTest(unittest.TestCase):
+    """Two comments asserted a guarantee the code did not provide.
+
+    The refused-cell comment said a 0 「is never typed as a count」 and
+    passed `normalized_value=None` — but `None` is how a qualitative
+    cell asks `_build_field` to fall back to the printed text, so the
+    field shipped `normalized_value: 「0」` and `_build_observations`
+    read it into `result.value_num: 0.0`.
+    """
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_a_refused_zero_is_not_a_number_on_any_channel(self):
+        result = self._analyze("FSHD 基因检测报告", "检测结果: D4Z4 重复单元数 0")
+        field = next(
+            f for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "d4z4_repeat_pathogenic"
+        )
+        self.assertEqual(field["field_value"], "0")
+        self.assertIsNone(field["normalized_value"])
+        obs = next(
+            o for o in result["observations"]
+            if o["analyte_name"] == "d4z4_repeat_pathogenic"
+        )
+        self.assertIsNone(obs["result"]["value_num"])
+        self.assertEqual(obs["result"]["value_text"], "0")
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["d4z4_repeat_pathogenic"]["value_num"]
+        )
+        self.assertIsNone(result["d4z4_repeats"])
+
+    def test_the_refused_cell_is_still_visible_to_a_reviewer(self):
+        result = self._analyze("FSHD 基因检测报告", "检测结果: D4Z4 重复单元数 0")
+        self.assertIn(
+            "d4z4_repeat_pathogenic",
+            [q["field_name"] for q in result["fshd"]["review_queue"]],
+        )
+
+    def test_a_qualitative_cell_still_falls_back_to_its_printed_text(self):
+        """The fallback `None` selects, which the sentinel must not break."""
+        result = analyze_fshd_report(
+            "\n".join(("感染筛查", "乙肝表面抗原(HBsAg): 阴性(-)")), "infection_screening", "I.pdf"
+        )
+        field = next(
+            f for f in result["fshd"]["structured_fields"] if f["field_name"] == "hbsag"
+        )
+        self.assertEqual(field["normalized_value"], field["field_value"])
+
+
+class TheStatedArraySizeIsReadTest(unittest.TestCase):
+    """「D4Z4 大小: 20 kb」 produced nothing at all.
+
+    The fragment patterns required the literal labels EcoRI or 片段长度,
+    and the repeat count's last-resort pattern refuses that number
+    correctly because 大小 is a `fragment_length` word — so a stated
+    array size fell between the two.
+    """
+
+    def _summary(self, *body):
+        result = analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_a_size_in_kb_is_read_as_a_length(self):
+        summary = self._summary("FSHD 基因检测报告", "D4Z4 大小: 20 kb")
+        self.assertEqual(summary["ecori_fragment_kb"], 20.0)
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_the_english_spelling_reads_too(self):
+        summary = self._summary("FSHD genetic report", "D4Z4 array size: 20 kb")
+        self.assertEqual(summary["ecori_fragment_kb"], 20.0)
+
+    def test_a_size_without_the_unit_is_not_a_length(self):
+        summary = self._summary("FSHD 基因检测报告", "样本大小: 20")
+        self.assertIsNone(summary["ecori_fragment_kb"])
+
+
+class TheTypeTheReportStatesTest(unittest.TestCase):
+    """A report is TITLED after the type it was ordered to look for.
+
+    `diagnosis_type` was the first FSHD1/FSHD2 token anywhere on the
+    page, with the absence and hedge tests asked only of the line that
+    token happened to sit on — so a report that excludes the type in its
+    own conclusion published it as this patient's 分型, and it fired on
+    the negative reports as a class.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_a_title_naming_the_type_is_not_a_diagnosis_of_it(self):
+        result = self._analyze(
+            "FSHD1 基因检测报告",
+            "检测方法: Southern blot",
+            "检测结果: D4Z4 重复单元数 18",
+            "结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_the_item_line_is_not_a_diagnosis_either(self):
+        result = self._analyze(
+            "基因检测报告",
+            "检测项目: FSHD1/FSHD2 基因检测",
+            "结论: 未见 D4Z4 片段缩短, 不支持 FSHD1。",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_excluding_one_type_does_not_refuse_the_other(self):
+        """Two tokens are two claims."""
+        result = self._analyze(
+            "基因检测报告",
+            "检测结论: 符合 FSHD1。",
+            "本次检测不支持 FSHD2。",
+        )
+        self.assertEqual(self._summary(result)["diagnosis_type"], "FSHD1")
+
+    def test_a_stated_type_still_lands_from_the_conclusion(self):
+        result = self._analyze(
+            "FSHD1 基因检测报告",
+            "检测结论: 符合 FSHD1, D4Z4 重复单元数 3。",
+        )
+        self.assertEqual(self._summary(result)["diagnosis_type"], "FSHD1")
+
+
+class ChineseLaboratoriesPrintWithoutSpacesTest(unittest.TestCase):
+    r"""`\b` NEVER FIRES BETWEEN A CJK CHARACTER AND A LATIN ONE.
+
+    Python's `\w` is Unicode-aware, so 型 and 诊 are word characters and
+    `\b(4qA|4qB)\b` has no boundary to find in 「4q35单倍型4qB」. Every
+    Latin token in this file was anchored that way, so on the real
+    spelling the report's own result row, its own exclusion clause, its
+    method name and the kb refusal were all invisible — silently, and in
+    the direction that publishes a reading.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    @staticmethod
+    def _fields(result):
+        return {f["field_name"]: f for f in result["fshd"]["structured_fields"]}
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_the_result_row_is_read_and_not_the_footnote_defining_the_term(self):
+        """THE MEASURED CASE. 4qA was published off a definition.
+
+        The report states 4qB on its own 单倍型 row, no space around the
+        token — which the anchored pattern could not see — so the only
+        allele the reader could find was the one the FOOTNOTE names. The
+        passport called it `permissive_haplotype` and read the count
+        against the FSHD1 range; FSHD1 cannot be the mechanism on 4qB.
+        """
+        result = self._analyze(
+            "XX大学附属医院医学检验报告",
+            "4q35单倍型4qB",
+            "D4Z4重复单元数6",
+            "附注: 4qA 为允许型单倍型",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_the_exclusion_clause_is_visible_to_the_type_reader(self):
+        result = self._analyze(
+            "XX大学附属医院医学检验报告",
+            "检测项目:FSHD1基因检测",
+            "D4Z4重复单元数8",
+            "检测结论:本次检测不支持FSHD1诊断",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_a_length_in_kb_with_no_space_is_still_not_a_count(self):
+        r"""`(kb|bp|mb)\b` could not see 「38kb的片段」."""
+        result = self._analyze(
+            "XX医院 FSHD1 基因检测报告",
+            "检测结果:D4Z4 EcoRI片段长度38kb的片段",
+        )
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertEqual(self._summary(result)["ecori_fragment_kb"], 38.0)
+
+    def test_no_pattern_in_the_module_keeps_a_raw_word_boundary(self):
+        """The class fix has to hold for patterns added later, too.
+
+        Every precompiled pattern goes through `_cjk_safe_compile`, so a
+        surviving `\\b` means somebody reached for `re.compile` directly
+        — which is how the four in this module were written in the first
+        place.
+        """
+        offenders = [
+            name
+            for name, value in vars(fshd_report_service).items()
+            if isinstance(value, re.Pattern) and "\\b" in value.pattern
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_the_method_name_with_no_space_is_still_recognised(self):
+        r"""`\becor\s*[i1]\b` could not see 「EcoRI酶切」."""
+        result = self._analyze(
+            "XX医院 基因检测报告",
+            "检测方法:采用EcoRI酶切后行Southern印迹",
+        )
+        self.assertEqual(self._summary(result)["genetic_test_method"], "southern_blot")
+
+
+class ATitleIsNotAResultTest(unittest.TestCase):
+    """A REPORT IS TITLED AFTER THE TYPE IT WAS ORDERED TO LOOK FOR.
+
+    The per-token refusal only reaches a title when the conclusion
+    repeats the token and negates it, and the ordinary Chinese negative
+    conclusion does not repeat it. So on the commonest negative wording
+    there was nothing to refuse and the title won.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_the_ordinary_negative_wording_leaves_no_diagnosis(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "FSHD1 基因检测报告",
+                "送检单位: 神经内科",
+                "检测方法: Southern blot, EcoRI 酶切",
+                "检测结果: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+        # And the sentence that says so is still what the patient reads.
+        self.assertIn("未见", self._summary(result)["interpretation_summary"])
+
+
+class TheDedicatedResultRowOutranksAProseSentenceTest(unittest.TestCase):
+    """On the cell-per-line layout the patient's own row scored LOWEST.
+
+    「检测结果:」 is its own line and the analyte rows below it carry no
+    label, so they ranked unlabelled — while any 结论 sentence quoting a
+    threshold carries 结论 and ranked as a result row.
+    """
+
+    ROWS = (
+        "XX医学检验所 FSHD1 基因检测报告",
+        "项目 结果 单位",
+        "检测结果:",
+        "D4Z4重复单元数",
+        "5",
+        "个",
+        "结论: D4Z4 重复单元数低于 10 个即为缩短, 本例符合 FSHD1",
+    )
+
+    def test_the_count_is_the_rows_and_not_the_conclusions_threshold(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 5)
+
+
+class TheReferenceColumnIsNotTheResultTest(unittest.TestCase):
+    """项目 / 参考区间 / 结果 is an ordinary Chinese column order.
+
+    A comparator-prefixed cell counted as a value and the row reader
+    took the first one, so the FSHD1 reference limit became the reading
+    and the reading became the row's UNIT.
+    """
+
+    ROWS = (
+        "XX医院 FSHD1 D4Z4 基因检测报告",
+        "项目 参考区间 结果 单位",
+        "D4Z4重复单元数",
+        ">10",
+        "3",
+        "个",
+    )
+
+    def test_the_bound_is_the_reference_and_the_bare_number_the_result(self):
+        rows = extract_lab_table_rows(list(self.ROWS))
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(by_name["D4Z4重复单元数"]["value"], "3")
+        self.assertEqual(by_name["D4Z4重复单元数"]["reference"], ">10")
+        # A bare number is never a unit.
+        self.assertNotEqual(by_name["D4Z4重复单元数"]["unit"], "3")
+
+    def test_the_published_count_is_the_patients_and_not_the_limit(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_one_sided_limit_alone_is_still_the_reading(self):
+        """Refusing a bound outright would lose a genuine 「<0.01」."""
+        rows = extract_lab_table_rows([
+            "检验报告单",
+            "超敏肌钙蛋白I", "<0.01", "ng/mL",
+        ])
+        self.assertEqual(rows[0]["value"], "<0.01")
+
+
+class TheConclusionIsNotTruncatedByItsOwnRecommendationTest(unittest.TestCase):
+    """建议 is a block stop keyword and the standard negative carries it.
+
+    「结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。」 — the block stopped
+    one line short of the exclusion, answered with the result row above
+    it, and the fallback that would have found the exclusion never ran.
+    """
+
+    def test_the_exclusion_is_the_sentence_the_patient_reads(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "FSHD1 基因检测报告",
+                "检测结果: D4Z4 重复单元数 18",
+                "结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("不支持", summary["interpretation_summary"])
+        # The count on the result row is still read.
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+
+    def test_a_conclusion_stating_nothing_does_not_displace_the_block(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "基因检测报告",
+                "检测结果",
+                "检出 D4Z4 重复单元数缩短",
+                "结论: 详见上述",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("缩短", summary["interpretation_summary"])
+
+
+class ANegationIsNotASignatureTest(unittest.TestCase):
+    """A two-to-four-character Chinese word alone was 「a doctor's name」.
+
+    So a conclusion ending in the clause that MAKES IT NEGATIVE had that
+    clause deleted — as a block line and as a trailing token.
+    """
+
+    def _interpretation(self, *body):
+        result = analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+        return result["fshd"]["normalized_summary"]["genetic_summary"]["interpretation_summary"]
+
+    def test_the_negation_survives_to_the_end_of_the_conclusion(self):
+        summary = self._interpretation(
+            "XX医院 FSHD 基因检测报告",
+            "检测方法: Southern blot",
+            "检测结论:",
+            "4q35区域D4Z4阵列",
+            "未见缩短",
+        )
+        self.assertIn("未见缩短", summary)
+
+    def test_a_positive_finding_ending_in_the_finding_survives_too(self):
+        summary = self._interpretation(
+            "XX医院 FSHD 基因检测报告",
+            "检测结论:",
+            "4q35区域D4Z4",
+            "阵列缩短",
+        )
+        self.assertIn("阵列缩短", summary)
+
+    def test_the_radiologists_name_is_still_dropped(self):
+        """The scenario the docstring describes: a finished clause."""
+        text = "\n".join([
+            "磁共振检查报告单",
+            "印象:",
+            "1. 双侧胫骨前肌脂肪浸润,请结合临床. 钱医",
+        ])
+        result = analyze_fshd_report(text, "mri", "M.jpeg")
+        impression = next(
+            (f["field_value"] for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "report_impression"),
+            "",
+        )
+        self.assertIn("脂肪浸润", impression)
+        self.assertNotIn("钱医", impression)
+
+
+class NoGeneticsCellIsPublishedTwiceTest(unittest.TestCase):
+    """The `table_*` refusal was four LATIN substrings on a Chinese row.
+
+    「甲基化水平」 carries none of them, so it was minted as
+    `table_甲基化水平` beside the canonical `methylation_value` read off
+    the identical cell: one reading, two analytes, both on
+    `observations` and `latest_summary.by_analyte`.
+    """
+
+    ROWS = (
+        "XX医学检验所 FSHD2 甲基化检测报告",
+        "项目 结果 单位",
+        "甲基化水平",
+        "35",
+        "%",
+        "D4Z4重复单元数",
+        "28",
+        "个",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+
+    def test_a_chinese_named_genetics_row_mints_no_table_key(self):
+        names = {f["field_name"] for f in self._result()["fshd"]["structured_fields"]}
+        self.assertIn("methylation_value", names)
+        self.assertFalse([n for n in names if n.startswith("table_")], names)
+
+    def test_the_reading_appears_once_on_every_numeric_channel(self):
+        result = self._result()
+        by_analyte = result["latest_summary"]["by_analyte"]
+        thirty_five = [k for k, v in by_analyte.items() if v["value_num"] == 35.0]
+        self.assertEqual(thirty_five, ["methylation_value"])
+
+
+class ZeroIsRefusedOnBothSidesOfAPairTest(unittest.TestCase):
+    """The refusal was asked only of `d4z4_repeat_pathogenic`.
+
+    `d4z4_repeat_other` comes off the SAME match and was typed
+    unconditionally, so 「D4Z4 重复数 3/0」 published a laboratory repeat
+    count of zero on `result.value_num` and `latest_summary.by_analyte`
+    — the two channels the `NO_NORMALIZED_VALUE` note names as the whole
+    reason the refusal exists.
+    """
+
+    def _result(self):
+        return analyze_fshd_report(
+            "\n".join((
+                "XX医院 FSHD1 基因检测报告",
+                "检测方法: 分子梳",
+                "检测结果: D4Z4 重复数 3/0",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+
+    def test_the_other_allele_is_kept_visible_and_never_typed(self):
+        result = self._result()
+        field = next(
+            f for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "d4z4_repeat_other"
+        )
+        self.assertEqual(field["field_value"], "0")
+        self.assertIsNone(field["normalized_value"])
+        self.assertLess(field["confidence"], 0.75)
+        self.assertIn(
+            "d4z4_repeat_other",
+            [q["field_name"] for q in result["fshd"]["review_queue"]],
+        )
+
+    def test_zero_is_not_a_number_on_any_channel(self):
+        result = self._result()
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["d4z4_repeat_other"])
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["d4z4_repeat_other"]["value_num"]
+        )
+        # The pathogenic side is a real reading and is untouched.
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class AnAbbreviationIsNotReadInsideAWordTest(unittest.TestCase):
+    r"""The same `\b` defect, in a substring test.
+
+    The analyte keywords include single Latin letters — `k` for 钾, `p`
+    for 无机磷 — matched with `keyword in line`. On 「肌酸激酶(CK): 890
+    U/L」 the `k` of `(CK)` matched and the patient's creatine kinase was
+    republished as a potassium of 890.
+    """
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_ck_is_not_also_a_potassium(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK): 890 U/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertEqual(self._panel(result)["ck"], 890.0)
+        self.assertNotIn("potassium", self._panel(result))
+
+    def test_plt_is_not_also_an_inorganic_phosphorus(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化全套报告", "血小板计数(PLT): 210 10^9/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertNotIn("phosphorus", self._panel(result))
+
+    def test_a_ck_mb_row_is_not_also_a_ck_and_a_myoglobin(self):
+        """THE WORST ONE ON AN FSHD REPORT.
+
+        肌酸激酶 is a prefix of 肌酸激酶同工酶, the CK-MB row's own
+        printed name, and the first line carrying a keyword wins — so a
+        patient whose creatine kinase is 890, an order of magnitude
+        above the reference range, had it published as the CK-MB's 25.
+        A NORMAL CK, on the marker this platform exists to track.
+        """
+        result = analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶同工酶(CK-MB): 25 U/L",
+                "肌酸激酶(CK): 890 U/L",
+                "肌红蛋白(MYO): 45 ng/mL",
+            )),
+            "other",
+            "B.jpeg",
+        )
+        panel = self._panel(result)
+        self.assertEqual(panel["ck"], 890.0)
+        self.assertEqual(panel["ckmb"], 25.0)
+        self.assertEqual(panel["mb"], 45.0)
+
+    def test_the_other_prefix_collisions_in_the_map_are_closed_too(self):
+        """One rule, computed from the map, not four written-out cases."""
+        for body, expected in (
+            (
+                ("极低密度脂蛋白胆固醇(VLDL-C): 0.45 mmol/L",
+                 "低密度脂蛋白胆固醇(LDL-C): 3.10 mmol/L"),
+                {"ldl_c": 3.1, "vldl_c": 0.45},
+            ),
+            (
+                ("碱性磷酸酶(ALP): 80 U/L", "无机磷(P): 1.2 mmol/L"),
+                {"alp": 80.0, "phosphorus": 1.2},
+            ),
+            (
+                ("载脂蛋白A1(ApoA1): 1.35 g/L", "脂蛋白a(Lp(a)): 210 mg/L"),
+                {"apo_a1": 1.35, "lp_a": 210.0},
+            ),
+        ):
+            with self.subTest(body=body):
+                result = analyze_fshd_report(
+                    "\n".join(("XX医院 生化检验报告",) + body), "other", "B.jpeg"
+                )
+                panel = self._panel(result)
+                for key, value in expected.items():
+                    self.assertEqual(panel.get(key), value)
+
+    def test_a_real_potassium_row_still_reads(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "钾(K): 4.1 mmol/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertEqual(self._panel(result)["potassium"], 4.1)
+
+
+class AGapMayNotOpenABracketTest(unittest.TestCase):
+    r"""`游离T3(?:\(FT3\))?[^\d\n]{0,16}(\d+)` captured the 3 of the NAME.
+
+    The optional parenthetical backtracks, the gap runs into it, and the
+    digit inside the analyte's own abbreviation is taken as the result —
+    so a thyroid panel whose value sat on the next line published
+    `ft3: 3` and `ft4: 4`.
+    """
+
+    ROWS = (
+        "XX医院 甲状腺功能报告",
+        "项目 结果 单位",
+        "游离T3(FT3)",
+        "5.2",
+        "pmol/L",
+        "游离T4(FT4)",
+        "16.8",
+        "pmol/L",
+    )
+
+    def test_the_value_comes_from_the_value_cell_not_the_name(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ft3"], 5.2)
+        self.assertEqual(panel["ft4"], 16.8)
+
+
+class ADecimalSurvivesTheNarrativePathTest(unittest.TestCase):
+    """`_extract_sentences` kept its own splitter, and it split on 「.」.
+
+    「病程 18.5 年」 became 「病程 18」 and 「5 年」, so the duration regex
+    — which needs 病程 and 年 in one sentence — found nothing,
+    `progression_node` was published truncated, and the timeline gained
+    a phantom event.
+    """
+
+    BODY = (
+        "病历摘要",
+        "主诉: 双上肢抬举无力",
+        "现病史: 患者15岁起病, 病程 18.5 年, 逐渐加重",
+    )
+
+    def _summary(self):
+        result = analyze_fshd_report("\n".join(self.BODY), "other", "S.pdf")
+        return result["fshd"]["normalized_summary"]
+
+    def test_the_duration_is_the_one_the_record_states(self):
+        medical = self._summary()["medical_summary"]
+        self.assertEqual(medical["disease_duration"], 18.5)
+        self.assertEqual(medical["onset_age"], 15)
+
+    def test_the_sentence_is_not_cut_mid_number(self):
+        medical = self._summary()["medical_summary"]
+        self.assertIn("18.5", medical["progression_node"])
+
+    def test_no_phantom_event_is_minted_from_the_fraction(self):
+        timeline = self._summary()["timeline"]
+        self.assertEqual(len(timeline), 1)
+
+
+class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
+    """THE INVARIANT THE ROW-LABELLING PASS KEPT BREAKING.
+
+    Every list `_row_label` consults overlaps some other list — 检测项目
+    is a column heading AND a method-ish name, 送检项目 is a section
+    header AND a metadata label, 附注 is a section header AND a footnote
+    prefix. That is a property of the strings a Chinese laboratory
+    prints, not a mistake in the lists, and it is not going to stop
+    happening as strings are added.
+
+    What broke three times is leaving the overlap for STATEMENT ORDER to
+    settle: whichever `if` was written first won, two functions
+    disagreed about the order, and the symptom was a whole report going
+    unread with an empty `review_queue` reporting nothing amiss. So the
+    overlaps are enumerated here. A new string that lands in two lists
+    fails this test until somebody decides, in `_row_label`, which of
+    the two it is.
+    """
+
+    #: Every overlap that exists, with the label `_row_label` decides
+    #: for it. Adding a string to two lists without adding it here is
+    #: what this test is for.
+    DECIDED = {
+        # Column heading AND the name of a method-ish thing. Decided as
+        # the ordered item it names; its one value cell goes with it.
+        "检测项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检验项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        # Column heading AND a footnote lead — 提示 heads the 提示 column
+        # of half the laboratory tables this file reads AND introduces
+        # 「提示: 血钾低于 2.8 为危急值」. Decided as the HEADING, which
+        # closes the run: reading a bare 提示 cell as a footnote header
+        # would open a `_SCOPE_BLOCK` region over the table printed
+        # underneath it, which is the larger of the two blast radii by a
+        # long way. A 提示 CARRYING content still reaches rule 5 and is
+        # refused there, where it asserts something.
+        "提示": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        # Column heading AND a method section header. Decided as the
+        # heading, which closes the run rather than opening one.
+        "参考区间": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        "参考值": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        "参考范围": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        # Method section header AND an exam-metadata label. Decided as
+        # the label: it names what was ordered and reaches its value.
+        "送检项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        # Note section header AND a footnote prefix. Both say NOTE, but
+        # the scopes differ, so it is decided too. Decided as the BLOCK:
+        # a bare note header states nothing on its own line, so what it
+        # labels is the footnote region under it — see `_SCOPE_BLOCK`.
+        # A footnote CARRYING content reaches only itself (rule 5).
+        "附注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "备注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "注释": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "说明": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        # A HEADER STANDING AT THE TOP OF THE PAGE, which every one of
+        # these can be. `_is_title_row` grew a first-line branch — the
+        # document's name is the first thing printed on it — and every
+        # header carrying 检测 / 检验 / 检查 / 报告 satisfies it there.
+        # The title branch is deliberately the WEAKEST claim in
+        # `_row_label`: a page that opens on 检测结果 opens a section, it
+        # does not name itself. Decided as the header in every case.
+        "检测结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "检验结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "报告结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "检测结论": (fshd_report_service._KIND_CONCLUSION, fshd_report_service._SCOPE_RUN),
+        "检验结论": (fshd_report_service._KIND_CONCLUSION, fshd_report_service._SCOPE_RUN),
+        "检测方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_RUN),
+        "检验方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_RUN),
+        "检查项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查部位": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查设备": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查途径": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检验目的": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+    }
+
+    def _claimants(self, value):
+        """Which label lists claim `value`."""
+        claims = []
+        if value in fshd_report_service._TABLE_HEADER_CELLS:
+            claims.append("table_header_cell")
+        if value in fshd_report_service._ORDERED_ITEM_LABELS:
+            claims.append("ordered_item_label")
+        if any(value.startswith(p) for p in fshd_report_service._EXAM_METADATA_PREFIXES):
+            claims.append("exam_metadata_prefix")
+        if value in fshd_report_service._RESULT_SECTION_HEADERS:
+            claims.append("result_section_header")
+        if value in fshd_report_service._CONCLUSION_SECTION_HEADERS:
+            claims.append("conclusion_section_header")
+        if value in fshd_report_service._METHOD_SECTION_HEADERS:
+            claims.append("method_section_header")
+        if value in fshd_report_service._NOTE_SECTION_HEADERS:
+            claims.append("note_section_header")
+        if any(value.startswith(p) for p in fshd_report_service._NOTE_ROW_PREFIXES):
+            claims.append("note_row_prefix")
+        elif fshd_report_service._NOTE_ROW_LEAD.match(value):
+            # The one-character spelling, which needs a separator behind
+            # it — see `_NOTE_ROW_SHORT_PREFIXES`.
+            claims.append("note_row_prefix")
+        if fshd_report_service._is_title_row(value, first_content_line=True):
+            claims.append("title")
+        return claims
+
+    def _every_label_string(self):
+        for group in (
+            fshd_report_service._TABLE_HEADER_CELLS,
+            fshd_report_service._ORDERED_ITEM_LABELS,
+            fshd_report_service._EXAM_METADATA_PREFIXES,
+            fshd_report_service._RESULT_SECTION_HEADERS,
+            fshd_report_service._CONCLUSION_SECTION_HEADERS,
+            fshd_report_service._METHOD_SECTION_HEADERS,
+            fshd_report_service._NOTE_SECTION_HEADERS,
+            fshd_report_service._NOTE_ROW_PREFIXES,
+            fshd_report_service._NOTE_ROW_SHORT_PREFIXES,
+        ):
+            for value in group:
+                yield value
+
+    def test_every_ambiguous_string_has_a_decision_written_down(self):
+        undecided = sorted(
+            value
+            for value in set(self._every_label_string())
+            if len(self._claimants(value)) > 1 and value not in self.DECIDED
+        )
+        self.assertEqual(
+            undecided,
+            [],
+            "these strings are claimed by two label lists and nothing decides "
+            "between them; add the decision to _row_label and to DECIDED",
+        )
+
+    def test_each_decided_string_gets_the_label_that_was_decided(self):
+        for value, expected in self.DECIDED.items():
+            self.assertEqual(
+                fshd_report_service._row_label(value, first_content_line=True),
+                expected,
+                f"{value} is not labelled the way DECIDED says it is",
+            )
+
+    def test_a_decision_is_only_recorded_for_a_string_that_needs_one(self):
+        # Keeps DECIDED from silently outliving the ambiguity it
+        # documents: a string listed here that is no longer claimed
+        # twice is a note about a problem that no longer exists.
+        stale = sorted(
+            value for value in self.DECIDED if len(self._claimants(value)) < 2
+        )
+        self.assertEqual(stale, [])
+
+    def test_no_section_header_is_also_a_document_title(self):
+        # `_is_title_row` grew a first-line branch, and a page whose
+        # first line is a bare section header must still open the
+        # section rather than be eaten as the document's name.
+        for header in (
+            fshd_report_service._RESULT_SECTION_HEADERS
+            + fshd_report_service._CONCLUSION_SECTION_HEADERS
+            + fshd_report_service._METHOD_SECTION_HEADERS
+        ):
+            kind, _ = fshd_report_service._row_label(header, first_content_line=True)
+            self.assertNotEqual(kind, fshd_report_service._KIND_TITLE, header)
+
+
+class ACountIsNotTheDigitOfATypeTokenTest(unittest.TestCase):
+    """「符合FSHD1」 IS A DIAGNOSIS, NOT A REPEAT COUNT OF ONE.
+
+    The last-resort repeat pattern is 「any digit within 16 characters of
+    D4Z4」 and the ordinary Chinese positive conclusion puts the 1 of
+    FSHD1 exactly 14 characters away. A report printing no count at all
+    published `d4z4_repeat_pathogenic: 1` at 0.97 — the confidence of a
+    cell actually read, and the most severe contraction there is.
+    """
+
+    POSITIVE_NO_COUNT = """面肩肱型肌营养不良基因检测报告单
+检测方法:Southern blot(p13E-11探针,EcoRI/BlnI双酶切)
+检测结论:
+受检者4q35区D4Z4重复序列缩短,符合FSHD1分子诊断标准.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.POSITIVE_NO_COUNT, "other", "G.pdf")
+
+    def test_no_count_is_invented_from_the_type_token(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_the_count_reaches_no_channel_a_model_reads_numbers_off(self):
+        result = self._payload()
+        names = {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        self.assertNotIn("d4z4_repeat_pathogenic", names)
+        self.assertNotIn("d4z4_repeat_pathogenic", result["latest_summary"]["by_analyte"])
+
+    def test_the_diagnosis_the_report_states_still_survives(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+        self.assertIn("符合FSHD1", summary["interpretation_summary"])
+
+    def test_a_count_after_a_chinese_character_is_still_read(self):
+        text = """FSHD基因检测报告单
+检测结果:D4Z4重复单元数为3个
+"""
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class TheRebuiltTableRowOutranksTheConclusionSentenceTest(unittest.TestCase):
+    """A TIE WAS BEING SETTLED BY APPEND ORDER.
+
+    On the cell-per-line layout the conclusion prose sits on its own line
+    under a bare 检测结论 header, so it was promoted to the same rank as
+    the rebuilt table rows — which `_page_rows` appends LAST, and
+    `_read_cell` keeps a candidate only when the rank is strictly
+    better. The report's own printed 5 lost to the threshold quoted in
+    its conclusion, and 10 is the boundary that sends a reader off to
+    evaluate FSHD2.
+    """
+
+    BODY = """面肩肱型肌营养不良基因检测报告单
+检测结果
+项目
+结果
+参考区间
+单位
+D4Z4重复单元数
+5
+>10
+个
+检测结论
+D4Z4重复单元数低于10个即为缩短,本例符合FSHD1.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.BODY, "other", "G.pdf")
+
+    def test_the_report_own_printed_count_wins(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 5)
+
+    def test_the_threshold_quoted_in_the_conclusion_is_not_published(self):
+        result = self._payload()
+        cell = result["latest_summary"]["by_analyte"]["d4z4_repeat_pathogenic"]
+        self.assertEqual(cell["value_num"], 5)
+
+    def test_a_conclusion_sentence_is_not_promoted_to_the_data_rank(self):
+        rows = fshd_report_service._page_rows(self.BODY.strip().split("\n"))
+        kinds = {row.text: row.kind for row in rows}
+        self.assertEqual(
+            kinds["D4Z4重复单元数低于10个即为缩短,本例符合FSHD1."],
+            fshd_report_service._KIND_CONCLUSION,
+        )
+
+
+class TheConclusionUnderABareHeaderIsStillTheConclusionTest(unittest.TestCase):
+    """THE PATIENT LOSES THE REPORT'S OWN WORDS.
+
+    On the cell-per-line layout 「检测结论」 is its own line and the
+    sentence is the next one, carrying none of the keywords. Matching
+    the bare header also ENDED the search, because it cleans to nothing.
+    `interpretation_summary` came out None, `findings` came out empty,
+    and the sentence appeared nowhere in the payload — not under
+    报告详情 → 来源追溯, and not in what the assistant is handed.
+    """
+
+    BODY = """面肩肱型肌营养不良基因检测报告单
+检测结果
+项目
+结果
+参考区间
+单位
+D4Z4重复单元数
+5
+>10
+个
+检测结论
+D4Z4重复单元数低于10个即为缩短,本例符合FSHD1.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.BODY, "other", "G.pdf")
+
+    def test_the_sentence_reaches_the_genetic_summary(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("符合FSHD1", summary["interpretation_summary"])
+
+    def test_the_sentence_reaches_the_structured_field(self):
+        fields = {
+            item["field_name"]: item["field_value"]
+            for item in self._payload()["fshd"]["structured_fields"]
+        }
+        self.assertIn("符合FSHD1", fields["interpretation_summary"])
+
+    def test_the_sentence_reaches_findings(self):
+        findings = self._payload()["findings"]
+        self.assertTrue(findings)
+        self.assertIn("符合FSHD1", findings[0]["finding_text"])
+
+    def test_a_header_with_nothing_under_it_does_not_reach_down_the_page(self):
+        value = fshd_report_service._extract_summary_line(
+            ["检测结论", "医师签名: 王某"], ["检测结论", "结论"]
+        )
+        self.assertIsNone(value)
+
+
+class ATitleTheSuffixListDoesNotRecogniseIsStillATitleTest(unittest.TestCase):
+    """A REPORT IS NAMED AFTER THE TYPE IT WAS ORDERED TO LOOK FOR.
+
+    Two entirely ordinary Chinese titles failed `_is_title_row`: one is
+    32 characters against a cap of 30, the other does not end in 报告.
+    Both fell through to PLAIN, and on the ordinary negative wording
+    that names no type the title's FSHD1 was the only candidate left —
+    published as this patient's 分型 at 0.98, onto the passport, the
+    exports and `patient_profiles`.
+    """
+
+    NEGATIVE = "检测结果:未见4q35D4Z4阵列缩短,结果在正常范围."
+
+    def _diagnosis(self, title):
+        text = f"{title}\n{self.NEGATIVE}\n"
+        return analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]["diagnosis_type"]
+
+    def test_a_thirty_two_character_title_is_a_title(self):
+        title = "面肩肱型肌营养不良1型(FSHD1)D4Z4重复单元数检测报告单"
+        self.assertGreater(len(title), 30)
+        self.assertIsNone(self._diagnosis(title))
+
+    def test_a_title_that_does_not_end_in_the_word_report_is_a_title(self):
+        self.assertIsNone(self._diagnosis("FSHD1基因检测"))
+
+    def test_a_first_data_row_is_not_eaten_as_a_title(self):
+        # A page whose heading the OCR dropped must still be read.
+        text = """D4Z4重复单元数
+3
+个
+"""
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class TheStatedLengthIsRecordedWhereTheRefusalSaysItIsTest(unittest.TestCase):
+    """THE REFUSAL AND THE RECORDING MUST COVER THE SAME SPELLINGS.
+
+    `d4z4_refusal == "length_in_kb"` fires on ANY 「D4Z4 … N kb」 while
+    the length patterns each required their own literal label, so for
+    the spellings the refusal covered and the patterns did not, the
+    measurement was refused as a count and recorded NOWHERE — under a
+    comment saying it was already recorded under its own name.
+    """
+
+    def _summary(self, body):
+        return analyze_fshd_report(body, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+
+    def test_a_length_with_no_recognised_label_is_still_recorded(self):
+        summary = self._summary(
+            "面肩肱型肌营养不良基因检测报告单\n检测结果:D4Z4阵列38kb\n"
+        )
+        self.assertEqual(summary["ecori_fragment_kb"], 38.0)
+
+    def test_the_length_is_never_typed_as_a_count(self):
+        summary = self._summary(
+            "面肩肱型肌营养不良基因检测报告单\n检测结果:D4Z4阵列38kb\n"
+        )
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_a_labelled_length_still_reports_through_its_own_label(self):
+        result = analyze_fshd_report(
+            "FSHD基因检测报告单\n检测结果:EcoRI片段长度38kb,D4Z4重复单元数11\n",
+            "other",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["ecori_fragment_kb"], 38.0)
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 11)
+
+    def test_every_kb_spelling_the_refusal_covers_lands_in_the_length_cell(self):
+        for spelling in ("D4Z4阵列38kb", "D4Z4片段38kb", "D4Z4长度38kb", "D4Z438kb"):
+            summary = self._summary(
+                f"FSHD基因检测报告单\n检测结果:{spelling}\n"
+            )
+            self.assertEqual(summary["ecori_fragment_kb"], 38.0, spelling)
+            self.assertIsNone(summary["d4z4_repeat_pathogenic"], spelling)
+
+
+class AnOrderedItemLabelDoesNotRefuseThePageBelowItTest(unittest.TestCase):
+    """ONE OCR LINE ERASED A CONFIRMED GENETIC FINDING.
+
+    送检项目 is a `_METHOD_SECTION_HEADERS` entry, so a bare one opened a
+    METHOD run that never closed; `_KIND_METHOD` is refused, so every
+    reader skipped the rest of the page. And giving it self-scope alone
+    would trade that for the opposite error, because the cell BELOW it
+    is the name of the test that was ORDERED.
+    """
+
+    CONFIRMED = """面肩肱型肌营养不良基因检测报告单
+送检项目
+FSHD1基因检测(Southern blot法)
+D4Z4重复单元数:3个
+单倍型:4qA
+结论:符合FSHD1分子诊断标准.
+"""
+
+    def test_the_finding_below_the_label_is_still_read(self):
+        summary = analyze_fshd_report(self.CONFIRMED, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_the_ordered_test_name_is_not_a_diagnosis(self):
+        for label in ("送检项目", "检查项目", "检测项目", "检验项目", "标本类型"):
+            text = f"{label}\nFSHD1基因检测\n检测结论:未见4q35D4Z4阵列缩短,结果在正常范围.\n"
+            summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+                "normalized_summary"
+            ]["genetic_summary"]
+            self.assertIsNone(summary["diagnosis_type"], label)
+
+    def test_an_ordered_item_label_carrying_its_value_inline_is_refused_too(self):
+        text = "送检项目:FSHD1基因检测\n检测结论:未见4q35D4Z4阵列缩短,结果在正常范围.\n"
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_the_label_reaches_exactly_one_row(self):
+        text = "送检项目\nFSHD1基因检测\nD4Z4重复单元数:3个\n"
+        rows = fshd_report_service._page_rows(text.strip().split("\n"))
+        kinds = {row.text: row.kind for row in rows if row.kind != "table"}
+        self.assertEqual(kinds["FSHD1基因检测"], fshd_report_service._KIND_METHOD)
+        self.assertEqual(kinds["D4Z4重复单元数:3个"], fshd_report_service._KIND_PLAIN)
+
+
+#: The 常规生化全套 of patient_documents 62dd3f96-ac74-42ae-9759-d7b24e230343,
+#: as PaddleOCR emits it: one cell per line, 「No 项目 结果 参考区间 单位
+#: 方法」, a row index glued to some names and standing alone on others,
+#: an arrow column that is only printed when the row is abnormal, and a
+#: method column full of assay names built on the analytes they measure.
+#: Trimmed to the rows the three defects of this round were measured on.
+ARCHIVED_BIOCHEMISTRY_CELLS = """福建医科大学附属第一医院检验报告单
+检验目的：常规生化全套检查
+临床诊断：面肩肱型肌营养不良症
+No
+项目
+结果
+参考区间
+单位
+方法
+*8
+丙氨酸氨基转移酶（ALT）
+21
+9-50
+U/L
+乳酸脱氢酶法
+*9
+天冬氨酸氨基转移酶（AST）
+23
+15-40
+U/L
+苹果酸脱氢酶
+*12乳酸脱氢酶（LDH)
+319
+↑
+120-250
+U/L
+速率法
+*13碱性磷酸酶（ALP)
+47
+45-125
+U/L
+氧化酶法
+*14肌酸激酶（CK)
+693
+↑
+50-310
+U/L
+速率法
+15肌酸激酶同工酶（活性）（CKMB)
+49
+↑
+<25
+U/L
+免疫抑制法
+17肌酐(CREA)
+40.0
+↓
+57-97
+umol/L
+酶法
+"""
+
+
+class AMethodNameIsNotAResultLabelTest(unittest.TestCase):
+    """A CHINESE ASSAY IS NAMED AFTER THE ENZYME THAT DRIVES IT.
+
+    Measured on the archived 常规生化全套: the ALT row's method column
+    reads 「乳酸脱氢酶法」 and, on the cell-per-line layout, is a line of
+    its own eleven rows above the report's own
+    「*12乳酸脱氢酶（LDH)  319  ↑  120-250」. The first line carrying a
+    keyword wins, so 乳酸脱氢酶 matched the METHOD, found no number on
+    it, read forward into the next row and took 「*9」 — the AST row's
+    INDEX. An LDH of 319 against an upper limit of 250 reached a
+    clinician as 9.
+
+    `_gap_names_a_method` built this defence for the genetics cells. This
+    is the same rule on the laboratory path, and it is applied to the
+    whole map rather than to LDH: ten of the map's analytes have a
+    Chinese name that heads a common assay name, and only the order the
+    laboratory happened to print its methods in was protecting the other
+    nine.
+    """
+
+    @staticmethod
+    def _fields(result):
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def _read(self, text):
+        return self._fields(analyze_fshd_report(text, "other", "B.jpeg"))
+
+    def test_the_archived_report_reads_its_own_ldh_row(self):
+        fields = self._read(ARCHIVED_BIOCHEMISTRY_CELLS)
+        self.assertEqual(fields["ldh"]["field_value"], "319")
+        self.assertEqual(fields["ldh"]["unit"], "U/L")
+        self.assertIn("*12乳酸脱氢酶(LDH)", fields["ldh"]["source_text"])
+        self.assertNotIn("乳酸脱氢酶法", fields["ldh"]["source_text"])
+
+    def test_the_row_index_of_the_next_row_is_never_a_measurement(self):
+        fields = self._read(ARCHIVED_BIOCHEMISTRY_CELLS)
+        for name in ("ldh", "ck", "ckmb", "alt", "ast", "alp", "creatinine"):
+            self.assertNotEqual(fields[name]["field_value"], "9", name)
+            self.assertNotIn("*9", fields[name]["source_text"], name)
+
+    def test_every_method_named_analyte_in_the_map_is_covered(self):
+        """The shape, not the instance — one case per colliding analyte."""
+        for key, method, name, value, reference, unit in (
+            ("ldh", "乳酸脱氢酶法", "*12乳酸脱氢酶(LDH)", "319", "120-250", "U/L"),
+            ("ck", "肌酸激酶法", "*14肌酸激酶(CK)", "693", "50-310", "U/L"),
+            ("urea", "尿素酶法", "*16尿素(UREA)", "6.11", "3.10-8.0", "mmol/L"),
+            ("uric_acid", "尿酸酶法", "*19尿酸(UA)", "583", "208-428", "umol/L"),
+            ("creatinine", "肌酐酶法", "17肌酐(CREA)", "40.0", "57-97", "umol/L"),
+            ("glucose", "葡萄糖氧化酶法", "*20葡萄糖(GLU)", "4.52", "3.90-6.10", "mmol/L"),
+            ("phosphorus", "磷钼酸法", "*31无机磷(P)", "1.33", "0.85-1.51", "mmol/L"),
+            ("calcium", "钙羧基偶氮法", "*30钙(CA)", "2.26", "2.11-2.52", "mmol/L"),
+            ("magnesium", "镁二甲苯胺蓝法", "32镁(MG)", "0.93", "0.53-1.11", "mmol/L"),
+            ("cholesterol", "胆固醇氧化酶法", "*21总胆固醇(TCHO)", "3.68", "<5.18", "mmol/L"),
+        ):
+            with self.subTest(analyte=key):
+                fields = self._read("\n".join((
+                    "XX医院 生化检验报告",
+                    "*1丙氨酸氨基转移酶(ALT)", "21", "9-50", "U/L", method,
+                    name, value, reference, unit, "速率法",
+                )))
+                self.assertEqual(fields[key]["field_value"], value)
+                self.assertEqual(fields[key]["unit"], unit)
+                self.assertEqual(fields["alt"]["field_value"], "21")
+
+    def test_a_row_that_prints_its_own_method_column_still_reads(self):
+        """A TOKEN, NOT A LINE. A row printed on one line carries its
+        method beside its reading, and refusing the line would refuse the
+        reading with it."""
+        fields = self._read("\n".join((
+            "XX医院 生化检验报告",
+            "*8丙氨酸氨基转移酶(ALT) 21 9-50 U/L 乳酸脱氢酶法",
+            "*12乳酸脱氢酶(LDH) 319 ↑ 120-250 U/L 速率法",
+        )))
+        self.assertEqual(fields["alt"]["field_value"], "21")
+        self.assertEqual(fields["ldh"]["field_value"], "319")
+
+    def test_an_analyte_named_only_in_a_method_column_is_not_published(self):
+        """Nothing is better than the next row's index."""
+        fields = self._read("\n".join((
+            "XX医院 生化检验报告",
+            "*8丙氨酸氨基转移酶(ALT)", "21", "9-50", "U/L", "乳酸脱氢酶法",
+            "*9天冬氨酸氨基转移酶(AST)", "23", "15-40", "U/L", "苹果酸脱氢酶",
+        )))
+        self.assertNotIn("ldh", fields)
+        self.assertEqual(fields["alt"]["field_value"], "21")
+        self.assertEqual(fields["ast"]["field_value"], "23")
+
+
+class TheRowSaysWhetherItIsAbnormalTest(unittest.TestCase):
+    """THE FLAG AND THE INTERVAL WERE INSIDE THE CAPTURED SNIPPET.
+
+    The CK row of the archived report was captured whole —
+    「*14肌酸激酶(CK) 693 ↑ 50-310 U/L」 — and published as an ordinary
+    693 with `is_abnormal: false` and an empty reference. A CK of 693
+    against an upper limit of 310, flagged ↑ by the laboratory, on the
+    marker this disease is monitored by, on the passport a patient hands
+    to a clinician.
+    """
+
+    @staticmethod
+    def _by_analyte(result):
+        return {obs["analyte_name"]: obs for obs in result["observations"]}
+
+    def test_the_archived_ck_row_carries_its_flag_and_its_interval(self):
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        ck = observations["ck"]
+        self.assertEqual(ck["result"]["value_num"], 693.0)
+        self.assertTrue(ck["interpretation"]["is_abnormal"])
+        self.assertEqual(ck["interpretation"]["direction"], "high")
+        self.assertEqual(ck["reference"]["range_raw"], "50-310")
+        self.assertEqual(ck["reference"]["low"], 50.0)
+        self.assertEqual(ck["reference"]["high"], 310.0)
+
+    def test_a_one_sided_interval_is_recorded_as_one_sided(self):
+        """「<25」 is an upper limit and no lower one, which is the whole
+        of what the CKMB row states."""
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        ckmb = observations["ckmb"]
+        self.assertEqual(ckmb["result"]["value_num"], 49.0)
+        self.assertTrue(ckmb["interpretation"]["is_abnormal"])
+        self.assertEqual(ckmb["reference"]["range_raw"], "<25")
+        self.assertIsNone(ckmb["reference"]["low"])
+        self.assertEqual(ckmb["reference"]["high"], 25.0)
+
+    def test_a_downward_flag_reads_too(self):
+        creatinine = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )["creatinine"]
+        self.assertEqual(creatinine["interpretation"]["direction"], "low")
+        self.assertEqual(creatinine["reference"]["low"], 57.0)
+        self.assertEqual(creatinine["reference"]["high"], 97.0)
+
+    def test_the_abnormal_rows_reach_the_summary(self):
+        summary = analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")[
+            "latest_summary"
+        ]
+        flagged = {row["analyte_name"] for row in summary["abnormal_list"]}
+        self.assertEqual(flagged, {"ck", "ckmb", "ldh", "creatinine"})
+        self.assertEqual(summary["by_analyte"]["ldh"]["reference_high"], 250.0)
+
+    def test_an_unflagged_row_is_not_made_abnormal_by_its_interval(self):
+        """The laboratory's verdict, not this file's. Grading a reading
+        against its interval is a decision with a specimen, an age and a
+        unit in it; recording what the row printed is not."""
+        observations = self._by_analyte(
+            analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        )
+        alt = observations["alt"]
+        self.assertFalse(alt["interpretation"]["is_abnormal"])
+        self.assertIsNone(alt["interpretation"]["direction"])
+        self.assertEqual(alt["reference"]["range_raw"], "9-50")
+
+    def test_a_flag_spelled_out_does_not_end_the_row(self):
+        """「偏高」 has CJK in it and no digits, so a row boundary drawn on
+        「looks like an analyte name」 cut the row between its reading and
+        its interval."""
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶(CK)", "693", "偏高", "50-310", "U/L",
+                "肌酐(CREA)", "40.0", "偏低", "57-97", "umol/L",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["interpretation"]["direction"], "high")
+        self.assertEqual(observations["ck"]["reference"]["high"], 310.0)
+        self.assertEqual(observations["ck"]["result"]["unit"], "U/L")
+        self.assertEqual(observations["creatinine"]["interpretation"]["direction"], "low")
+
+    def test_a_one_sided_reading_is_not_also_its_own_reference(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶同工酶(CKMB)", "<0.01", "U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        ckmb = observations["ckmb"]
+        self.assertEqual(ckmb["result"]["value_raw"], "<0.01")
+        self.assertIsNone(ckmb["reference"]["range_raw"])
+
+    def test_a_row_with_no_reference_column_keeps_the_shape_it_had(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK): 890 U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["reference"],
+                         {"range_raw": None, "low": None, "high": None, "unit": "U/L"})
+
+    def test_the_interval_comes_off_this_row_and_not_the_next(self):
+        observations = self._by_analyte(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶(CK)", "693",
+                "碱性磷酸酶(ALP)", "47", "45-125", "U/L",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(observations["ck"]["result"]["value_num"], 693.0)
+        self.assertIsNone(observations["ck"]["reference"]["range_raw"])
+        self.assertEqual(observations["alp"]["reference"]["range_raw"], "45-125")
+
+
+class AMilligramIsNotAMagnesiumTest(unittest.TestCase):
+    """`mg` IS BOTH MAGNESIUM AND A MILLIGRAM.
+
+    `_analyte_keyword_pattern` answers 「is this hit inside a longer
+    word」, and 「mg/dL」 puts a token boundary right after the `mg`. So
+    the unit column of any row reporting in milligrams named itself
+    magnesium and then read forward for a number. The same class as
+    「mb」 inside 「CK-MB」, one column further right.
+    """
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_a_milligram_unit_does_not_publish_a_magnesium(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "血清铁", "12.0", "mg/dL", "200", "ng/mL")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertNotIn("magnesium", panel)
+
+    def test_a_real_magnesium_row_still_reads(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "镁(MG)", "0.93", "0.53-1.11", "mmol/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["magnesium"], 0.93)
+
+    def test_a_latin_analyte_column_still_reads(self):
+        """A lone 「CK」 cell is unit-shaped too, and it spans its whole
+        token, so it still names creatine kinase."""
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "CK", "890", "U/L")), "other", "B.jpeg"
+        ))
+        self.assertEqual(panel["ck"], 890.0)
+
+
+class NoMyoglobinIsMintedFromACkMbTest(unittest.TestCase):
+    """THE ARCHIVED PAYLOAD FOR 62dd3f96 CARRIES `mb: 49`, WHICH IS THE
+    CKMB'S 49, AND THE PARSER NO LONGER MINTS IT.
+
+    Confirmed by execution against the archived text rather than by
+    reading: the boundary in `_analyte_keyword_pattern` puts `-` inside
+    the word, so `mb` is refused inside both 「CKMB」 and 「CK-MB」. The
+    row is locked here because the archived row is still on a patient's
+    screen and nothing about that row tells this file it was fixed.
+    """
+
+    def test_the_archived_report_mints_no_myoglobin(self):
+        result = analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("mb", panel)
+        self.assertEqual(panel["ckmb"], 49.0)
+
+    def test_both_spellings_of_the_isoenzyme_refuse_the_myoglobin(self):
+        for printed in ("肌酸激酶同工酶(CKMB)", "肌酸激酶同工酶(CK-MB)"):
+            with self.subTest(printed=printed):
+                panel = analyze_fshd_report(
+                    "\n".join(("XX医院 生化检验报告", f"{printed}: 49 U/L")),
+                    "other",
+                    "B.jpeg",
+                )["fshd"]["normalized_summary"]["lab_panel"]
+                self.assertNotIn("mb", panel)
+                self.assertEqual(panel["ckmb"], 49.0)
+
+    def test_a_real_myoglobin_row_still_reads(self):
+        panel = analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶同工酶(CK-MB): 25 U/L",
+                "肌红蛋白(MYO): 45 ng/mL",
+            )),
+            "other",
+            "B.jpeg",
+        )["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["mb"], 45.0)
+        self.assertEqual(panel["ckmb"], 25.0)
+
+
+class TheLowerBoundIsNotTheReadingTest(unittest.TestCase):
+    """A SECOND ARCHIVED COPY OF THE SAME PANEL, READ BY THE FALLBACK.
+
+    patient_documents 0dcab9e5-de8b-4e8c-b441-0bb62bdb05e7 is the same
+    生化全套 as 62dd3f96, read by Tesseract rather than PaddleOCR, and
+    the fallback did not recover the 结果 column at all — the rows print
+    their name, their reference interval and their unit and nothing
+    else. `re.search` takes the first number it finds, so every one of
+    those rows published the BOTTOM OF THE NORMAL RANGE as this
+    patient's reading: `ck: 50` off 「50-310」, on the patient whose CK
+    is 693, and `ldh: 120`, `alp: 45`, `alt: 9`, `ast: 15`, `ggt: 10`
+    the same way. Six normal-looking numbers, none of them measured.
+
+    `_BOUND_CELL` states the rule for the cell reader — a limit is a
+    reference by default. A flattened row keeps 「50-310」 in one piece,
+    where no cell test can see it.
+    """
+
+    ARCHIVED_TESSERACT_ROWS = """福建医科大学附属第一医院检验报告单
+检验目的  常规生化全套检查
+结果            参考区间               单位        方法
+*# 8 两氨酸氨基转移酶(ALT)                           9-50              U/L
+# 9 天冬氨酸氨基转移酶(AST)                           15-40             U/L
+*# 11 Y-谷氨酰转肽酶(GGT)                                  10-60                UL
+# 12 乳酸脱氧酶(LDH)                                         +      120-250                 U/L
+# 13 碱性磷酸酶(ALP)                                               45-125                  UL
+# 14 肌酸激酶(CK)                                         人     50-310                U/L        速率法
+"""
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_row_with_no_result_column_publishes_nothing(self):
+        panel = self._panel(
+            analyze_fshd_report(self.ARCHIVED_TESSERACT_ROWS, "other", "B.jpeg")
+        )
+        for analyte in ("ck", "ldh", "alp", "alt", "ast", "ggt"):
+            self.assertNotIn(analyte, panel, analyte)
+
+    def test_a_row_that_does_print_a_result_still_reads_it(self):
+        panel = self._panel(analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "# 14 肌酸激酶(CK)   693   50-310   U/L   速率法",
+                "# 12 乳酸脱氢酶(LDH)   319   120-250   U/L   速率法",
+            )),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["ck"], 693.0)
+        self.assertEqual(panel["ldh"], 319.0)
+
+    def test_the_reading_is_read_whichever_column_order_prints_it(self):
+        """项目 / 参考区间 / 结果 is an ordinary Chinese column order, and
+        it puts the interval to the LEFT of the reading."""
+        panel = self._panel(analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK)   50-310   693   U/L")),
+            "other",
+            "B.jpeg",
+        ))
+        self.assertEqual(panel["ck"], 693.0)
+
+    def test_a_one_sided_limit_is_still_the_reading_when_it_is_all_there_is(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶同工酶(CKMB)   <0.01   U/L")),
+            "other",
+            "B.jpeg",
+        )
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["ckmb"]["field_value"], "<0.01")
+        self.assertIsNone(fields["ckmb"].get("reference_range_raw"))
+
+
+class TheRowIsReadPastItsUnitColumnTest(unittest.TestCase):
+    """项目 / 结果 / 单位 / 参考区间 puts the interval LAST.
+
+    The forward scan returned the moment it had a value and a unit, and
+    on that column order the unit cell is the third of four — so every
+    cell to the right of it was abandoned unread, taking the reference
+    interval with it. A CK of 693 and an LDH of 319 came back with
+    「50-310」 and 「120-250」 nowhere in the payload: the column the row
+    reader exists to record, and the only thing either number can be
+    abnormal against.
+    """
+
+    ROWS = (
+        "示例市中心医院 检验报告单",
+        "检验目的: 心肌酶谱",
+        "项目", "结果", "单位", "参考区间",
+        "肌酸激酶(CK)", "693", "U/L", "50-310",
+        "乳酸脱氢酶(LDH)", "319", "U/L", "120-250",
+    )
+
+    @staticmethod
+    def _fields(result):
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_interval_to_the_right_of_the_unit_is_read(self):
+        fields = self._fields(
+            analyze_fshd_report("\n".join(self.ROWS), "other", "muscle enzyme.jpeg")
+        )
+        self.assertEqual(fields["ck"]["field_value"], "693")
+        self.assertEqual(fields["ck"]["unit"], "U/L")
+        self.assertEqual(fields["ck"]["reference_range_raw"], "50-310")
+        self.assertEqual(fields["ck"]["reference_high"], 310.0)
+
+    def test_the_row_below_keeps_its_own_interval(self):
+        """Reading on cannot reach the next analyte's cells: the next
+        analyte's name is what ends the row."""
+        fields = self._fields(
+            analyze_fshd_report("\n".join(self.ROWS), "other", "muscle enzyme.jpeg")
+        )
+        self.assertEqual(fields["ldh"]["reference_range_raw"], "120-250")
+
+    def test_a_unit_printed_as_its_own_cell_after_the_interval_still_reads(self):
+        """The other column order, which is the one that already worked."""
+        fields = self._fields(analyze_fshd_report(
+            "\n".join((
+                "示例市中心医院 检验报告单",
+                "肌酸激酶(CK)", "693", "50-310", "U/L",
+            )),
+            "other",
+            "muscle enzyme.jpeg",
+        ))
+        self.assertEqual(fields["ck"]["unit"], "U/L")
+        self.assertEqual(fields["ck"]["reference_range_raw"], "50-310")
+
+
+class ABareLetterIsTheFlagAndNotTheUnitTest(unittest.TestCase):
+    """The Sysmex and Beckman convention prints the flag as one letter.
+
+    `is_unit_only` accepted any Latin run and `_read_row_flag` knew only
+    arrows and spelled-out Chinese, so the letter became the row's UNIT:
+    a CK of 693 published as 「693H」, the laboratory's own 「U/L」 never
+    reached, and the flag lost — on the marker this disease is monitored
+    by.
+    """
+
+    @staticmethod
+    def _observation(rows, analyte):
+        result = analyze_fshd_report("\n".join(rows), "other", "muscle enzyme.jpeg")
+        return {obs["analyte_name"]: obs for obs in result["observations"]}[analyte]
+
+    def test_the_letter_is_read_as_the_flag_and_the_unit_survives(self):
+        ck = self._observation((
+            "示例市中心医院 检验报告单",
+            "项目", "结果", "提示", "单位", "参考区间",
+            "肌酸激酶(CK)", "693", "H", "U/L", "50-310",
+        ), "ck")
+        self.assertEqual(ck["result"]["unit"], "U/L")
+        self.assertEqual(ck["interpretation"]["direction"], "high")
+        self.assertEqual(ck["reference"]["range_raw"], "50-310")
+
+    def test_the_downward_letter_reads_too(self):
+        creatinine = self._observation((
+            "示例市中心医院 检验报告单",
+            "肌酐(CREA)", "40.0", "L", "umol/L", "57-97",
+        ), "creatinine")
+        self.assertEqual(creatinine["interpretation"]["direction"], "low")
+        self.assertEqual(creatinine["result"]["unit"], "umol/L")
+
+    def test_the_flag_on_a_flattened_row_is_not_taken_as_the_unit(self):
+        ck = self._observation((
+            "示例市中心医院 检验报告单",
+            "肌酸激酶(CK) 693 H 50-310 U/L",
+        ), "ck")
+        self.assertEqual(ck["interpretation"]["direction"], "high")
+        self.assertNotEqual(ck["result"]["unit"], "H")
+
+    def test_the_l_of_a_unit_is_not_a_flag(self):
+        """「U/L」 is one token and 「L」 is not it — which is the whole
+        reason the letters are read as cells rather than substrings."""
+        ck = self._observation((
+            "示例市中心医院 检验报告单",
+            "肌酸激酶(CK)", "693", "U/L", "50-310",
+        ), "ck")
+        self.assertIsNone(ck["interpretation"]["direction"])
+        self.assertFalse(ck["interpretation"]["is_abnormal"])
+
+
+class TheGenericTableReaderReadsTheWholeRowTest(unittest.TestCase):
+    """The reader that exists for the analytes nobody wrote a pattern for.
+
+    It had the same two defects, one column apart: a one-letter flag is
+    unit-shaped, so 「H」 was published as the unit and the laboratory's
+    own unit — one cell further right — was never reached; and a flag
+    SPELLED OUT is CJK with no digits, so `_looks_like_analyte` called it
+    the next analyte and ended the row before its unit. The reference
+    the row dict has always carried was never passed on either.
+    """
+
+    ROWS = (
+        "示例市中心医院 检验报告单",
+        "项目", "结果", "提示", "单位", "参考区间",
+        "游离甲状腺素指数", "4.5", "H", "pmol/L", "1.0-4.0",
+        "抗核抗体滴度", "1.5", "偏高", "ratio", "0-1.0",
+    )
+
+    def test_a_letter_flag_is_not_the_unit(self):
+        rows = {row["name"]: row for row in extract_lab_table_rows(list(self.ROWS))}
+        self.assertEqual(rows["游离甲状腺素指数"]["unit"], "pmol/L")
+        self.assertEqual(rows["游离甲状腺素指数"]["flag"], "high")
+
+    def test_a_spelled_out_flag_does_not_end_the_row(self):
+        rows = {row["name"]: row for row in extract_lab_table_rows(list(self.ROWS))}
+        self.assertEqual(rows["抗核抗体滴度"]["unit"], "ratio")
+        self.assertEqual(rows["抗核抗体滴度"]["reference"], "0-1.0")
+
+    def test_the_field_carries_what_the_row_said(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        cell = fields["table_游离甲状腺素指数"]
+        self.assertEqual(cell["unit"], "pmol/L")
+        self.assertEqual(cell["abnormal_flag"], "high")
+        self.assertEqual(cell["reference_range_raw"], "1.0-4.0")
+        self.assertEqual(cell["reference_high"], 4.0)
+
+    def test_a_row_a_canonical_extractor_already_published_is_not_repeated(self):
+        """One laboratory row is one analyte. The guard read a bare
+        reading for membership in a set of whole row snippets, which is
+        never true, so the archived 生化全套 published its CK twice —
+        and once the flag was carried, the same creatine kinase appeared
+        twice in `abnormal_list`."""
+        result = analyze_fshd_report(ARCHIVED_BIOCHEMISTRY_CELLS, "other", "B.jpeg")
+        names = [item["field_name"] for item in result["fshd"]["structured_fields"]]
+        self.assertIn("ck", names)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+        flagged = [row["analyte_name"] for row in result["latest_summary"]["abnormal_list"]]
+        self.assertEqual(sorted(flagged), sorted(set(flagged)))
+
+    def test_a_panel_row_is_not_published_twice_either(self):
+        """`_panel_source_line` answers with the LINE carrying a keyword,
+        and on the cell-per-line layout that is the analyte's name alone
+        — evidence that does not contain the reading it is evidence for,
+        and nothing this reader could recognise as the same row."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 甲功三项",
+            "游离T3", "5.2", "3.1-6.8", "pmol/L",
+            "游离T4", "16.8", "12-22", "pmol/L",
+        )), "other", "T.jpeg")
+        names = [item["field_name"] for item in result["fshd"]["structured_fields"]]
+        self.assertIn("ft3", names)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+
+    def test_an_analyte_nobody_wrote_a_pattern_for_is_still_published(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        names = {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        self.assertIn("table_抗核抗体滴度", names)
+
+
+class EveryPanelSaysWhatTheRowSaidTest(unittest.TestCase):
+    """The flag and reference work had landed in ONE panel.
+
+    `_extract_labs` read them; 血常规, 甲功, 凝血, 尿常规, 感染筛查 and
+    粪便 all reach `_append_panel_number` instead, which passed no flag,
+    no interval and a unit only where one was hard-coded. A haemoglobin
+    the laboratory flagged reached the patient as a bare 98.
+    """
+
+    @staticmethod
+    def _observations(rows, hint, name):
+        result = analyze_fshd_report("\n".join(rows), hint, name)
+        return {obs["analyte_name"]: obs for obs in result["observations"]}
+
+    def test_a_flagged_haemoglobin_reaches_the_patient_flagged(self):
+        hgb = self._observations((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目 结果 参考区间 单位",
+            "血红蛋白量(HGB) 98 ↓ 130-175 g/L",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+        ), "other", "blood routine.jpeg")["hgb"]
+        self.assertEqual(hgb["result"]["value_num"], 98.0)
+        self.assertEqual(hgb["result"]["unit"], "g/L")
+        self.assertEqual(hgb["interpretation"]["direction"], "low")
+        self.assertEqual(hgb["reference"]["range_raw"], "130-175")
+        self.assertEqual(hgb["reference"]["low"], 130.0)
+
+    def test_an_unflagged_row_on_the_same_panel_stays_unflagged(self):
+        wbc = self._observations((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+        ), "other", "blood routine.jpeg")["wbc"]
+        self.assertFalse(wbc["interpretation"]["is_abnormal"])
+        self.assertEqual(wbc["reference"]["range_raw"], "3.5-9.5")
+
+    def test_a_coagulation_row_carries_its_interval(self):
+        aptt = self._observations((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "活化部分凝血活酶时间(APTT) 45.2 ↑ 25.0-38.0 s",
+        ), "other", "coagulation.jpeg")["aptt"]
+        self.assertEqual(aptt["interpretation"]["direction"], "high")
+        self.assertEqual(aptt["reference"]["range_raw"], "25.0-38.0")
+
+    def test_a_hard_coded_unit_still_wins_over_the_row(self):
+        """A definition's unit is a statement about the analyte; the
+        row's is a reading of the page."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "中性粒细胞比率(NEUT%) 62.5 40.0-75.0 %",
+        )), "other", "blood routine.jpeg")
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["neut_pct"]["unit"], "%")
+
+    def test_a_row_with_no_reference_column_keeps_the_shape_it_had(self):
+        thyroid = self._observations((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 甲状腺功能",
+            "游离T3 结果 5.2",
+        ), "other", "thyroid.jpeg")
+        self.assertEqual(thyroid["ft3"]["result"]["value_num"], 5.2)
+        self.assertIsNone(thyroid["ft3"]["reference"]["range_raw"])
+
+    def test_the_row_is_only_believed_when_the_two_readers_agree(self):
+        """The panel pattern finds the number; the row reader finds the
+        row. Where they name different numbers the row reader is looking
+        at a different row, and nothing of it is carried — which is what
+        stops one analyte's interval landing beside another's value."""
+        lines = [
+            "示例市第一人民医院 检验报告单",
+            "血红蛋白量(HGB) 98 130-175 g/L",
+        ]
+        vocabulary = {"hgb": ["血红蛋白", "HGB"]}
+        agreed = fshd_report_service._row_context(vocabulary, "hgb", lines, "98")
+        self.assertEqual(agreed.reference_raw, "130-175")
+        disagreed = fshd_report_service._row_context(vocabulary, "hgb", lines, "155")
+        self.assertIsNone(disagreed.value)
+        self.assertIsNone(disagreed.reference_raw)
+
+
+class AGapIsALabelToValueGapOrItIsNothingTest(unittest.TestCase):
+    """THE SAME GAP-WIDTH CLASS, FIXED BY SHAPE THIS TIME.
+
+    Eight characters is short enough for 「甲基化水平: 35%」 and equally
+    short enough for 「…甲基化水平常低于 25%」 — an ordinary sentence of
+    disease background, printed on the genetics reports that carry one.
+    The narrower width was the fix twice before; the gap is now judged
+    by what it SAYS, so the next widening cannot reintroduce it.
+    """
+
+    HEAD = "示例大学附属医院 基因检测报告"
+
+    def _fields(self, line):
+        result = analyze_fshd_report(
+            "\n".join((self.HEAD, line)), "genetic_report", "genetics.pdf"
+        )
+        return {item["field_name"]: item["field_value"]
+                for item in result["fshd"]["structured_fields"]}
+
+    def test_a_background_sentence_mints_no_methylation(self):
+        report = "\n".join((
+            self.HEAD,
+            "检测项目: FSHD1 基因检测(D4Z4 重复单元数)",
+            "面肩肱型肌营养不良2型患者的 D4Z4 甲基化水平常低于 25%。",
+            "检测结果:",
+            "D4Z4重复单元数 3/22",
+            "结论: 本次检测支持 FSHD1 诊断。",
+        ))
+        summary = analyze_fshd_report(report, "genetic_report", "genetics.pdf")[
+            "fshd"
+        ]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["methylation_value"])
+        # The cells the report really printed are untouched.
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_a_population_sentence_mints_no_repeat_count(self):
+        self.assertIsNone(
+            self._fields("正常人群 D4Z4 重复单元数多于 10 个。").get(
+                "d4z4_repeat_pathogenic"
+            )
+        )
+
+    def test_every_spelling_of_a_real_methylation_row_still_reads(self):
+        for line, expected in (
+            ("甲基化: 35%", "35"),
+            ("甲基化水平 35 %", "35"),
+            ("D4Z4 甲基化水平: 0.35", "0.35"),
+            ("甲基化分析: 35%", "35"),
+            ("检测结果: 甲基化程度 35%", "35"),
+            ("甲基化 BSP 35%", "35"),
+            ("检测结果: 甲基化水平=35%", "35"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self._fields(line).get("methylation_value"), expected)
+
+    def test_every_spelling_of_a_real_count_row_still_reads(self):
+        for line, expected in (
+            ("D4Z4重复单元数 3/22", "3"),
+            # 为 / 是 / 共 / = are the sentence spellings of 「:」, and a
+            # ten-character gap made of nothing but the label's own tail
+            # still reads — the width is not what decides.
+            ("检测结果: 本项目检出 D4Z4 重复单元数为 3", "3"),
+            ("检测结果: D4Z4 重复单元数是 3", "3"),
+            ("检测结果: D4Z4 重复单元共 3 个", "3"),
+            ("检测结果: D4Z4重复单元数检测结果为 3", "3"),
+            ("检测结果: D4Z4重复单元数: 5", "5"),
+            ("检测结果: D4Z4 重复单元数 1-10", "1-10"),
+            ("检测结果: D4Z4 Southern 重复单元数 3", "3"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(
+                    self._fields(line).get("d4z4_repeat_pathogenic"), expected
+                )
+
+    def test_every_spelling_of_a_real_length_row_still_reads(self):
+        for line, expected in (
+            ("D4Z4 EcoRI 片段长度: 38 kb", "38"),
+            ("D4Z4 大小: 20 kb", "20"),
+            ("检测结果: D4Z4阵列38kb", "38"),
+            ("检测结果: D4Z4 片段大小为 25 kb", "25"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self._fields(line).get("ecori_fragment_kb"), expected)
+
+
+class AMappedNameInsideAnAnalyteTheMapDoesNotOwnTest(unittest.TestCase):
+    """A cardiac panel is an ordinary thing for an FSHD patient to upload.
+
+    `_competing_analyte_keywords` computes collisions FROM THE MAP, which
+    cannot see a mapped name printed inside a name the map has never
+    heard of. Measured on a synthetic 生化全套: a BNP of 1580 published
+    as this patient's SODIUM, a cTnI of 0.85 as their CALCIUM, a 前白蛋白
+    as their albumin, a β2微球蛋白 as their globulin, and 尿肌酐 / 尿磷 as
+    serum results. A sodium of 1580 is not a survivable figure.
+    """
+
+    HEAD = (
+        "示例市中心医院 检验报告单",
+        "检验目的: 常规生化全套",
+        "项目 结果 单位 参考区间",
+    )
+
+    def _panel(self, row):
+        result = analyze_fshd_report(
+            "\n".join((*self.HEAD, row)), "other", "biochemistry.jpeg"
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel") or {}
+
+    def test_no_mapped_analyte_is_published_off_a_foreign_row(self):
+        for row, key in (
+            ("脑钠肽(BNP) 1580 pg/mL 0-100", "sodium"),
+            ("N末端B型钠尿肽前体 1580 pg/mL 0-100", "sodium"),
+            ("超敏肌钙蛋白I(cTnI) 0.85 ng/mL 0-0.04", "calcium"),
+            ("降钙素原(PCT) 0.05 ng/mL 0-0.5", "calcium"),
+            ("前白蛋白(PA) 180 mg/L 200-400", "alb"),
+            ("尿微量白蛋白 25 mg/L 0-30", "alb"),
+            ("β2微球蛋白 3.6 mg/L 1.0-3.0", "globulin"),
+            ("免疫球蛋白G 12.5 g/L 7.0-16.0", "globulin"),
+            ("甲状腺球蛋白 18.0 ng/mL 3.5-77", "globulin"),
+            ("尿肌酐 8500 umol/L 6000-12000", "creatinine"),
+            ("24小时尿钙 3.5 mmol/24h 2.5-7.5", "calcium"),
+            ("尿磷 22 mmol/24h 13-42", "phosphorus"),
+            ("酸性磷酸酶 3.1 U/L 0-9", "phosphorus"),
+            ("磷酸肌酸激酶(CPK) 693 U/L 50-310", "phosphorus"),
+            ("白蛋白/球蛋白比值 1.5 1.2-2.4", "alb"),
+            ("白蛋白/球蛋白比值 1.5 1.2-2.4", "globulin"),
+        ):
+            with self.subTest(row=row, key=key):
+                self.assertNotIn(key, self._panel(row))
+
+    def test_the_cell_the_map_does_own_still_reads(self):
+        for row, key, expected in (
+            ("血清钠(Na) 140 mmol/L 137-147", "sodium", 140.0),
+            ("血清钙(Ca) 2.35 mmol/L 2.11-2.52", "calcium", 2.35),
+            ("白蛋白(ALB) 42 g/L 40-55", "alb", 42.0),
+            ("球蛋白(GLO) 28 g/L 20-30", "globulin", 28.0),
+            ("肌酐(Cr) 68 umol/L 57-97", "creatinine", 68.0),
+            ("无机磷(P) 1.15 mmol/L 0.85-1.51", "phosphorus", 1.15),
+            ("血钾(K) 4.2 mmol/L 3.5-5.3", "potassium", 4.2),
+            ("肌酸激酶(CK) 693 U/L 50-310", "ck", 693.0),
+        ):
+            with self.subTest(row=row):
+                self.assertEqual(self._panel(row).get(key), expected)
+
+    def test_a_name_the_map_should_own_is_read_rather_than_refused(self):
+        """磷酸肌酸激酶 and 白蛋白/球蛋白 are printed spellings of cells
+        this map HAS — so they are keywords, which closes the collision
+        and reads the row in one move."""
+        self.assertEqual(self._panel("磷酸肌酸激酶(CPK) 693 U/L 50-310").get("ck"), 693.0)
+        self.assertEqual(
+            self._panel("白蛋白/球蛋白比值 1.5 1.2-2.4").get("a_g_ratio"), 1.5
+        )
+
+
+# --------------------------------------------------------------------
+# ONE ROW READER FOR EVERY LABORATORY PANEL.
+#
+# Everything below was measured on the same defect wearing seven
+# different hats: a fix landed in `_extract_labs` — the biochemistry and
+# muscle-enzyme map, which reads its rows with `_extract_lab_value` —
+# and the six panels that reach `_extract_numeric_panel` instead kept
+# the old answer. The column orders, the flag conventions, the unit
+# forms and the interval forms are identical on all seven; what differs
+# is the analyte names. So the reader is shared and the names are what a
+# panel declares.
+#
+# Every fixture is synthetic.
+# --------------------------------------------------------------------
+
+
+class TheLowerBoundIsNotTheReadingOnAnyPanelTest(unittest.TestCase):
+    """The 项目 / 参考区间 / 结果 column order, on the panel path.
+
+    `_BOUND_CELL` in this module calls that order 「ordinary on Chinese
+    laboratory reports」, and the row reader was taught it. The panel
+    patterns are written 「the analyte's name, then the first number」,
+    which on that order is the reference interval's LOWER BOUND — so a
+    white cell count of 6.69 was published as 3.5 and a haemoglobin of
+    98 as 130, on every one of 血常规, 甲功, 凝血, 尿常规, 感染筛查 and
+    粪便.
+    """
+
+    @staticmethod
+    def _panel(rows, name="x.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_a_flattened_blood_count_reads_its_result_column(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目 参考区间 结果 单位",
+            "白细胞计数(WBC) 3.5-9.5 6.69 10^9/L",
+            "血红蛋白量(HGB) 130-175 98 g/L",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["hgb"], 98.0)
+
+    def test_the_same_order_read_one_cell_per_line(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目", "参考区间", "结果", "单位",
+            "白细胞计数(WBC)", "3.5-9.5", "6.69", "10^9/L",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_a_coagulation_panel_in_the_same_order(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "项目 参考区间 结果 单位",
+            "凝血酶原时间(PT) 11.0-14.5 17.8 s",
+        ), "coagulation.jpeg")
+        self.assertEqual(panel["pt"], 17.8)
+
+    def test_a_thyroid_panel_in_the_same_order(self):
+        panel = self._panel((
+            "示例市第一人民医院 核医学报告单",
+            "检验目的: 甲状腺功能",
+            "项目 参考区间 结果 单位",
+            "游离T3(FT3) 3.5-6.5 2.10 pmol/L",
+        ), "thyroid.jpeg")
+        self.assertEqual(panel["ft3"], 2.10)
+
+    def test_the_fallback_pattern_will_not_publish_a_bound_either(self):
+        """The row reader is primary; where it cannot see the row the
+        pattern still answers, and it is now refused a number that is one
+        end of a printed interval."""
+        self.assertIsNone(
+            fshd_report_service._extract_named_number(
+                "白细胞计数 3.5-9.5",
+                [r"(?:白细胞计数)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"],
+                avoid_reference_intervals=True,
+            )[0]
+        )
+
+
+class NoAbbreviationIsReadInsideAnotherTest(unittest.TestCase):
+    """「PT」 and 「TT」 are both printed inside 「APTT」.
+
+    `_analyte_keyword_pattern` has anchored the row reader's keywords
+    since 「肌酸激酶(CK)」 published a potassium of 890. The panel
+    patterns embedded their abbreviations bare, so one
+    activated-partial-thromboplastin row was published as three
+    analytes — two of them times this patient never had measured, both
+    carrying APTT's own interval.
+    """
+
+    @staticmethod
+    def _panel(rows, name="coagulation.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_an_aptt_row_alone_publishes_only_an_aptt(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血功能",
+            "活化部分凝血活酶时间(APTT) 45.2 25.0-38.0 s",
+        ))
+        self.assertEqual(panel["aptt"], 45.2)
+        self.assertNotIn("pt", panel)
+        self.assertNotIn("tt", panel)
+
+    def test_each_coagulation_row_still_reads_its_own_number(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "凝血酶原时间(PT) 13.2 11.0-14.5 s",
+            "国际标准化比值(PT-INR) 1.05 0.80-1.20",
+            "活化部分凝血活酶时间(APTT) 45.2 25.0-38.0 s",
+            "凝血酶时间(TT) 16.8 14.0-21.0 s",
+            "纤维蛋白原(FIB) 3.10 2.00-4.00 g/L",
+        ))
+        self.assertEqual(panel["pt"], 13.2)
+        self.assertEqual(panel["inr"], 1.05)
+        self.assertEqual(panel["aptt"], 45.2)
+        self.assertEqual(panel["tt"], 16.8)
+        self.assertEqual(panel["fibrinogen"], 3.10)
+
+    def test_the_hyphen_is_inside_the_word_here_too(self):
+        """「RDW」 is printed inside 「RDW-SD」, which is a different row of
+        the same 血常规."""
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "红细胞分布宽度标准差(RDW-SD) 42.5 37.0-54.0 fL",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["rdw_sd"], 42.5)
+        self.assertNotIn("rdw_cv", panel)
+
+
+class AUrineAnalysisIsNotABloodCountTest(unittest.TestCase):
+    """白细胞 and 红细胞 are rows of a 血常规 AND rows of a 尿常规.
+
+    The blood rules score both bare words plus 「WBC」, so an ordinary
+    尿液分析报告单 came out `blood_routine` — and nothing downstream can
+    tell, because the payload then says 血常规报告, `_extract_urinalysis`
+    never runs, and the sediment counts are published under `wbc` and
+    `rbc`, the keys the mobile 血常规 section reads.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 尿液分析报告单",
+        "项目 结果 提示 参考区间 单位",
+        "白细胞(WBC) 25 高 0-28 /uL",
+        "红细胞(RBC) 15 0-16 /uL",
+        "蛋白质(PRO) 阴性(-)",
+        "亚硝酸盐(NIT) 阴性(-)",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.ROWS), "other", "urine.jpeg")
+
+    def test_the_report_is_labelled_a_urinalysis(self):
+        self.assertEqual(self._result()["fshd"]["report_type"], "urinalysis")
+
+    def test_the_sediment_counts_are_published_as_urine_counts(self):
+        panel = self._result()["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_wbc"], 25.0)
+        self.assertEqual(panel["urine_rbc"], 15.0)
+
+    def test_no_blood_count_is_minted_from_a_urine_specimen(self):
+        panel = self._result()["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("wbc", panel)
+        self.assertNotIn("rbc", panel)
+
+    def test_a_real_blood_count_is_still_a_blood_count(self):
+        """The specimen rule turns on what only a blood tube has. A
+        report printing haemoglobin is a blood count however much urine
+        vocabulary the same page carries."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+            "血红蛋白量(HGB) 155 130-175 g/L",
+        )), "other", "blood routine.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "blood_routine")
+
+    def test_a_urea_row_does_not_name_a_urine_specimen(self):
+        """尿素 and 尿酸 are biochemistry rows drawn from blood, and both
+        contain 尿."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+            "尿素(UREA) 5.2 2.9-8.2 mmol/L",
+            "尿酸(UA) 320 208-428 umol/L",
+        )), "other", "blood routine.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "blood_routine")
+
+
+class ASpelledOutFlagIsNotTheNextAnalyteTest(unittest.TestCase):
+    """A 提示 column spelled 「高」 / 「低」 / 「异常」.
+
+    `_ROW_FLAG_MARKERS` reads 偏高 and 降低 as substrings, which is safe
+    because neither occurs inside anything else; the bare forms cannot be
+    read that way — 高 is inside 高密度脂蛋白 and 低 inside 低密度脂蛋白.
+    So the cell was CJK with no digits, `_looks_like_analyte` called it
+    the next analyte, and the row ENDED on it: the reading lost its unit
+    and its reference interval, and with the interval gone there was
+    nothing left for a read-path check to fire on.
+    """
+
+    @staticmethod
+    def _fields(rows, name="blood routine.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_a_bare_high_keeps_the_row_together(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目", "结果", "提示", "参考区间", "单位",
+            "白细胞计数(WBC)", "12.60", "高", "3.5-9.5", "10^9/L",
+        ))["wbc"]
+        self.assertEqual(cell["abnormal_flag"], "high")
+        self.assertEqual(cell["unit"], "10^9/L")
+        self.assertEqual(cell["reference_range_raw"], "3.5-9.5")
+
+    def test_a_bare_low_reads_the_same_way(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血红蛋白量(HGB)", "98", "低", "130-175", "g/L",
+        ))["hgb"]
+        self.assertEqual(cell["abnormal_flag"], "low")
+        self.assertEqual(cell["reference_range_raw"], "130-175")
+
+    def test_an_undirected_flag_is_recorded_without_a_direction(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "凝血酶原时间(PT)", "17.8", "异常", "11.0-14.5", "s",
+        ), "coagulation.jpeg")["pt"]
+        self.assertEqual(cell["abnormal_flag"], "abnormal_unspecified")
+        self.assertEqual(cell["unit"], "s")
+
+    def test_a_row_the_laboratory_called_normal_is_not_ended_by_saying_so(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血小板计数(PLT)", "210", "正常", "125-350", "10^9/L",
+        ))["plt"]
+        self.assertIsNone(cell.get("abnormal_flag"))
+        self.assertEqual(cell["unit"], "10^9/L")
+        self.assertEqual(cell["reference_range_raw"], "125-350")
+
+
+class AnIntervalAndItsUnitInOneCellTest(unittest.TestCase):
+    """「50-310 U/L」 is one box printing two columns.
+
+    It is not a value cell, not a range cell and not a unit cell, so it
+    fell through every class to 「has Latin letters」 — and
+    `_looks_like_analyte` therefore called it the NEXT ANALYTE and ended
+    the row on it. The reading shipped with no unit and no interval.
+    """
+
+    @staticmethod
+    def _fields(rows, name="B.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_combined_cell_is_read_as_both_columns(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)", "693", "↑", "50-310 U/L",
+            "乳酸脱氢酶(LDH)", "319", "↑", "120-250 U/L",
+        ))["ck"]
+        self.assertEqual(cell["unit"], "U/L")
+        self.assertEqual(cell["reference_range_raw"], "50-310")
+        self.assertEqual(cell["reference_high"], 310.0)
+
+    def test_the_row_below_keeps_its_own_combined_cell(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)", "693", "↑", "50-310 U/L",
+            "乳酸脱氢酶(LDH)", "319", "↑", "120-250 U/L",
+        ))["ldh"]
+        self.assertEqual(cell["reference_range_raw"], "120-250")
+
+    def test_a_panel_row_reads_the_combined_cell_too(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血红蛋白量(HGB)", "98", "↓", "130-175 g/L",
+        ), "blood routine.jpeg")["hgb"]
+        self.assertEqual(cell["unit"], "g/L")
+        self.assertEqual(cell["reference_range_raw"], "130-175")
+
+    def test_the_generic_reader_splits_the_box_as_well(self):
+        rows = {
+            row["name"]: row
+            for row in extract_lab_table_rows([
+                "示例市第一人民医院 检验报告单",
+                "项目", "结果", "参考区间",
+                "抗核抗体滴度", "1.5", "0-1.0 ratio",
+            ])
+        }
+        self.assertEqual(rows["抗核抗体滴度"]["value"], "1.5")
+        self.assertEqual(rows["抗核抗体滴度"]["reference"], "0-1.0")
+        self.assertEqual(rows["抗核抗体滴度"]["unit"], "ratio")
+
+    def test_a_unit_that_only_looks_like_a_number_is_not_split(self):
+        """「10^9/L」 is a unit, not a 10 with a unit of 「^9/L」."""
+        self.assertEqual(fshd_report_service._split_data_cell("10^9/L"), ["10^9/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("50-310"), ["50-310"])
+        self.assertEqual(fshd_report_service._split_data_cell("50-310 U/L"), ["50-310", "U/L"])
+
+
+class TheAbsoluteCountIsNotThePercentageTest(unittest.TestCase):
+    """「NEUT%」 and 「NEUT#」 are two rows of every 血常规.
+
+    The panel definitions carried a pattern list and a keyword list
+    written by hand, and they had drifted: the pattern matched 「NEUT#」
+    and the keyword list said 「NEUT」, which is the abbreviation the
+    PERCENTAGE row prints. `_row_context` therefore asked the row reader
+    about the ratio row, the two readers named different numbers, and
+    all five absolute differential counts shipped with no flag, no unit
+    and no interval — on the panel where the differential is the whole
+    point.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 检验报告单",
+        "检验目的: 血常规",
+        "项目 结果 提示 参考区间 单位",
+        "中性粒细胞比率(NEUT%) 82.5 高 40.0-75.0 %",
+        "淋巴细胞比率(LYMPH%) 12.0 低 20.0-50.0 %",
+        "单核细胞比率(MONO%) 4.5 3.0-10.0 %",
+        "嗜酸细胞百分比(EOS%) 0.8 0.4-8.0 %",
+        "嗜碱细胞百分比(BASO%) 0.2 0.0-1.0 %",
+        "中性粒细胞数(NEUT#) 8.42 高 1.80-6.30 10^9/L",
+        "淋巴细胞数(LYMPH#) 1.22 低 1.10-3.20 10^9/L",
+        "单核细胞数(MONO#) 0.41 0.10-0.60 10^9/L",
+        "嗜酸细胞数(EOS#) 0.05 0.02-0.52 10^9/L",
+        "嗜碱细胞数(BASO#) 0.02 0.00-0.06 10^9/L",
+    )
+
+    def _fields(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "blood routine.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_every_absolute_count_reads_its_own_row(self):
+        fields = self._fields()
+        for key, value in (
+            ("neut_abs", "8.42"), ("lymph_abs", "1.22"), ("mono_abs", "0.41"),
+            ("eos_abs", "0.05"), ("baso_abs", "0.02"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(fields[key]["field_value"], value)
+
+    def test_every_absolute_count_carries_what_its_row_said(self):
+        fields = self._fields()
+        for key, reference in (
+            ("neut_abs", "1.80-6.30"), ("lymph_abs", "1.10-3.20"),
+            ("mono_abs", "0.10-0.60"), ("eos_abs", "0.02-0.52"),
+            ("baso_abs", "0.00-0.06"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(fields[key]["unit"], "10^9/L")
+                self.assertEqual(fields[key]["reference_range_raw"], reference)
+
+    def test_the_flagged_absolute_counts_reach_the_summary(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "blood routine.jpeg")
+        by_analyte = result["latest_summary"]["by_analyte"]
+        flagged = {row["analyte_name"] for row in result["latest_summary"]["abnormal_list"]}
+        self.assertIn("neut_abs", flagged)
+        self.assertIn("lymph_abs", flagged)
+        self.assertEqual(by_analyte["neut_abs"]["direction"], "high")
+        self.assertEqual(by_analyte["lymph_abs"]["direction"], "low")
+
+    def test_the_percentage_rows_keep_their_own_numbers(self):
+        fields = self._fields()
+        self.assertEqual(fields["neut_pct"]["field_value"], "82.5")
+        self.assertEqual(fields["neut_pct"]["unit"], "%")
+        self.assertEqual(fields["lymph_pct"]["field_value"], "12.0")
+
+    def test_one_list_of_names_feeds_both_readers(self):
+        """The pattern and the keyword cannot drift apart if they are
+        built from the same list."""
+        meta = fshd_report_service._numeric_analyte("中性粒细胞数", "NEUT#")
+        self.assertEqual(meta["keywords"], ["中性粒细胞数", "NEUT#"])
+        self.assertEqual(len(meta["patterns"]), 1)
+        for name in meta["keywords"]:
+            self.assertIn(fshd_report_service._anchored_keyword_source(name), meta["patterns"][0])
+
+
+class TheCommonestAnalyteShapeIsAnAnalyteTest(unittest.TestCase):
+    """「中文名(缩写)」 is how most rows of a Chinese report are printed.
+
+    `_is_header_only` calls any 「短词(拉丁内容)」 a label carrying a
+    unit — it was written for 「膈肌厚度(mm)」 and 「LVEF(%)」 — and
+    `_looks_like_analyte` consulted it. So the generic table reader, the
+    one that exists so a report nobody anticipated still produces
+    values, refused 「白细胞计数(WBC)」, 「碱性磷酸酶(ALP)」 and every other
+    row of that shape: a thirty-row table yielded nothing.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 检验报告单",
+        "项目", "结果", "提示", "参考区间", "单位",
+        "抗核抗体滴度(ANA)", "1.5", "偏高", "0-1.0", "ratio",
+        "肿瘤坏死因子(TNF)", "12.4", "0-8.1", "pg/mL",
+    )
+
+    def test_a_name_carrying_its_abbreviation_is_a_name(self):
+        rows = {row["name"]: row for row in extract_lab_table_rows(list(self.ROWS))}
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["value"], "1.5")
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["unit"], "ratio")
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["reference"], "0-1.0")
+        self.assertEqual(rows["肿瘤坏死因子(TNF)"]["value"], "12.4")
+
+    def test_the_row_reaches_the_patient_report(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        names = {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        self.assertIn("table_抗核抗体滴度_ana", names)
+
+    def test_a_label_carrying_a_real_unit_is_still_a_label(self):
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("膈肌厚度(mm)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("LVEF(%)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("血红蛋白(g/L)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("凝血酶原时间(s)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("检验目的(ALT)"))
+
+    def test_an_abbreviation_is_an_abbreviation(self):
+        for cell in ("白细胞计数(WBC)", "碱性磷酸酶(ALP)", "游离T3(FT3)", "中性粒细胞比率(NEUT%)"):
+            with self.subTest(cell=cell):
+                self.assertTrue(fshd_report_service._names_its_own_abbreviation(cell))
+                self.assertTrue(fshd_report_service._looks_like_analyte(cell))
+
+    def test_a_panel_row_of_that_shape_is_still_not_published_twice(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC)", "6.69", "3.5-9.5", "10^9/L",
+        )), "other", "blood routine.jpeg")
+        names = [item["field_name"] for item in result["fshd"]["structured_fields"]]
+        self.assertIn("wbc", names)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+
+
+class TheSuperscriptHaematologyUnitIsAUnitTest(unittest.TestCase):
+    """「×10⁹/L」 is the unit on the first three rows of every 血常规.
+
+    The unit classes admitted no character outside ASCII plus 「μ」, so
+    the printed spelling was not a unit to `is_unit_only`, not a unit to
+    `_unit_from_row` and not a unit to `extract_lab_table_rows` — a white
+    cell count, a red cell count and a platelet count all shipped with no
+    unit at all. The ASCII spellings 「10^9/L」 and 「10*9/L」 were covered
+    and the one laboratories actually print was not.
+    """
+
+    @staticmethod
+    def _fields(rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood routine.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_printed_unit_is_read_off_its_own_cell(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC)", "6.69", "3.5-9.5", "×10⁹/L",
+        ))["wbc"]
+        self.assertEqual(cell["unit"], "×10⁹/L")
+
+    def test_the_printed_unit_is_read_off_a_flattened_row(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血小板计数(PLT) 210 125-350 ×10⁹/L",
+        ))["plt"]
+        self.assertEqual(cell["unit"], "×10⁹/L")
+
+    def test_every_spelling_of_the_same_unit_is_a_unit(self):
+        for unit in ("×10⁹/L", "10^9/L", "10*9/L", "10E9/L", "g/L", "μmol/L", "fL"):
+            with self.subTest(unit=unit):
+                self.assertTrue(fshd_report_service._UNIT_CELL.match(unit))
+
+    def test_a_bare_number_is_still_not_a_unit(self):
+        for cell in ("6.69", "125", "3.5-9.5"):
+            with self.subTest(cell=cell):
+                self.assertFalse(fshd_report_service._UNIT_CELL.match(cell))
+
+
+class OnePanelsFixIsEveryPanelsFixTest(unittest.TestCase):
+    """The shared reader, asserted as the thing that is shared.
+
+    Seven maps of analyte names, one reader. A panel that declares names
+    gets the column orders, the flag conventions, the unit forms and the
+    interval forms that every other panel has — which is the whole reason
+    the reader was unified rather than the eight defects patched where
+    each was measured.
+    """
+
+    LAYOUT = (
+        "示例市第一人民医院 检验报告单",
+        "{purpose}",
+        "项目", "结果", "提示", "参考区间", "单位",
+        "{name}", "{value}", "低", "{reference}", "{unit}",
+    )
+
+    def _cell(self, purpose, name, value, reference, unit, key, report):
+        rows = [
+            row.format(purpose=purpose, name=name, value=value, reference=reference, unit=unit)
+            for row in self.LAYOUT
+        ]
+        result = analyze_fshd_report("\n".join(rows), "other", report)
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        return fields.get(key)
+
+    def test_the_same_row_reads_the_same_way_on_every_panel(self):
+        for purpose, name, value, reference, unit, key, report in (
+            ("检验目的: 血常规", "血红蛋白量(HGB)", "98", "130-175", "g/L", "hgb", "blood.jpeg"),
+            ("检验目的: 甲状腺功能", "游离T4(FT4)", "8.10", "12.0-22.0", "pmol/L", "ft4", "thyroid.jpeg"),
+            ("检验目的: 凝血四项", "纤维蛋白原(FIB)", "1.20", "2.00-4.00", "g/L", "fibrinogen", "coag.jpeg"),
+            ("检验目的: 尿常规", "尿比重(SG)", "1.002", "1.003-1.030", "", "urine_specific_gravity", "urine.jpeg"),
+            ("检验目的: 生化全套", "肌酸激酶(CK)", "20", "50-310", "U/L", "ck", "bio.jpeg"),
+        ):
+            with self.subTest(key=key):
+                cell = self._cell(purpose, name, value, reference, unit, key, report)
+                self.assertIsNotNone(cell, key)
+                self.assertEqual(cell["field_value"], value)
+                self.assertEqual(cell["abnormal_flag"], "low")
+                self.assertEqual(cell["reference_range_raw"], reference)
+                if unit:
+                    self.assertEqual(cell["unit"], unit)
+
+    def test_every_panel_reaches_the_row_reader_through_one_entry_point(self):
+        lines = ["示例市第一人民医院 检验报告单", "肌酸激酶(CK) 693 50-310 U/L"]
+        vocabulary = {"ck": ["肌酸激酶", "ck"]}
+        reading = fshd_report_service._read_analyte_row(vocabulary, "ck", lines)
+        self.assertEqual(reading.value, "693")
+        self.assertEqual(reading.reference_raw, "50-310")
+        self.assertEqual(reading.unit, "U/L")
+
+
+class AThousandsSeparatorIsInsideTheNumberTest(unittest.TestCase):
+    """A CHINESE PRINTOUT GROUPS A LARGE READING AND EVERY READER STOPPED
+    AT THE FIRST GROUP.
+
+    「3,250」 is an ordinary way to print a creatine kinase, and the
+    number classes said 「digits and a decimal point」 — so the reading
+    was truncated to 3 while the row's own 偏高 was read separately and
+    correctly. What reached the patient's report screen was a value
+    BELOW its own interval's lower bound carrying a flag that says it is
+    high, on the marker this disease is monitored by.
+
+    THE SPACED SPELLING IS READ WHERE THE CELL BOUNDARY PROVES IT. A
+    space is what separates two columns on a flattened row — 「693
+    50-310」 is a reading and an interval — so 「1 180」 is read as one
+    number only on the cell-per-line layout, where the cell is the
+    number. See `_NUMBER_CELL_SOURCE`.
+    """
+
+    def _field(self, rows, key):
+        result = analyze_fshd_report("\n".join(rows), "other", "enzyme.jpeg")
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        return fields.get(key)
+
+    def test_a_grouped_reading_is_not_truncated_to_its_first_group(self):
+        cell = self._field((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK) 3,250 偏高 50-310 U/L",
+        ), "ck")
+        self.assertEqual(cell["field_value"], "3250")
+        self.assertEqual(cell["normalized_value"], 3250.0)
+
+    def test_the_flag_and_the_reading_no_longer_contradict_each_other(self):
+        cell = self._field((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK) 3,250 偏高 50-310 U/L",
+        ), "ck")
+        self.assertEqual(cell["abnormal_flag"], "high")
+        self.assertEqual(cell["unit"], "U/L")
+        self.assertGreater(cell["normalized_value"], cell["reference_high"])
+
+    def test_a_space_grouped_cell_is_one_number(self):
+        cell = self._field((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "项目", "结果", "提示", "参考区间", "单位",
+            "乳酸脱氢酶(LDH)", "1 180", "偏高", "120-250", "U/L",
+        ), "ldh")
+        self.assertEqual(cell["field_value"], "1180")
+        self.assertEqual(cell["normalized_value"], 1180.0)
+        self.assertEqual(cell["unit"], "U/L")
+
+    def test_the_printed_row_is_still_the_evidence(self):
+        """The reading is canonical; the snippet is what the page said."""
+        cell = self._field((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK) 3,250 偏高 50-310 U/L",
+        ), "ck")
+        self.assertIn("3,250", cell["source_text"])
+
+    def test_a_reading_and_an_interval_are_still_two_numbers(self):
+        """The space form may not merge a reading with the interval it is
+        printed next to — the failure this file has fixed twice."""
+        cell = self._field((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "乳酸脱氢酶(LDH) 319 120-250 U/L",
+        ), "ldh")
+        self.assertEqual(cell["field_value"], "319")
+        self.assertEqual(cell["reference_range_raw"], "120-250")
+
+    def test_the_generic_table_reader_publishes_one_number_too(self):
+        rows = extract_lab_table_rows([
+            "示例市第一人民医院 检验报告单",
+            "项目", "结果", "单位",
+            "某个没人写过规则的指标", "12,500", "U/L",
+        ])
+        self.assertEqual(rows[0]["value"], "12500")
+
+
+class ThePercentOfPredictedIsOnItsOwnRowTest(unittest.TestCase):
+    """FVC 占预计值 AND FEV1 占预计值 WERE BOTH THE FEV1/FVC RATIO.
+
+    `\b` fires on both sides of the solidus in 「FEV1/FVC」, so 「FVC」
+    matched the second half of the ratio's name and 「FEV1」 the first.
+    And the pattern forbade digits between a name and its capture, so on
+    the ordinary layout — 实测值 before 占预计值 on one line — it could
+    not see past the reading in litres to the percentage beside it, and
+    went looking down the page instead. Both failures land on the same
+    row: the ratio's.
+
+    Pulmonary function is the surveillance this disease is monitored by,
+    and 75.4% of predicted FVC is a different clinical picture from
+    70.6%.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 肺通气功能检查报告",
+        "项目 单位 实测值 占预计值",
+        "FVC 用力肺活量 L 2.72 70.6%",
+        "FEV1 一秒量 L 2.05 64.1%",
+        "FEV1/FVC 一秒率 % 75.4%",
+        "结论: 中度限制性通气功能障碍。",
+    )
+
+    def _panel(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "pft.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "pulmonary_function")
+        return result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+
+    def test_each_metric_reads_the_percentage_off_its_own_row(self):
+        panel = self._panel()
+        self.assertEqual(panel["fvc_pred_pct"], 70.6)
+        self.assertEqual(panel["fev1_pred_pct"], 64.1)
+
+    def test_the_ratio_is_still_the_ratio(self):
+        self.assertEqual(self._panel()["fev1_fvc"], 75.4)
+
+    def test_the_measured_volumes_are_unchanged(self):
+        panel = self._panel()
+        self.assertEqual(panel["fvc"], 2.72)
+        self.assertEqual(panel["fev1"], 2.05)
+
+    def test_no_field_is_published_twice_with_two_answers(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "pft.jpeg")
+        readings = {}
+        for item in result["fshd"]["structured_fields"]:
+            readings.setdefault(item["field_name"], set()).add(item["field_value"])
+        for name, values in readings.items():
+            with self.subTest(field=name):
+                self.assertEqual(len(values), 1, name)
+
+    def test_the_three_column_layout_still_reads_the_measured_value(self):
+        """预计值 / 实测值 / 占预计值 — the layout the table patterns read."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 通气弥散残气检查报告",
+            "FVC [L] 5.55 3.45 62.1",
+            "FEV1 [L] 4.65 3.03 65.0",
+            "FEV1/FVC [%] 83.20 87.72 105.4",
+        )), "other", "pft.jpeg")
+        panel = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+        self.assertEqual(panel["fvc"], 3.45)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+
+    def test_the_diffusion_row_does_not_answer_for_the_ratio_row(self):
+        """「DLCO/VA」 is 「DLCO」 to a word boundary, the same way."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺功能检查报告",
+            "DLCO 弥散量 mmol/min/kPa 6.20 68.5%",
+            "DLCO/VA 比弥散量 mmol/min/kPa/L 1.45 92.1%",
+        )), "other", "pft.jpeg")
+        panel = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+        self.assertEqual(panel["dlco_pred_pct"], 68.5)
+
+
+class AnAnalytesOwnAbbreviationIsNotItsResultTest(unittest.TestCase):
+    """「颜色(COL)」 WAS PUBLISHED AS A URINE COLOUR OF 「COL)」.
+
+    The free-text rows capture the first run of non-space after the
+    name, and the separator gap admitted brackets while refusing Latin.
+    So on the commonest 尿常规 printing of all, the gap took the opening
+    bracket and the capture took what was inside it — and the reading
+    the laboratory printed was not merely unread but REPLACED, on the
+    two rows of this panel a patient can check by eye.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_colour_and_the_clarity_are_the_printed_readings(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色(COL) 淡黄色",
+            "透明度(CLA) 清亮",
+        )
+        self.assertEqual(panel["urine_color"], "淡黄色")
+        self.assertEqual(panel["urine_clarity"], "清亮")
+
+    def test_a_name_cell_with_no_abbreviation_still_reads(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色 深黄色",
+            "透明度: 微浊",
+        )
+        self.assertEqual(panel["urine_color"], "深黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_a_bracketed_reading_is_not_mistaken_for_an_abbreviation(self):
+        """「(-)」 is a whole reading; the hop over 「(URO)」 may not eat it."""
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "尿胆原(URO) 阴性(-)",
+        )
+        self.assertEqual(panel["urine_urobilinogen"], "阴性(-)")
+
+    def test_the_stool_panel_prints_its_colour_the_same_way(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 大便常规",
+            "颜色(COL) 黄褐色",
+            "性状(CHA) 软便",
+            "隐血试验(OBT) 阴性(-)",
+        )), "other", "stool.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["stool_color"], "黄褐色")
+        self.assertEqual(panel["stool_consistency"], "软便")
+
+
+class AUnitSpelledWithAChineseCounterIsAUnitTest(unittest.TestCase):
+    """「个/uL」 IS THE 单位 CELL OF EVERY URINE SEDIMENT ROW.
+
+    The unit classes admitted no CJK at all, so that cell was not a unit
+    to any reader — and being CJK with no digits it was read as THE NEXT
+    ANALYTE instead, which ended the row on its own unit column. The
+    count shipped as a bare number, and where the laboratory prints
+    单位 before 参考区间 the interval was lost with it: a sediment count
+    with no unit and nothing to be abnormal against.
+    """
+
+    def _fields(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_counter_unit_is_published(self):
+        fields = self._fields(
+            "示例市第一人民医院 尿液分析报告单",
+            "项目", "结果", "提示", "参考区间", "单位",
+            "白细胞(WBC)", "25", "高", "0-28", "个/uL",
+            "红细胞(RBC)", "8", "0-16", "个/HP",
+        )
+        self.assertEqual(fields["urine_wbc"]["unit"], "个/uL")
+        self.assertEqual(fields["urine_rbc"]["unit"], "个/HP")
+
+    def test_the_row_does_not_end_on_its_own_unit_column(self):
+        """单位 before 参考区间 — the interval sits past the unit cell."""
+        fields = self._fields(
+            "示例市第一人民医院 尿液分析报告单",
+            "项目", "结果", "单位", "参考区间",
+            "白细胞(WBC)", "25", "个/uL", "0-28",
+        )
+        self.assertEqual(fields["urine_wbc"]["unit"], "个/uL")
+        self.assertEqual(fields["urine_wbc"]["reference_range_raw"], "0-28")
+
+    def test_a_bare_counter_is_a_unit(self):
+        rows = extract_lab_table_rows([
+            "XX医院 FSHD1 D4Z4 基因检测报告",
+            "项目 参考区间 结果 单位",
+            "D4Z4重复单元数", ">10", "3", "个",
+        ])
+        self.assertEqual(rows[0]["value"], "3")
+        self.assertEqual(rows[0]["unit"], "个")
+
+    def test_the_coagulation_panel_prints_its_unit_the_same_way(self):
+        """「秒」 is the 单位 cell of a prothrombin time, and it ended that
+        row for the same reason 「个/uL」 ended the sediment row."""
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 凝血四项",
+            "项目", "结果", "单位", "参考区间",
+            "凝血酶原时间(PT)", "13.7", "秒", "11.0-14.5",
+        )
+        self.assertEqual(fields["pt"]["unit"], "秒")
+        self.assertEqual(fields["pt"]["reference_range_raw"], "11.0-14.5")
+
+    def test_a_chinese_cell_that_is_not_a_unit_is_still_not_one(self):
+        for cell in ("阴性", "偏高", "未见异常", "白细胞计数"):
+            with self.subTest(cell=cell):
+                self.assertFalse(fshd_report_service._is_unit_cell(cell))
+
+
+class AnUnlistedFlagCellIsNotTheUnitTest(unittest.TestCase):
+    """THE UNIT SLOT WAS FILLED BY WHATEVER THE 提示 COLUMN PRINTED.
+
+    `is_unit_only` asked 「is this Latin-shaped and not one of the four
+    flag letters we know」, and a 提示 column prints more than four:
+    「A」, 「N」, 「HI」, 「LO」, a laboratory's own house spelling. Each is
+    Latin, short and symbol-free, so each was accepted as the row's
+    unit — and the damage is not the wrong unit, it is that the real
+    单位 column one cell further right is then never reached.
+
+    「A」 is deliberately absent from `_LETTER_FLAG_CELLS` — a bare A
+    opens 「ALT」 as often as it means abnormal — which is exactly why
+    the answer here is not one more entry on a list of refusals. The
+    unit reader now answers what a unit IS: a solidus, a symbol, a word
+    from the unit vocabulary, or a Chinese counter. See `_is_unit_cell`.
+    """
+
+    ROWS = (
+        "示例市第一人民医院检验报告单",
+        "检验目的: 生化全套",
+        "项目", "结果", "提示", "单位", "参考区间",
+        "谷丙转氨酶(ALT)", "88", "A", "U/L", "9-50",
+        "谷草转氨酶(AST)", "23", "N", "U/L", "15-40",
+    )
+
+    def _fields(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "bio.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_laboratorys_own_unit_is_reached(self):
+        fields = self._fields()
+        self.assertEqual(fields["alt"]["unit"], "U/L")
+        self.assertEqual(fields["ast"]["unit"], "U/L")
+
+    def test_the_row_still_reaches_its_reference_interval(self):
+        fields = self._fields()
+        self.assertEqual(fields["alt"]["reference_range_raw"], "9-50")
+        self.assertEqual(fields["alt"]["field_value"], "88")
+
+    def test_a_spelling_nobody_listed_is_refused_the_same_way(self):
+        for cell in ("A", "N", "HI", "LO", "AB", "PANIC", "CRIT"):
+            with self.subTest(cell=cell):
+                self.assertFalse(fshd_report_service._is_unit_cell(cell))
+
+    def test_a_real_unit_is_still_a_unit(self):
+        for cell in ("U/L", "g/L", "10^9/L", "×10⁹/L", "%", "mmol/L", "fL", "pg", "s", "ratio"):
+            with self.subTest(cell=cell):
+                self.assertTrue(fshd_report_service._is_unit_cell(cell))
+
+    def test_an_unrecognised_cell_does_not_end_the_row_either(self):
+        """A 提示 cell that stopped being unit-SHAPED would be read as the
+        next analyte, which costs the unit and the interval both."""
+        self.assertFalse(fshd_report_service._looks_like_analyte("A"))
+        self.assertFalse(fshd_report_service._looks_like_analyte("HI"))
+
+
+class TwoPanelsOnOnePageAreTwoPanelsTest(unittest.TestCase):
+    """AN 入院常规 PRINTOUT IS A 血常规 SECTION AND A 尿常规 SECTION.
+
+    The page prints haemoglobin and platelets, so the specimen rule that
+    rescues a pure urine report cannot fire, and it classifies
+    `blood_routine`. Two things followed. The urinalysis extractor never
+    ran, so the colour, the protein and the sediment counts were absent
+    from a payload that named none of them missing. AND THE BLOOD
+    EXTRACTOR READ DOWNWARDS: every row reader scans the whole document
+    for the first line naming its analyte, so a blood analyte the 血常规
+    section did not print was found in the 尿常规 section instead — a
+    urine red cell count of 8 个/uL published under `rbc`, the key the
+    app's 血常规 card reads.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 入院常规检验报告单",
+        "血常规",
+        "项目 结果 提示 参考区间 单位",
+        "白细胞计数(WBC) 6.20 3.50-9.50 10^9/L",
+        "血红蛋白量(HGB) 128 115-150 g/L",
+        "血小板计数(PLT) 226 125-350 10^9/L",
+        "尿常规",
+        "项目 结果 提示 参考区间 单位",
+        "颜色(COL) 淡黄色",
+        "蛋白质(PRO) 阴性(-)",
+        "白细胞(WBC) 25 高 0-28 个/uL",
+        "红细胞(RBC) 8 0-16 个/uL",
+    )
+
+    def _panel(self, rows=None):
+        result = analyze_fshd_report("\n".join(rows or self.ROWS), "other", "admission.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_urine_section_is_read(self):
+        panel = self._panel()
+        self.assertEqual(panel["urine_wbc"], 25.0)
+        self.assertEqual(panel["urine_rbc"], 8.0)
+        self.assertEqual(panel["urine_color"], "淡黄色")
+        self.assertEqual(panel["urine_protein"], "阴性")
+
+    def test_the_blood_section_is_read_from_the_blood_section(self):
+        panel = self._panel()
+        self.assertEqual(panel["wbc"], 6.20)
+        self.assertEqual(panel["hgb"], 128.0)
+        self.assertEqual(panel["plt"], 226.0)
+
+    def test_no_blood_count_is_minted_from_the_urine_section(self):
+        """The blood section prints no 红细胞计数 row. Neither does the
+        payload."""
+        self.assertNotIn("rbc", self._panel())
+
+    def test_the_sections_are_read_in_whichever_order_they_are_printed(self):
+        reordered = (
+            "示例市第一人民医院 入院常规检验报告单",
+            "尿常规",
+            "白细胞(WBC) 25 高 0-28 个/uL",
+            "红细胞(RBC) 8 0-16 个/uL",
+            "血常规",
+            "白细胞计数(WBC) 6.20 3.50-9.50 10^9/L",
+            "血红蛋白量(HGB) 128 115-150 g/L",
+        )
+        panel = self._panel(reordered)
+        self.assertEqual(panel["wbc"], 6.20)
+        self.assertEqual(panel["urine_wbc"], 25.0)
+
+    def test_the_payload_says_the_page_carried_two_sections(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "admission.jpeg")
+        self.assertTrue(
+            any(
+                reason.startswith("sections:")
+                for reason in result["fshd"]["classification_reasons"]
+            )
+        )
+
+    def test_a_single_panel_report_is_left_alone(self):
+        """No heading pair, no split — a requisition naming both panels
+        cannot say which rows belong to which."""
+        self.assertIsNone(
+            fshd_report_service._split_blood_and_urine_sections([
+                "示例市第一人民医院 检验报告单",
+                "检验目的: 血常规+尿常规",
+                "白细胞计数(WBC) 6.20 3.5-9.5 10^9/L",
+            ])
+        )
+        self.assertIsNone(
+            fshd_report_service._split_blood_and_urine_sections([
+                "示例市第一人民医院 检验报告单",
+                "检验目的: 血常规",
+                "白细胞计数(WBC) 6.20 3.5-9.5 10^9/L",
+                "尿素(UREA) 5.2 2.9-8.2 mmol/L",
+            ])
+        )
+
+    def test_a_pure_urine_report_is_still_a_urinalysis(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 尿液分析报告单",
+            "白细胞(WBC) 25 高 0-28 个/uL",
+            "红细胞(RBC) 15 0-16 个/uL",
+        )), "other", "urine.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "urinalysis")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_wbc"], 25.0)
+        self.assertNotIn("wbc", panel)
+
+
+
+class TheColumnOrderIsDeterminedOnceTest(unittest.TestCase):
+    """The page states its own column order, and it is read ONCE.
+
+    Every reader in this module used to answer 「which cell is the
+    result」 for itself, which is why the same defect has now been fixed
+    on five of them. Where the columns differ in SHAPE nothing is needed
+    — a two-sided interval is not a reading whatever column it sits in.
+    Where they do not, this is the one place the answer comes from.
+    """
+
+    def test_a_flattened_header_row_is_read(self):
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例市第一人民医院检验报告单",
+                "项目 参考区间 结果 单位",
+                "蛋白质(PRO) 阴性 阳性",
+            ]).roles,
+            ("name", "reference", "result", "unit"),
+        )
+
+    def test_a_cell_per_line_header_is_the_same_header(self):
+        """PaddleOCR emits one cell per line; the header arrives as a run."""
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例市第一人民医院检验报告单",
+                "项目",
+                "结果",
+                "参考区间",
+                "单位",
+                "蛋白质(PRO)",
+                "阴性",
+            ]).roles,
+            ("name", "result", "reference", "unit"),
+        )
+
+    def test_a_section_heading_is_not_a_column_order(self):
+        """「检测结果:」 heads a genetic report's DATA, not a column."""
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "示例基因检测中心 检测报告",
+                "检测结果:",
+                "D4Z4 重复单元数 3",
+            ]).roles,
+            (),
+        )
+
+    def test_a_line_that_merely_contains_a_heading_word_is_not_a_header(self):
+        self.assertEqual(
+            fshd_report_service._page_columns([
+                "检测结果: D4Z4 重复单元数 18 个",
+                "参考区间见附注",
+            ]).roles,
+            (),
+        )
+
+    def test_an_undetermined_order_answers_none_rather_than_a_default(self):
+        """None is not False. A reader given None must publish nothing."""
+        self.assertIsNone(
+            fshd_report_service._page_columns(["白细胞计数(WBC) 6.69"]).result_precedes(
+                "reference"
+            )
+        )
+
+
+class TheReferenceIsNotThePatientsVerdictTest(unittest.TestCase):
+    """ON 项目 / 参考区间 / 结果, EVERY QUALITATIVE ROW PUBLISHED 阴性.
+
+    The qualitative panels were the last ones still scanning for 「the
+    analyte's name, then the first 阴性/阳性」. That is an assumption
+    about the column order written as a gap class, and on the order this
+    module's own `_BOUND_CELL` note calls ordinary on Chinese laboratory
+    reports the first verdict after the name is the laboratory's
+    REFERENCE. A 尿常规 whose protein is 阳性(+) told the patient 阴性 —
+    and so did its glucose, its blood and every other qualitative row,
+    and so did a hepatitis or HIV screen printed the same way.
+    """
+
+    def test_the_header_says_which_column_is_the_patients(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 阳性(+)",
+            "葡萄糖(GLU) 阴性 阳性",
+            "潜血(OB) 阴性 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(+)")
+        self.assertEqual(panel["urine_glucose"], "阳性")
+        self.assertEqual(panel["urine_occult_blood"], "阴性")
+
+    def test_the_cell_per_line_layout_reads_the_same_column(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目",
+            "参考区间",
+            "结果",
+            "蛋白质(PRO)",
+            "阴性",
+            "阳性(+)",
+            "酮体(KET)",
+            "阴性",
+            "阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(+)")
+        self.assertEqual(panel["urine_ketone"], "阴性")
+
+    def test_a_reference_column_never_prints_阳性(self):
+        """With no header, the NORMAL cell is the reference.
+
+        A laboratory does not print 阳性 as the value a healthy result
+        should take, so a row showing exactly one positive among its
+        verdicts has said which cell is the patient's. That reads the
+        meaning the reference column has; it is not a preference for
+        positives.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 阳性(++)",
+            "潜血(OB) 阴性 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性(++)")
+
+    def test_two_verdicts_that_agree_are_still_one_verdict(self):
+        """「阴性(-) 阴性」 is a negative screen read off either cell.
+
+        Withholding it would be refusing a distinction with no
+        consequence, so the reading stands exactly as it always did.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 乙肝两对半+HIV+梅毒",
+            "抗梅毒螺旋体抗体(TPPA)",
+            "阴性(-)",
+            "阴性",
+            "凝集法",
+        )), "other", "infection.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["tppa"], "阴性(-)")
+
+    def test_a_row_that_cannot_be_read_is_published_as_unread(self):
+        """Two different verdicts, neither positive, and no header.
+
+        Nothing on the page says which column is which. An unread cell
+        is visibly missing and a cell read out of the wrong column is
+        not, so the field is absent rather than guessed.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 ±",
+            "潜血(OB) 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("urine_protein", panel)
+        self.assertEqual(panel["urine_occult_blood"], "阴性")
+        self.assertIn(
+            "urine_protein", result["quality_control"]["missing_critical_fields"]
+        )
+
+    def test_one_verdict_on_the_row_is_unchanged(self):
+        """The ordinary printing has nothing to choose between."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿沉渣定量+尿常规",
+            "颜色 黄色",
+            "透明度 澄清",
+            "蛋白质(PRO) 阴性",
+            "潜血(OB) 阴性",
+        )), "other", "urinalysis.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阴性")
+        self.assertEqual(panel["urine_color"], "黄色")
+        self.assertEqual(panel["urine_clarity"], "澄清")
+
+
+class TheOrdinaryChineseSpellingIsReadTest(unittest.TestCase):
+    """尿蛋白 AND 尿糖 YIELDED NOTHING, SILENTLY.
+
+    The readers matched 蛋白质|PRO and 葡萄糖|GLU — what a laboratory
+    prints when it prints the Latin abbreviation beside the name. A
+    尿常规 printing the ordinary Chinese spellings with no Latin
+    anywhere on the row produced neither field, on two of the rows a
+    尿常规 is ordered for.
+    """
+
+    ROWS = (
+        "示例市第一人民医院检验报告单",
+        "检验目的: 尿常规",
+        "尿蛋白 阳性(+)",
+        "尿糖 阴性",
+        "潜血(OB) 阴性",
+    )
+
+    def test_both_rows_are_read(self):
+        panel = analyze_fshd_report("\n".join(self.ROWS), "other", "urine.jpeg")[
+            "fshd"
+        ]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阳性")
+        self.assertEqual(panel["urine_glucose"], "阴性")
+
+    def test_the_latin_spelling_still_reads(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性",
+            "葡萄糖(GLU) 阴性",
+        )), "other", "urine.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_protein"], "阴性")
+        self.assertEqual(panel["urine_glucose"], "阴性")
+
+
+class ThePredictedValueIsNotTheMeasurementTest(unittest.TestCase):
+    """THE PFT TABLE PATTERNS TOOK GROUP 2, ALWAYS.
+
+    They were written 「name, then three figures」 with the second
+    hard-coded as the measurement — one printed order, 预计值 / 实测值 /
+    占预计值, asserted as if it were the only one. On the equally
+    ordinary 实测值 / 预计值 / 占预计值 the second figure is the
+    PREDICTED value, so a patient's FVC was published as the number
+    describing the lungs that patient does not have.
+
+    A predicted value is by construction a normal-looking one, and
+    pulmonary function is the surveillance this disease is monitored by.
+    """
+
+    def test_the_measured_column_first(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "项目 实测值 预计值 占预计值",
+            "FVC 2.31 3.72 62.1",
+            "FEV1 1.98 3.10 63.9",
+            "FEV1/FVC 85.7 83.2 103.0",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 2.31)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["fev1"], 1.98)
+        self.assertEqual(panel["fev1_pred_pct"], 63.9)
+        self.assertEqual(panel["fev1_fvc"], 85.7)
+
+    def test_the_measured_column_first_with_no_header_at_all(self):
+        """实测值 = 预计值 × 占预计值 ÷ 100 is an equation the row answers.
+
+        Exactly one of three figures is the product of the other two
+        over a hundred, whichever position the printer put it in — so a
+        headerless row still DETERMINES its measurement rather than
+        having one assumed for it.
+        """
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "FVC [L] 2.31 3.72 62.1",
+            "TLC-SB [L] 4.10 6.20 66.1",
+            "DLCO-SB [mmol/min/kPa] 8.20 11.90 68.9",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 2.31)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["tlc"], 4.10)
+        self.assertEqual(panel["dlco"], 8.20)
+
+    def test_the_predicted_column_first_is_read_the_same_way(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 通气弥散残气检查报告",
+            "FVC [L] 5.55 3.45 62.1",
+            "TLC-SB [L] 7.54 5.54 73.4",
+            "DLCO-SB [mmol/min/kPa] 12.65 10.27 81.2",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 3.45)
+        self.assertEqual(panel["fvc_pred_pct"], 62.1)
+        self.assertEqual(panel["tlc"], 5.54)
+        self.assertEqual(panel["dlco"], 10.27)
+
+    def test_the_predicted_value_is_not_published_as_a_second_fvc(self):
+        """It was, on the layout this reader already handled.
+
+        The name patterns ran first and took the FIRST figure on the row
+        — the predicted value — and the table patterns then published
+        the measurement under the same key. `structured_fields` carried
+        an FVC of 5.55 and an FVC of 3.45, and whichever a consumer read
+        first was the one it showed.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 通气弥散残气检查报告",
+            "FVC [L] 5.55 3.45 62.1",
+            "FEV1 [L] 4.65 3.03 65.0",
+        )), "other", "pft.jpeg")
+        readings = {}
+        for item in result["fshd"]["structured_fields"]:
+            readings.setdefault(item["field_name"], set()).add(item["field_value"])
+        self.assertEqual(readings["fvc"], {"3.45"})
+        self.assertEqual(readings["fev1"], {"3.03"})
+
+    def test_two_bare_figures_and_no_header_publish_nothing(self):
+        """占预计值 absent, no percent sign, no heading: undeterminable.
+
+        The row is there and this platform cannot say which figure is
+        the patient's. Publishing the first would be reinstating the
+        assumption; publishing nothing is what the missing-field block
+        is for.
+        """
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "FVC [L] 5.55 3.45",
+            "FEV1 [L] 4.65 3.03",
+        )), "other", "pft.jpeg")
+        panel = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+        self.assertIsNone(panel.get("fvc"))
+        self.assertIn("fvc", result["quality_control"]["missing_critical_fields"])
+
+    def test_the_header_reads_the_row_the_identity_cannot(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 肺通气功能检查报告",
+            "项目 预计值 实测值",
+            "FVC 5.55 3.45",
+            "FEV1 4.65 3.03",
+        )), "other", "pft.jpeg")["fshd"]["normalized_summary"][
+            "cardio_respiratory_panel"
+        ]
+        self.assertEqual(panel["fvc"], 3.45)
+        self.assertEqual(panel["fev1"], 3.03)
+
+    def test_a_metric_quoted_in_a_sentence_still_reads(self):
+        """The name patterns remain the fallback for prose."""
+        panel = analyze_fshd_report("\n".join((
+            "示例医院 门诊病历",
+            "主诉: 活动后气促2年。",
+            "现病史: 外院查肺功能 FVC 62%,FEV1 下降。",
+        )), "other", "note.jpeg")["fshd"]["normalized_summary"].get(
+            "cardio_respiratory_panel", {}
+        )
+        self.assertEqual(panel["fvc_pred_pct"], 62.0)
+
+
+class ARowThatContradictsItselfIsNotPublishedTest(unittest.TestCase):
+    """THE FLAG AND THE INTERVAL ARE BOTH ON THE ROW AND NOTHING COMPARED THEM.
+
+    A reading BELOW its own printed reference floor carrying the
+    laboratory's own HIGH marker cannot be a correct reading of that
+    row: one of the two cells came out of the wrong column. It shipped
+    anyway, at the confidence of a row that was read correctly.
+    """
+
+    def test_a_high_flag_below_the_floor_withholds_the_reading(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "谷丙转氨酶(ALT) 5 ↑ 9-50 U/L",
+            "谷草转氨酶(AST) 23 15-40 U/L",
+        )), "other", "biochem.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("alt", panel)
+        self.assertEqual(panel["ast"], 23.0)
+        self.assertNotIn(
+            "alt", {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        )
+        self.assertIn("alt", result["quality_control"]["missing_critical_fields"])
+
+    def test_a_low_flag_above_the_ceiling_withholds_it_too(self):
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 900 ↓ 50-310 U/L",
+        )), "other", "biochem.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("ck", panel)
+
+    def test_an_honest_abnormal_reading_is_untouched(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693 ↑ 50-310 U/L",
+        )), "other", "biochem.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ck"], 693.0)
+        field = next(
+            item
+            for item in result["fshd"]["structured_fields"]
+            if item["field_name"] == "ck"
+        )
+        self.assertEqual(field["abnormal_flag"], "high")
+
+    def test_a_flag_against_limits_the_report_did_not_print_is_not_a_contradiction(self):
+        """Laboratories flag against age- and sex-specific limits.
+
+        A value INSIDE its printed interval carrying a flag is an
+        ordinary sight; refusing it would withhold readings that are
+        correct. Only strictly outside, in the wrong direction, is
+        arithmetic.
+        """
+        panel = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 200 ↑ 50-310 U/L",
+        )), "other", "biochem.jpeg")["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ck"], 200.0)
+
+
+class AProvidedFlagCellIsNotTheRowsUnitTest(unittest.TestCase):
+    """THE LAST READER STILL ASKING 「is this cell NOT a flag letter」.
+
+    `_is_unit_cell` was written because the exclusion list was never
+    going to be finished — a 提示 column prints 「HI」, 「LO」, 「N」,
+    「AB」 and a laboratory's own house spelling. The scan that glues a
+    unit to the number it just read never asked it, so on a flattened
+    row the 提示 cell became the unit and the laboratory's real 单位
+    column, one cell further right, was never reached.
+    """
+
+    def test_a_two_letter_flag_is_not_a_unit(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "谷丙转氨酶(ALT) 88 HI 9-50 U/L",
+            "谷草转氨酶(AST) 23 N 15-40 U/L",
+        )), "other", "biochem.jpeg")
+        units = {
+            item["field_name"]: item["unit"]
+            for item in result["fshd"]["structured_fields"]
+        }
+        self.assertEqual(units["alt"], "U/L")
+        self.assertEqual(units["ast"], "U/L")
+
+    def test_a_real_unit_glued_to_the_reading_still_reads(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693U/L 50-310",
+            "凝血酶原时间(PT) 13.7s 11.0-14.5",
+        )), "other", "biochem.jpeg")
+        units = {
+            item["field_name"]: item["unit"]
+            for item in result["fshd"]["structured_fields"]
+        }
+        self.assertEqual(units["ck"], "U/L")
+
+
+
+class TheUnitColumnIsNotTheReadingTest(unittest.TestCase):
+    """「10^9/L」 CONTAINS A 10, AND THE ROW SCAN TOOK IT.
+
+    The candidate filter refused a number that is one end of a printed
+    interval and nothing else — so on the column order 项目 / 单位 /
+    结果, where the 单位 cell sits between the analyte's name and its
+    reading, the first number after the name is INSIDE THE UNIT. A white
+    cell count of 10 is a mild leucocytosis a clinician acts on, and the
+    laboratory's own 6.69 was nowhere in the payload.
+
+    The unit column being on the wrong side cost the unit as well: both
+    unit readers only ever looked to the RIGHT of the reading.
+    """
+
+    def _fields(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood.jpeg")
+        return result["fshd"], {
+            item["field_name"]: item for item in result["fshd"]["structured_fields"]
+        }
+
+    def test_the_flattened_row_reads_past_its_own_unit(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            "白细胞计数(WBC) 10^9/L 6.69 3.5-9.5",
+            "血红蛋白量(HGB) g/L 155 130-175",
+        )
+        panel = fshd["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["hgb"], 155.0)
+        self.assertEqual(fields["wbc"]["unit"], "10^9/L")
+        self.assertEqual(fields["wbc"]["reference_range_raw"], "3.5-9.5")
+
+    def test_the_cell_per_line_layout_loses_neither(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目",
+            "单位",
+            "结果",
+            "参考区间",
+            "白细胞计数(WBC)",
+            "10^9/L",
+            "6.69",
+            "3.5-9.5",
+        )
+        self.assertEqual(fshd["normalized_summary"]["lab_panel"]["wbc"], 6.69)
+        self.assertEqual(fields["wbc"]["unit"], "10^9/L")
+
+    def test_the_printed_haematology_unit_behaves_the_same_way(self):
+        fshd, fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            "血小板计数(PLT) ×10⁹/L 249 125-350",
+        )
+        self.assertEqual(fshd["normalized_summary"]["lab_panel"]["plt"], 249.0)
+        self.assertEqual(fields["plt"]["unit"], "×10⁹/L")
+
+    def test_a_reading_glued_to_its_own_unit_is_still_a_reading(self):
+        """「693U/L」 is unit-shaped too, and the split is what tells them apart."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 生化全套检查",
+            "肌酸激酶(CK) 693U/L 50-310",
+        )), "other", "biochem.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["ck"]["field_value"], "693")
+        self.assertEqual(fields["ck"]["unit"], "U/L")
+
+    def test_a_pressure_unit_spelled_with_a_digit_is_not_a_reading_either(self):
+        rows = extract_lab_table_rows([
+            "最大吸气压",
+            "cmH2O",
+            "58",
+            "≥60",
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["value"], "58")
+        self.assertEqual(rows[0]["unit"], "cmH2O")
+
+
+class TheFreeTextRowIsNotItsOwnReferenceTest(unittest.TestCase):
+    """THE 参考区间-AS-结果 FIX LANDED ONLY FOR 阴性/阳性.
+
+    `_read_qualitative_row` recognises a verdict cell through a closed
+    vocabulary, and the free-text rows of the same two panels — 尿颜色,
+    尿透明度, 粪便颜色, 粪便性状 — say none of those words. So on the
+    column order the round before this one existed to fix, they went on
+    publishing the laboratory's reference as the patient's result: a
+    stool printed 「颜色 黄褐色 黑色」 reported a melaena as an ordinary
+    stool, on the row a patient checks by eye.
+    """
+
+    def _panel(self, rows, name="urine.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_header_says_which_colour_is_the_patients(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "颜色(COL) 淡黄色 深黄色",
+            "透明度(CLA) 清亮 微浊",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_the_ordinary_order_is_unchanged(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 结果 参考区间",
+            "颜色(COL) 深黄色 淡黄色",
+            "透明度(CLA) 微浊 清亮",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_the_cell_per_line_layout_reads_the_same_column(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目",
+            "参考区间",
+            "结果",
+            "颜色",
+            "淡黄色",
+            "深黄色",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+
+    def test_the_stool_panel_reads_the_same_way(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 大便常规",
+            "项目 参考区间 结果",
+            "颜色(COL) 黄褐色 黑色",
+            "性状(CHA) 软便 稀便",
+        ], "stool.jpeg")
+        self.assertEqual(panel["stool_color"], "黑色")
+        self.assertEqual(panel["stool_consistency"], "稀便")
+
+    def test_two_readings_and_no_header_publish_nothing(self):
+        """A colour and a colour are the same shape; nothing else can say which."""
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色(COL) 淡黄色 深黄色",
+        ])
+        self.assertNotIn("urine_color", panel)
+
+    def test_one_reading_on_the_row_is_unchanged(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "颜色(COL) 淡黄色",
+            "透明度: 微浊",
+        ])
+        self.assertEqual(panel["urine_color"], "淡黄色")
+        self.assertEqual(panel["urine_clarity"], "微浊")
+
+    def test_a_unit_or_a_flag_on_the_row_is_not_a_colour(self):
+        panel = self._panel([
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果 提示",
+            "颜色(COL) 淡黄色 深黄色 异常",
+        ])
+        self.assertEqual(panel["urine_color"], "深黄色")
+
+
+class AnIntervalPrintedWithOrdinaryPunctuationIsStillAnIntervalTest(unittest.TestCase):
+    """A CHINESE IME DOES NOT TYPE AN ASCII HYPHEN.
+
+    The interval and bound readers listed the ASCII forms and two of the
+    CJK dashes. 「50－310」 (full-width hyphen-minus), 「120–250」 (en
+    dash) and 「＜25」 (full-width less-than) each lost the row its
+    reference ENTIRELY — and the interval is what the abnormal
+    comparison now runs on, so losing it silently removes the mark from
+    a reading that is above its own ceiling.
+    """
+
+    def _fields(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "enzyme.jpeg")
+        return {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+
+    def test_the_full_width_hyphen_is_an_interval(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK) 693 ↑ 50－310 U/L",
+        )
+        self.assertEqual(fields["ck"]["reference_low"], 50.0)
+        self.assertEqual(fields["ck"]["reference_high"], 310.0)
+
+    def test_the_en_dash_is_an_interval(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "乳酸脱氢酶(LDH) 319 ↑ 120–250 U/L",
+        )
+        self.assertEqual(fields["ldh"]["reference_low"], 120.0)
+        self.assertEqual(fields["ldh"]["reference_high"], 250.0)
+
+    def test_the_full_width_comparator_is_a_ceiling_and_not_a_floor(self):
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌红蛋白(MB) 15 ＜25 ng/mL",
+        )
+        self.assertEqual(fields["mb"]["field_value"], "15")
+        self.assertEqual(fields["mb"]["reference_high"], 25.0)
+        self.assertIsNone(fields["mb"].get("reference_low"))
+
+    def test_the_interval_bound_is_still_not_read_as_the_reading(self):
+        """The refusal runs off the same class, so it moves with it."""
+        fields = self._fields(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "# 14 肌酸激酶(CK) 人 50－310 U/L 速率法",
+        )
+        self.assertNotIn("ck", fields)
+
+    def test_the_cell_reader_reads_the_same_punctuation(self):
+        rows = extract_lab_table_rows([
+            "肌酸激酶(CK)",
+            "693",
+            "50－310",
+            "U/L",
+        ])
+        self.assertEqual(rows[0]["value"], "693")
+        self.assertEqual(rows[0]["reference"], "50－310")
+
+
+class EveryMuscleTheSentenceNamesIsReadTest(unittest.TestCase):
+    """THE PATTERN OF WHICH MUSCLES ARE INVOLVED IS THE FINDING.
+
+    The reader stopped at the first muscle in the map and skipped every
+    sentence naming none — and a Chinese enumeration comma is not a
+    sentence break, so 「右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润」
+    published one muscle out of three. Worse, a thigh report naming the
+    quadriceps heads individually — which is how a 双大腿MRI is written —
+    matched nothing at all and produced no field, no map entry and no
+    trace that the page had said anything.
+    """
+
+    def _summary(self, *body):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+        ) + body)
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        return result["fshd"]
+
+    def test_every_muscle_in_one_sentence_is_read(self):
+        fshd = self._summary(
+            "影像所见: 右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润。"
+        )
+        names = {item["muscle_name"] for item in fshd["normalized_summary"]["mri_map"]}
+        self.assertEqual(
+            names,
+            {"gastrocnemius_medial_head", "tibialis_anterior", "extensor_digitorum_longus"},
+        )
+
+    def test_the_individually_named_thigh_muscles_are_read(self):
+        fshd = self._summary(
+            "影像所见: 双侧股外侧肌、股中间肌脂肪浸润,股直肌相对保留。"
+        )
+        names = {item["muscle_name"] for item in fshd["normalized_summary"]["mri_map"]}
+        self.assertEqual(names, {"vastus_lateralis", "vastus_intermedius"})
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["affected_regions"], ["thigh"]
+        )
+
+    def test_a_muscle_the_lexicon_does_not_carry_is_published_as_unread(self):
+        fshd = self._summary("影像所见: 双侧梨状肌及闭孔外肌脂肪浸润。")
+        summary = fshd["normalized_summary"]["mri_summary"]
+        self.assertEqual(summary["unread_muscle_terms"], ["梨状肌", "闭孔外肌"])
+        entries = fshd["normalized_summary"]["mri_map"]
+        self.assertTrue(all(item["muscle_name"] is None for item in entries))
+        self.assertTrue(all(item["muscle_name_unread"] for item in entries))
+        self.assertEqual(
+            {item["muscle_term"] for item in entries}, {"梨状肌", "闭孔外肌"}
+        )
+        # LOUD, NOT SILENT: the descriptor was read and the anatomy was
+        # not, and the queue a reviewer reads is where that is visible.
+        queued = {item["field_name"] for item in fshd["review_queue"]}
+        self.assertIn("fatty_infiltration", queued)
+
+    def test_a_report_whose_muscles_are_all_known_reports_nothing_unread(self):
+        fshd = self._summary("影像所见: 双侧股四头肌脂肪浸润。")
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["unread_muscle_terms"], []
+        )
+
+    def test_a_muscle_group_or_a_tissue_is_not_an_unread_muscle(self):
+        """「双大腿肌群」 is a region and 「肌肉萎缩」 is not a name at all."""
+        fshd = self._summary(
+            "影像所见: 双大腿肌群脂肪浸润。",
+            "影像所见: 双侧下肢肌肉萎缩。",
+        )
+        self.assertEqual(
+            fshd["normalized_summary"]["mri_summary"]["unread_muscle_terms"], []
+        )
+
+
+class TheSideBelongsToTheClauseNotTheSentenceTest(unittest.TestCase):
+    """THE DESCRIPTORS WERE SPLIT OFF THE CLAUSE AND THE SIDE WAS NOT.
+
+    A radiologist states the two sides in two clauses of one sentence,
+    and `_canonical_side` answers with the FIRST side it finds — so a
+    side read once per sentence was stamped onto every muscle of every
+    clause. FSHD is characteristically asymmetric: which muscle on which
+    side is the finding, not decoration on it. Synthetic throughout.
+    """
+
+    def _map(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双下肢MRI平扫",
+            f"影像所见: {sentence}",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        return {
+            entry["muscle_name"]: entry["side"]
+            for entry in result["fshd"]["normalized_summary"]["mri_map"]
+        }
+
+    def test_two_sides_in_one_sentence_are_two_sides(self):
+        """THE REGRESSION. The RIGHT gastrocnemius was published as a
+        left-sided finding because the sentence went on to name the left
+        tibialis anterior."""
+        self.assertEqual(
+            self._map("右侧腓肠肌内侧头脂肪浸润, 左侧胫骨前肌萎缩。"),
+            {"gastrocnemius_medial_head": "right", "tibialis_anterior": "left"},
+        )
+
+    def test_the_order_of_the_clauses_does_not_decide_the_side(self):
+        self.assertEqual(
+            self._map("左侧腓肠肌内侧头脂肪浸润, 右侧胫骨前肌萎缩。"),
+            {"gastrocnemius_medial_head": "left", "tibialis_anterior": "right"},
+        )
+
+    def test_a_clause_that_names_no_side_still_inherits_the_sentence(self):
+        """A leading 双侧 governs what follows it and is printed once."""
+        self.assertEqual(
+            self._map("双侧股外侧肌脂肪浸润, 股中间肌脂肪浸润。"),
+            {"vastus_lateralis": "bilateral", "vastus_intermedius": "bilateral"},
+        )
+
+
+class TheAsymmetryAChineseMriActuallyWritesTest(unittest.TestCase):
+    """FSHD IS CHARACTERISTICALLY ASYMMETRIC, AND FOUR SPELLINGS WERE READ.
+
+    The reader knew 左侧较重, 左侧更重 and the two English phrasings. A
+    Chinese radiologist writes 「右侧著」, 「以右侧为著」, 「右侧较左侧明显」
+    or 「左右不对称」, and every one of those produced `asymmetry: none`
+    — the report's own signature finding, contradicted rather than left
+    unread.
+    """
+
+    def _asymmetry(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+            f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_emphasis_spellings_name_a_side(self):
+        self.assertEqual(self._asymmetry("右侧著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("以右侧为著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧受累更重"), "left_gt_right")
+
+    def test_the_comparison_names_the_heavier_side_and_not_the_other_one(self):
+        self.assertEqual(self._asymmetry("右侧较左侧明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("右侧改变较对侧明显"), "right_gt_left")
+
+    def test_a_study_that_only_says_it_is_asymmetric_says_so(self):
+        self.assertEqual(self._asymmetry("左右不对称"), "asymmetric_unspecified")
+        self.assertEqual(self._asymmetry("双侧受累不对称"), "asymmetric_unspecified")
+
+    def test_the_spellings_already_read_are_unchanged(self):
+        self.assertEqual(self._asymmetry("左侧较重"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧更重"), "right_gt_left")
+
+    def test_a_symmetric_study_is_not_made_asymmetric(self):
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+        self.assertEqual(self._asymmetry("双侧信号明显增高"), "none")
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+
+
+class OneRowIsPublishedOnceTest(unittest.TestCase):
+    """THE DUPLICATE GUARD COMPARED A FOLDED NUMBER AGAINST A PRINTED ONE.
+
+    `extract_lab_table_rows` leaves its reading canonical — 「3,250」 is
+    published as 3250 — and the guard looked for that folded spelling
+    inside the row snippet a canonical extractor had captured, which
+    still carries the separator. So it never matched, and the readings
+    large enough to need a thousands separator — on this disease's panel,
+    the muscle enzymes — were published TWICE: once under the canonical
+    key and once under `table_*`, both in `observations`, both in
+    `latest_summary.by_analyte`, and the same creatine kinase named
+    twice in `abnormal_list`.
+    """
+
+    def _names(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "enzyme.jpeg")
+        return [item["field_name"] for item in result["fshd"]["structured_fields"]]
+
+    def test_a_grouped_reading_is_not_published_twice(self):
+        names = self._names(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)",
+            "3,250",
+            "↑",
+            "50-310",
+            "U/L",
+        )
+        self.assertEqual(names.count("ck"), 1)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+
+    def test_the_same_analyte_appears_once_in_the_abnormal_list(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)",
+            "3,250",
+            "↑",
+            "50-310",
+            "U/L",
+        )), "other", "enzyme.jpeg")
+        abnormal = [item["analyte_name"] for item in result["latest_summary"]["abnormal_list"]]
+        self.assertEqual(abnormal, ["ck"])
+
+    def test_a_row_no_canonical_extractor_read_is_still_published(self):
+        names = self._names(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 心肌酶谱",
+            "血清淀粉样蛋白A",
+            "3,250",
+            "mg/L",
+        )
+        self.assertTrue(any(name.startswith("table_") for name in names))
+
+
+class AUrineEsteraseIsNotASedimentCountTest(unittest.TestCase):
+    """A 尿常规 PRINTS TWO WHITE-CELL ROWS AND THEY ARE DIFFERENT TESTS.
+
+    The dipstick's leukocyte esterase — 白细胞酯酶, or 白细胞(LEU) — and
+    the sediment's count, 白细胞计数 or a bare 白细胞 with a 个/uL or /HP
+    unit. `urine_leukocyte` carried the bare 白细胞 in its KEYWORD list,
+    which is what the shared row reader is given, so the esterase field
+    claimed the count row and published whatever cell it found there: a
+    microscopy 「+++」 was published as a 3+ leukocyte esterase, over the
+    top of a dipstick row that reads 阴性.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_dipstick_row_is_what_the_esterase_field_reports(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "尿沉渣镜检",
+            "白细胞 +++ /HP",
+            "干化学",
+            "白细胞酯酶(LEU) 阴性",
+        )
+        self.assertEqual(panel["urine_leukocyte"], "阴性")
+
+    def test_a_sediment_only_page_reports_no_esterase_at_all(self):
+        """No dipstick was run. The payload may not say one was."""
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "白细胞 +++ /HP",
+            "红细胞 ++ /HP",
+        )
+        self.assertNotIn("urine_leukocyte", panel)
+
+    def test_a_semi_quantitative_microscopy_word_is_not_an_esterase_either(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "白细胞 少量 /HP",
+            "蛋白质(PRO) 阴性(-)",
+        )
+        self.assertNotIn("urine_leukocyte", panel)
+        self.assertEqual(panel["urine_protein"], "阴性")
+
+    def test_the_esterase_row_carries_its_own_row_as_evidence(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 尿液分析报告单",
+            "项目", "结果", "参考区间",
+            "白细胞计数", "156", "0-28",
+            "白细胞酯酶", "阴性", "阴性",
+        )), "other", "urine.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["urine_leukocyte"]["source_text"], "白细胞酯酶")
+
+    def test_the_count_is_still_published_as_the_count(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "项目 参考区间 结果",
+            "白细胞计数(WBC) 0-28 156 个/uL",
+            "白细胞酯酶(LEU) 阴性 阳性(+)",
+        )
+        self.assertEqual(panel["urine_wbc"], 156.0)
+        self.assertEqual(panel["urine_leukocyte"], "阳性(+)")
+
+    def test_the_dipstick_spellings_are_all_still_read(self):
+        self.assertEqual(
+            self._panel(
+                "示例市第一人民医院 尿液分析报告单",
+                "白细胞(LEU) 阴性(-)",
+            )["urine_leukocyte"],
+            "阴性",
+        )
+        self.assertEqual(
+            self._panel(
+                "示例市第一人民医院 尿液分析报告单",
+                "白细胞 阴性",
+                "蛋白质 阴性",
+            )["urine_leukocyte"],
+            "阴性",
+        )
+
+
+class TheGradeAChineseDipstickPrintsIsAReadingTest(unittest.TestCase):
+    """1+ / 2+ / 3+ / (2+) / 微量 WERE NOT VERDICTS TO THIS PARSER.
+
+    A 尿液分析仪 prints the grade as a digit before the sign at least as
+    often as it repeats the sign, and the qualitative class accepted
+    only 「+」, 「++」, 「+++」. So on 「蛋白质(PRO) 阴性 2+」 the row reader
+    saw exactly ONE verdict — the 参考区间 column's 阴性 — and published
+    it: a 2+ proteinuria reported to the patient as a negative urinary
+    protein, and the same for every graded row on the page.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_graded_result_is_read_and_not_the_reference(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 2+",
+            "葡萄糖(GLU) 阴性 1+",
+            "潜血(OB) 阴性 (3+)",
+        )
+        self.assertEqual(panel["urine_protein"], "2+")
+        self.assertEqual(panel["urine_glucose"], "1+")
+        self.assertEqual(panel["urine_occult_blood"], "(3+)")
+
+    def test_a_page_with_one_column_publishes_the_grade_it_prints(self):
+        """Nothing was published at all before: not a verdict, no row."""
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 2+",
+            "酮体(KET) 微量",
+        )
+        self.assertEqual(panel["urine_protein"], "2+")
+        self.assertEqual(panel["urine_ketone"], "微量")
+
+    def test_the_header_reads_a_trace_out_of_the_result_column(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "葡萄糖(GLU) 阴性 微量",
+        )
+        self.assertEqual(panel["urine_glucose"], "微量")
+
+    def test_a_trace_with_no_header_is_published_as_unread(self):
+        """The answer 「±」 has always had: two verdicts, neither
+        positive, and no column order on the page to settle it."""
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 微量",
+            "潜血(OB) 阴性",
+        )
+        self.assertNotIn("urine_protein", panel)
+
+    def test_the_repeated_sign_spelling_is_unchanged(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 阳性(++)",
+        )
+        self.assertEqual(panel["urine_protein"], "阳性(++)")
+
+    def test_an_interval_cell_is_not_a_grade(self):
+        """The class stays closed: 「0-5」 and 「3-4」 are not verdicts."""
+        self.assertFalse(fshd_report_service._is_qualitative_value_cell("0-5"))
+        self.assertFalse(fshd_report_service._is_qualitative_value_cell("3-4"))
+        self.assertTrue(fshd_report_service._is_qualitative_value_cell("2+"))
+        self.assertTrue(fshd_report_service._is_qualitative_value_cell("(2+)"))
+
+
+class TheHaematologyUnitSpelledWithAnEExponentTest(unittest.TestCase):
+    """「10E9/L」 IS THE SAME CELL AS 「10^9/L」, AND IT SPLIT IN TWO.
+
+    The number-then-unit split only required the unit half to START with
+    a letter, and 「E9/L」 does — so the cell was not a whole unit to
+    `_unit_digit_spans`, nothing was reserved, and on the
+    项目 / 单位 / 结果 order the first number after the analyte's name is
+    the 10 inside its own unit.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_e_exponent_unit_is_not_the_reading(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 10E9/L 6.69 3.5-9.5",
+            "红细胞计数(RBC) 10E12/L 4.55 4.3-5.8",
+        )
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["rbc"], 4.55)
+
+    def test_the_lower_case_spelling_reads_the_same_way(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 10e9/L 6.69 3.5-9.5",
+        )
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_the_cell_is_one_unit_and_not_a_number_beside_one(self):
+        self.assertEqual(fshd_report_service._split_data_cell("10E9/L"), ["10E9/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("10E12/L"), ["10E12/L"])
+
+    def test_a_reading_glued_to_a_unit_that_starts_with_e_still_splits(self):
+        """An E followed by a digit is an exponent. An E followed by
+        anything else opens an ordinary unit."""
+        self.assertEqual(fshd_report_service._split_data_cell("5EU/L"), ["5", "EU/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("693U/L"), ["693", "U/L"])
+
+    def test_the_spellings_already_covered_are_unchanged(self):
+        for unit in ("10^9/L", "10*9/L", "×10⁹/L"):
+            panel = self._panel(
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                f"白细胞计数(WBC) {unit} 6.69 3.5-9.5",
+            )
+            self.assertEqual(panel["wbc"], 6.69, unit)
+
+
+class EveryIntervalSeparatorIsOneStatementTest(unittest.TestCase):
+    """THE D4Z4 BRANCH CARRIED ITS OWN LIST OF FIVE.
+
+    `_RANGE_DASHES` is this file's single statement of what an interval
+    is printed with, and the repeat-count reader — the one cell this
+    whole product turns on — listed 「-–—~～」 by hand. The eight it did
+    not list are the eight a Chinese report is most likely to carry, and
+    on each of them a stated range 「1－10」 was published as a confident
+    repeat count of 1, inside the 1–4 window that gates this platform's
+    ophthalmology recommendation.
+    """
+
+    def _count(self, separator):
+        result = analyze_fshd_report("\n".join((
+            "示例市医学检验所 基因检测报告",
+            "检测项目: FSHD相关基因检测",
+            f"检测结果: D4Z4重复单元数 1{separator}10",
+        )), "genetic", "gene.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        return fields.get("d4z4_repeat_pathogenic")
+
+    def test_every_separator_this_file_knows_reads_as_a_range(self):
+        separators = list(fshd_report_service._RANGE_DASHES) + list(
+            fshd_report_service._RANGE_WORDS
+        )
+        self.assertEqual(len(separators), 15)
+        for separator in separators:
+            field = self._count(separator)
+            self.assertIsNotNone(field, separator)
+            self.assertEqual(field["field_value"], f"1{separator}10", separator)
+            self.assertIsNone(field.get("normalized_value"), separator)
+
+    def test_a_determinate_count_is_still_a_determinate_count(self):
+        field = self._count("")
+        self.assertEqual(field["field_value"], "110")
+
+
+class TheComparativeFormsAChineseRadiologistWritesTest(unittest.TestCase):
+    """ONE OPTIONAL LINKING CHARACTER, AND THE ORDINARY FORMS ARE TWO.
+
+    「右侧较为明显」, 「左侧更为明显」, 「右侧尤为明显」 and 「左侧相对更重」
+    are how a Chinese radiologist states the asymmetry FSHD is
+    characterised by, and every one of them came back `asymmetry: none`
+    — the study's own signature finding contradicted rather than left
+    unread.
+    """
+
+    def _asymmetry(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+            f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_two_character_linking_forms_name_a_side(self):
+        self.assertEqual(self._asymmetry("右侧较为明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧更为明显"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧尤为明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧相对更重"), "left_gt_right")
+
+    def test_the_understated_forms_name_a_side_too(self):
+        self.assertEqual(self._asymmetry("右侧稍重"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧略重"), "left_gt_right")
+
+    def test_the_spellings_already_read_are_unchanged(self):
+        self.assertEqual(self._asymmetry("右侧著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("以右侧为著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧受累更重"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧较左侧明显"), "right_gt_left")
+
+    def test_the_linking_run_is_a_closed_class_and_not_a_gap(self):
+        """A clause that changes subject between the side and the
+        emphasis word may not be joined back up."""
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+        self.assertEqual(self._asymmetry("双侧信号明显增高"), "none")
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+        self.assertEqual(self._asymmetry("左侧相对保留"), "none")
+
+
+class OneSpellingOfASeparatorAndOfAComparatorTest(unittest.TestCase):
+    """THE INVARIANT WAS ASSERTED IN A COMMENT AND NOT KEPT.
+
+    `_RANGE_SEPARATOR`'s own note calls itself 「THE ONE PLACE A
+    SEPARATOR IS SPELLED」, and five readers went on interpolating the
+    older `[_RANGE_DASHES]` class beside it — so 「50至310」 and
+    「50到310」, the written-out spellings the constant knows and the
+    class does not, matched nothing at the row level. A lost interval is
+    no longer a lost decoration: `reference_high` is what the read path
+    compares a reading against, so a creatine kinase of 693 printed
+    「50至310」 reached a clinician looking exactly like a normal one.
+
+    This test is the invariant itself. It goes red the moment a second
+    spelling of either class appears in the module's code.
+    """
+
+    def _code_lines(self):
+        with open(fshd_report_service.__file__, encoding="utf-8") as handle:
+            return [
+                line
+                for line in handle.read().splitlines()
+                if not line.lstrip().startswith("#")
+            ]
+
+    def test_the_dash_class_is_interpolated_in_exactly_one_place(self):
+        users = [line for line in self._code_lines() if "[{_RANGE_DASHES}]" in line]
+        self.assertEqual(len(users), 1, users)
+        self.assertIn("_RANGE_SEPARATOR", users[0])
+
+    def test_the_comparator_class_is_interpolated_in_exactly_one_place(self):
+        users = [line for line in self._code_lines() if "[{_COMPARATORS}]" in line]
+        self.assertEqual(len(users), 1, users)
+        self.assertIn("_COMPARATOR", users[0])
+
+    def test_no_reader_spells_a_separator_or_comparator_by_hand(self):
+        """A literal dash or comparator inside a regex source is the
+        shape the one-place rule exists to stop."""
+        spelled_out = [
+            line
+            for line in self._code_lines()
+            if re.search(r'rf?"[^"]*\[[^"\]]*[~\u2013\u2014\uff0d\u2264\u2265][^"\]]*\]', line)
+        ]
+        self.assertEqual(spelled_out, [])
+
+
+class TheWholeSeparatorAndComparatorTableTest(unittest.TestCase):
+    """THE SET THE READERS ON EVERY SURFACE AGREED ON, AS A TABLE.
+
+    Drift between this file and the two TypeScript readers is what put
+    「≦」 and 「≧」 (U+2266, U+2267) — the CJK-typeset spellings of 「≤」
+    and 「≥」 — in both of those and in neither of this file's classes,
+    and left 「≦」 out of the ceiling set on top of that. A reference
+    limit printed 「≦25」 was no limit at all here, and 「<=25」 was read
+    as a FLOOR of 25 rather than a ceiling.
+    """
+
+    RANGE_SEPARATORS = tuple("-~\u2013\u2014\u2015\u2010\u2011\u2012\u2212\uff0d\ufe63\uff5e\u301c") + ("到", "至")
+    BELOW = ("<", "\u2264", "\uff1c", "\u2266", "\u2a7d", "\ufe64", "<=", "=<")
+    ABOVE = (">", "\u2265", "\uff1e", "\u2267", "\u2a7e", "\ufe65", ">=", "=>")
+
+    def test_the_module_carries_exactly_this_separator_set(self):
+        known = set(fshd_report_service._RANGE_DASHES) | set(
+            fshd_report_service._RANGE_WORDS
+        )
+        self.assertEqual(known, set(self.RANGE_SEPARATORS))
+
+    def test_the_module_carries_exactly_this_comparator_set(self):
+        known = set(fshd_report_service._COMPARATORS) | set(
+            fshd_report_service._COMPARATOR_DIGRAPHS
+        )
+        self.assertEqual(known, set(self.BELOW) | set(self.ABOVE))
+
+    def test_the_ceiling_set_is_exactly_the_below_column(self):
+        self.assertEqual(
+            set(fshd_report_service._UPPER_LIMIT_COMPARATORS), set(self.BELOW)
+        )
+
+    def test_every_separator_reads_a_two_sided_interval_off_a_row(self):
+        for separator in self.RANGE_SEPARATORS:
+            raw, low, high = fshd_report_service._read_row_reference(
+                f"肌酸激酶(CK) 693 ↑ 50{separator}310 U/L", "693"
+            )
+            self.assertEqual((low, high), (50.0, 310.0), separator)
+            self.assertEqual(raw, f"50{separator}310", separator)
+
+    def test_every_below_spelling_is_a_ceiling_and_never_a_floor(self):
+        for comparator in self.BELOW:
+            raw, low, high = fshd_report_service._read_row_reference(
+                f"肌钙蛋白I 0.02 {comparator}0.05 ng/mL", "0.02"
+            )
+            self.assertEqual(raw, f"{comparator}0.05", comparator)
+            self.assertIsNone(low, comparator)
+            self.assertEqual(high, 0.05, comparator)
+
+    def test_every_above_spelling_is_a_floor_and_never_a_ceiling(self):
+        for comparator in self.ABOVE:
+            raw, low, high = fshd_report_service._read_row_reference(
+                "高密度脂蛋白胆固醇 1.20 " + comparator + "1.04 mmol/L", "1.20"
+            )
+            self.assertEqual(raw, f"{comparator}1.04", comparator)
+            self.assertEqual(low, 1.04, comparator)
+            self.assertIsNone(high, comparator)
+
+    def test_a_limit_keeps_its_comparator_when_it_is_the_whole_reading(self):
+        """A below-detection reading is a limit the laboratory refused
+        to state, not a determinate measurement."""
+        for cell in ("<0.01", "\u22660.01", "<=0.01", "=<0.01"):
+            self.assertEqual(fshd_report_service._canonical_number(cell), cell)
+
+    def test_a_written_out_interval_is_refused_as_a_repeat_count(self):
+        """The count cell this whole product turns on. 「1至10」 is a
+        stated uncertainty, never a confident count of 1."""
+        for separator in self.RANGE_SEPARATORS:
+            result = analyze_fshd_report(
+                "\n".join((
+                    "示例市医学检验所 基因检测报告",
+                    "检测项目: FSHD相关基因检测",
+                    f"检测结果: D4Z4重复单元数 1{separator}10",
+                )),
+                "genetic",
+                "gene.jpeg",
+            )
+            fields = {
+                item["field_name"]: item
+                for item in result["fshd"]["structured_fields"]
+            }
+            field = fields.get("d4z4_repeat_pathogenic")
+            self.assertIsNotNone(field, separator)
+            self.assertEqual(field["field_value"], f"1{separator}10", separator)
+            self.assertIsNone(field.get("normalized_value"), separator)
+
+
+class ARowWhoseResultIsNotANumberPublishesNoNumberTest(unittest.TestCase):
+    """THE UNIT'S EXPONENT SHIPPED AS THE PATIENT'S COUNT.
+
+    The row reader reserves the digits a unit spells itself with —
+    「10E9/L」, 「10^9/L」, 「×10⁹/L」 — and answers with nothing when the
+    结果 column is not a number. The panel FALLBACK reserved nothing, so
+    the moment the row reader declined, the 10 of the unit became the
+    reading. A laboratory leaves that column non-numeric often: a blank,
+    「---」, 「未见」, 「少量」, or a rejection note such as 「标本凝集」 or
+    「溶血」. A white cell count of 10 is a leucocytosis a clinician acts
+    on, off a specimen that was never counted.
+    """
+
+    NON_NUMERIC_RESULTS = ("", "---", "未见", "少量", "标本凝集", "溶血")
+    EXPONENT_UNITS = ("10E9/L", "10e9/L", "10^9/L", "10*9/L", "×10⁹/L")
+
+    def _panel(self, *lines):
+        result = analyze_fshd_report("\n".join(lines), "lab", "lab.jpeg")
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _row(self, unit, result):
+        return self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "项目 单位 结果 参考区间",
+            f"白细胞计数(WBC) {unit} {result}".strip(),
+            "血红蛋白(HGB) g/L 132 130-175",
+        )
+
+    def test_no_count_is_published_off_a_non_numeric_result_cell(self):
+        for unit in self.EXPONENT_UNITS:
+            for result in self.NON_NUMERIC_RESULTS:
+                panel = self._row(unit, result)
+                self.assertNotIn("wbc", panel, f"{unit} / {result!r}")
+                self.assertEqual(panel.get("hgb"), 132, f"{unit} / {result!r}")
+
+    def test_the_row_that_does_print_a_number_is_unchanged(self):
+        for unit in self.EXPONENT_UNITS:
+            self.assertEqual(self._row(unit, "6.69").get("wbc"), 6.69, unit)
+
+
+class AWindowSeamIsNotARowBoundaryTest(unittest.TestCase):
+    """THE VALUE AND ITS OWN PROVENANCE DISAGREED.
+
+    The gap between an analyte's name and its reading excludes `\n` so
+    that it cannot leave its own line, and `_panel_haystacks` joins two
+    adjacent lines without a separator — which deletes the newline the
+    gap was refusing. So a sediment row whose result is a Chinese word
+    reached over the seam and published the NEXT row's figure under its
+    own key, with its own line shipped as the evidence for it.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 尿常规") + rows),
+            "lab",
+            "lab.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_word_result_does_not_take_the_next_rows_number(self):
+        panel = self._panel(
+            "白细胞 少量 /HP",
+            "红细胞 8 个/uL",
+            "细菌 未见 /HP",
+            "上皮细胞 3 个/uL",
+        )
+        self.assertNotIn("urine_wbc", panel)
+        self.assertNotIn("urine_bacteria", panel)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+        self.assertEqual(panel.get("urine_epithelial_cells"), 3)
+
+    def test_the_rows_that_do_print_numbers_are_all_read(self):
+        panel = self._panel(
+            "白细胞 12 个/uL",
+            "红细胞 8 个/uL",
+            "上皮细胞 3 个/uL",
+        )
+        self.assertEqual(panel.get("urine_wbc"), 12)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+        self.assertEqual(panel.get("urine_epithelial_cells"), 3)
+
+    def test_the_cell_per_line_layout_the_window_exists_for_still_reads(self):
+        """The seam is only closed against ANOTHER ROW'S NAME. A cell
+        reunited with the cell below it is what these windows are for."""
+        panel = self._panel("白细胞", "12", "个/uL", "红细胞", "8", "个/uL")
+        self.assertEqual(panel.get("urine_wbc"), 12)
+        self.assertEqual(panel.get("urine_rbc"), 8)
+
+
+class TheEmphasisWordsARadiologistEndsAClauseOnTest(unittest.TestCase):
+    """「以右侧为主」 AND 「以左侧为甚」 CAME BACK `asymmetry: none`.
+
+    甚 was listed as a LINKING character — one of the class that may sit
+    between the side and the emphasis word — where it can never be
+    reached, because 「右侧为甚」 ends on it.
+    """
+
+    def _asymmetry(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 磁共振检查报告单",
+                "检查项目: 双大腿MRI平扫",
+                f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+            )),
+            "mri",
+            "mri.jpeg",
+        )
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_two_new_emphasis_words_name_a_side(self):
+        self.assertEqual(self._asymmetry("以右侧为主"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧为主"), "left_gt_right")
+        self.assertEqual(self._asymmetry("以左侧为甚"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧为甚"), "right_gt_left")
+
+    def test_the_linking_run_is_still_a_closed_class(self):
+        self.assertEqual(self._asymmetry("以脂肪浸润为主"), "none")
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+
+
+class AThresholdSentenceIsNotThePatientsRepeatCountTest(unittest.TestCase):
+    """「11以上」 IS A BOUND, AND THE GUARD ONLY LOOKED TO THE LEFT.
+
+    `_BOUND_BEFORE_VALUE` refuses 「>11」 and 「大于11」; the same sentence
+    with the comparator SUFFIXED — the ordinary Chinese spelling — was
+    not a bound to any reader, so a line stating where the laboratory's
+    normal range begins was published as this patient's own D4Z4 array
+    size at 0.97, the confidence of a cell read off a result row.
+    """
+
+    def _fields(self, row):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+                "检测结果:",
+                row,
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }
+
+    def test_the_suffix_bound_is_never_typed_as_a_count(self):
+        for row, shown in (
+            ("D4Z4重复单元数 11以上为正常参考范围", "11以上"),
+            ("D4Z4重复单元数 10以下提示缩短", "10以下"),
+            ("D4Z4重复单元数 10以内为缩短范围", "10以内"),
+            ("D4Z4重复单元数 11个以上为正常", "11个以上"),
+            ("D4Z4重复单元数 11及以上为正常", "11及以上"),
+        ):
+            field = self._fields(row)["d4z4_repeat_pathogenic"]
+            self.assertEqual(field["field_value"], shown, row)
+            self.assertIsNone(field["normalized_value"], row)
+            self.assertLess(field["confidence"], 0.75, row)
+
+    def test_the_refused_bound_reaches_no_typed_channel(self):
+        """Every channel a number is READ OFF, not only the field."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测结果:",
+                "D4Z4重复单元数 11以上为正常参考范围",
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        genetic = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(genetic["d4z4_repeat_pathogenic"])
+        self.assertIsNone(result["d4z4_repeats"])
+        by_analyte = result["latest_summary"]["by_analyte"]
+        self.assertIsNone(by_analyte["d4z4_repeat_pathogenic"]["value_num"])
+        self.assertEqual(
+            by_analyte["d4z4_repeat_pathogenic"]["value_text"], "11以上"
+        )
+        for observation in result["observations"]:
+            if observation["analyte_name"] == "d4z4_repeat_pathogenic":
+                self.assertIsNone(observation["result"]["value_num"])
+
+    def test_a_determinate_count_is_unchanged(self):
+        field = self._fields("D4Z4重复单元数: 6")["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "6")
+        self.assertEqual(field["normalized_value"], 6)
+        self.assertEqual(field["confidence"], 0.97)
+
+    def test_a_counter_after_the_count_is_not_a_bound(self):
+        field = self._fields("D4Z4重复单元数 6 个")["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "6")
+        self.assertEqual(field["normalized_value"], 6)
+
+
+class AReadingGluedToItsPrintedExponentUnitTest(unittest.TestCase):
+    """「6.69×10⁹/L」 WAS RESERVED AS A UNIT, READING AND ALL.
+
+    The unit half of `_CELL_NUMBER_THEN_UNIT` had to start with a
+    letter, so the printed haematology cell did not split;
+    `_unit_digit_spans` then reserved the whole of it and the numeric
+    scan took the next free number on the row — the reference cell's
+    lower limit where the reference carried the same unit, the
+    exponent's base where it did not.
+    """
+
+    def _field(self, row):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                row,
+                "血小板计数(PLT) 249 125-350",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        for item in result["fshd"]["structured_fields"]:
+            if item["field_name"] == "wbc":
+                return item
+        return {}
+
+    def test_the_reading_is_the_reading_and_not_the_intervals_lower_limit(self):
+        for row in (
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5×10⁹/L-9.5×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L (3.5-9.5)×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5-9.5×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5-9.5",
+        ):
+            field = self._field(row)
+            self.assertEqual(field.get("field_value"), "6.69", row)
+            self.assertEqual(field.get("unit"), "×10⁹/L", row)
+
+    def test_the_cell_per_line_layout_reads_the_same_row(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                "白细胞计数(WBC)",
+                "6.69×10⁹/L",
+                "3.5-9.5×10⁹/L",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_the_ascii_exponent_spellings_are_unchanged(self):
+        for row, unit in (
+            ("白细胞计数(WBC) 10*9/L 6.69 3.5-9.5", "10*9/L"),
+            ("白细胞计数(WBC) 10^9/L 6.69 3.5-9.5", "10^9/L"),
+            ("白细胞计数(WBC) 10E9/L 6.69 3.5-9.5", "10E9/L"),
+        ):
+            field = self._field(row)
+            self.assertEqual(field.get("field_value"), "6.69", row)
+            self.assertEqual(field.get("unit"), unit, row)
+
+
+class ASemiQuantitativeGradeIsNotACountTest(unittest.TestCase):
+    """「红细胞 3+ 0-3 /HP」 PUBLISHED A RED CELL COUNT OF 3.
+
+    A grade of 3+ and a count of 3 are opposite findings on the sediment
+    scale, and the fabricated one landed inside its own reference
+    interval, so nothing downstream had anything to flag either.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 尿常规",
+                "项目 结果 参考区间 单位",
+            ) + rows),
+            "other",
+            "Urine Routine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_no_count_is_minted_from_a_graded_row(self):
+        for row in (
+            "红细胞 3+ 0-3 /HP",
+            "红细胞 (2+) 0-3 /HP",
+            "红细胞 1+ 0-3 /HP",
+        ):
+            self.assertNotIn("urine_rbc", self._panel(row), row)
+
+    def test_the_grade_is_not_taken_across_a_window_seam_either(self):
+        panel = self._panel("红细胞 3+", "白细胞 8 个/uL")
+        self.assertNotIn("urine_rbc", panel)
+        self.assertEqual(panel.get("urine_wbc"), 8)
+
+    def test_a_genuine_count_on_the_same_scale_is_unchanged(self):
+        self.assertEqual(self._panel("红细胞 3 0-3 /HP").get("urine_rbc"), 3)
+        self.assertEqual(
+            self._panel("红细胞计数 15 个/uL 0-28").get("urine_rbc"), 15
+        )
+
+
+class NoLeukocyteEsteraseIsInventedFromASedimentRowTest(unittest.TestCase):
+    """A TEST THAT WAS NEVER RUN, PUBLISHED AS NEGATIVE.
+
+    The dipstick pattern's gap is eight characters of anything that is
+    not CJK or Latin — a whole column of a 尿常规 table — so on a page
+    whose only white-cell row is the sediment COUNT, the 阴性 it reached
+    was that row's reference column.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 尿常规",
+                "项目 结果 参考区间 单位",
+            ) + rows),
+            "other",
+            "Urine Routine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_page_with_no_esterase_row_publishes_no_esterase(self):
+        panel = self._panel("白细胞 5 0-5 阴性 /HP")
+        self.assertNotIn("urine_leukocyte", panel)
+        self.assertEqual(panel.get("urine_wbc"), 5)
+
+    def test_the_esterase_row_is_still_read_where_the_page_prints_one(self):
+        panel = self._panel("白细胞酯酶(LEU) 阴性", "白细胞 5 0-5 阴性 /HP")
+        self.assertEqual(panel.get("urine_leukocyte"), "阴性")
+        self.assertEqual(panel.get("urine_wbc"), 5)
+
+    def test_the_bare_dipstick_spelling_is_still_read(self):
+        """The bare 白细胞 stays in the pattern on purpose — a dipstick
+        block that prints no abbreviation is still a dipstick block."""
+        panel = self._panel("白细胞 阴性", "蛋白质 阴性")
+        self.assertEqual(panel.get("urine_leukocyte"), "阴性")
+        self.assertEqual(panel.get("urine_protein"), "阴性")
+
+    def test_a_positive_esterase_is_not_overwritten_by_the_count_row(self):
+        panel = self._panel("白细胞酯酶 阳性", "白细胞 25 0-5 阴性 /HP")
+        self.assertEqual(panel.get("urine_leukocyte"), "阳性")
+        self.assertEqual(panel.get("urine_wbc"), 25)
+
+    def test_no_qualitative_row_reaches_across_a_count_to_its_reference(self):
+        self.assertEqual(self._panel("蛋白质 1+ 阴性").get("urine_protein"), "1+")
+
+
+class TheNegatorIsParsedNotRememberedTest(unittest.TestCase):
+    """「不排除」 IS NOT 「排除」, AND 「不超过」 IS NOT 「超过」.
+
+    Two lists in this file held a bare word and were asked with a
+    substring test, so the negator fused in front of it was read as
+    absent: 「不排除」/「不能排除」 — the laboratory saying it CANNOT rule
+    the thing out — came back as the report DENYING it, and 「不超过10」
+    came back as the bound 「超过10」, the opposite direction on the
+    number that decides FSHD1.
+
+    The negator is now parsed once (`_NEGATION`) and combined with a
+    polarity by whichever reader needs it, so neither list has to
+    remember its own negated spellings.
+    """
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院 分子遗传学检测报告",) + rows),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    # --- D1: a negated exclusion is not an absence -------------------
+
+    def test_the_polarity_of_the_verb_decides_with_the_negator(self):
+        assert_absence = fshd_report_service._states_an_absence
+        for denial in (
+            "未检出 D4Z4 缩短",
+            "未见明显异常",
+            "未发现致病变异",
+            "未检测到缩短",
+            "未提示缩短",
+            "本次检测不支持 FSHD1",
+            "本次检测排除 FSHD1",
+            "本次检测除外 FSHD1",
+            "对照孔阴性",
+            "没有发现缩短",
+        ):
+            self.assertTrue(assert_absence(denial), denial)
+        for not_a_denial in (
+            "不排除嵌合体可能",
+            "不能排除低比例嵌合",
+            "不能完全排除嵌合体",
+            "无法排除嵌合体",
+            "检出 D4Z4 缩短",
+            "见片段缩短",
+            "不见得低于 10 个",
+        ):
+            self.assertFalse(assert_absence(not_a_denial), not_a_denial)
+
+    def test_a_caveat_does_not_erase_the_count_it_qualifies(self):
+        summary = self._genetic("检测结果:", "D4Z4重复单元数为 3, 不排除嵌合体可能")
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_caveat_does_not_erase_the_allele_it_qualifies(self):
+        summary = self._genetic("检测结果:", "4q35 单倍型: 4qA, 不能排除低比例嵌合")
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_an_unnegated_exclusion_is_still_heard(self):
+        self.assertIsNone(
+            self._genetic("检测结论:", "本次检测排除 FSHD1")["diagnosis_type"]
+        )
+        self.assertIsNone(
+            self._genetic("检测结果:", "4q35 单倍型: 未见 4qA")["haplotype"]
+        )
+
+    # --- D2: the clause governs, not the line ------------------------
+
+    def test_a_denial_in_the_other_clause_leaves_the_finding_standing(self):
+        summary = self._genetic(
+            "检测结论:",
+            "检出 D4Z4 阵列缩短, 符合 FSHD1 分子诊断标准, 未见其他致病变异",
+        )
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_one_clause_may_state_an_allele_while_the_next_denies_another(self):
+        summary = self._genetic("检测结果:", "4q35 单倍型: 4qA, 未见 4qB")
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_a_denial_in_its_own_clause_still_refuses_its_own_token(self):
+        summary = self._genetic("检测结论:", "本次检测不支持 FSHD1, 建议评估 FSHD2")
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_a_recommendation_names_a_type_without_stating_it(self):
+        """Clause scoping stopped the 不支持 in the first clause from
+        reaching the second, and the second NAMES a type."""
+        self.assertIsNone(self._genetic("检测结论:", "建议评估 FSHD2")["diagnosis_type"])
+
+    def test_a_recommendation_is_not_a_refusal_of_the_type_it_names(self):
+        """A recommendation asserts nothing in either direction, so it
+        must not unpublish the conclusion that stated the type."""
+        summary = self._genetic(
+            "检测结论:",
+            "符合 FSHD1 分子诊断标准.",
+            "建议按 FSHD1 进行随访管理",
+        )
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_a_marker_behind_the_token_recommends_the_next_step_only(self):
+        summary = self._genetic("检测结论:", "符合 FSHD1 分子诊断标准并建议遗传咨询")
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_the_clause_split_keeps_a_decimal_whole(self):
+        """`_CLAUSE_BREAK` inherits `_SENTENCE_BREAK`'s one rule."""
+        self.assertEqual(
+            fshd_report_service._clause_around("片段 18.5 kb, 未见缩短", 3),
+            "片段 18.5 kb",
+        )
+
+    # --- D3/D4: the bound grammar ------------------------------------
+
+    def _bound_field(self, row):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+                "检测结果:",
+                row,
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }.get("d4z4_repeat_pathogenic")
+
+    def test_a_negated_bound_is_printed_back_with_its_negator(self):
+        for word in ("不超过", "不能超过", "不低于", "不大于"):
+            field = self._bound_field(f"D4Z4重复单元数为{word}10个")
+            self.assertIsNotNone(field, word)
+            self.assertEqual(field["field_value"], f"{word}10", word)
+            self.assertIsNone(field["normalized_value"], word)
+
+    def test_the_falls_short_family_is_a_bound_and_never_a_count(self):
+        for word in (
+            "不足", "不到", "不下", "不满", "不及", "未达", "未满",
+            "低于", "高于", "超出", "至少", "最多", "起码",
+        ):
+            field = self._bound_field(f"D4Z4重复单元数为{word}10个")
+            self.assertIsNotNone(field, word)
+            self.assertEqual(field["field_value"], f"{word}10", word)
+            self.assertIsNone(field["normalized_value"], word)
+            self.assertLess(field["confidence"], 0.75, word)
+
+    def test_the_inclusive_tail_is_captured_whole(self):
+        for word in ("大于等于", "小于或等于"):
+            field = self._bound_field(f"D4Z4重复单元数为{word}10个")
+            self.assertEqual(field["field_value"], f"{word}10", word)
+
+    def test_a_determinate_count_is_still_a_count(self):
+        field = self._bound_field("D4Z4重复单元数为10个")
+        self.assertEqual(field["field_value"], "10")
+        self.assertEqual(field["normalized_value"], 10)
+        self.assertGreater(field["confidence"], 0.9)
+
+
+class AConclusionThatRefusesTheDiagnosisTest(unittest.TestCase):
+    """A REPORT WHOSE OWN CONCLUSION DECLINES THE DIAGNOSIS PUBLISHED IT.
+
+    未确诊 / 不能确诊 / 无法确诊 / 未能确诊 / 不能诊断为 all came back
+    `diagnosis_type: FSHD1` at 0.98 — byte-identical, value and
+    confidence both, to 「确诊 FSHD1」. That number is what the passport
+    prints under 分型, what the assistant is given, what the share page
+    renders, what the referral pack hands a clinician and what all three
+    registry exports carry as this patient's molecular diagnosis.
+
+    The cause is the shape this file has now closed four times: a
+    negator fused into a word a list reads as its opposite. Here the
+    list did not merely miss the negated form, it had no DIAGNOSIS VERB
+    at all — `_FINDING_VERBS` and `_EXCLUSION_VERBS` between them hold
+    no 确诊, no 诊断, no 符合, no 达 — so the refusing clause contained
+    nothing either the absence test or the hedge test could see.
+
+    So the same gap cost a real diagnosis in the other direction too:
+    符合 and 达 are how the standard Chinese genetics conclusion states
+    the diagnosis it DID make.
+
+    The five spellings are NOT enumerated. A diagnosis verb has the same
+    polarity as a finding verb, so it joins the same XOR over the same
+    `_NEGATION`, and every negated spelling — including the ones nobody
+    listed — is a consequence of the grammar.
+    """
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院 分子遗传学检测报告",) + rows),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _diagnosis_field(self, conclusion):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测结论:",
+                conclusion,
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }.get("diagnosis_type")
+
+    # --- the five refusal spellings, and the ones nobody listed ------
+
+    def test_a_refused_diagnosis_is_not_this_patients_type(self):
+        for refusal in (
+            "本次检测未确诊 FSHD1",
+            "本次检测不能确诊 FSHD1",
+            "本次检测无法确诊 FSHD1",
+            "本次检测未能确诊 FSHD1",
+            "本次检测不能诊断为 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_the_refusal_publishes_no_field_at_all_and_not_a_weak_one(self):
+        """A confidence nothing downstream reads is not a warning. The
+        passport, the exports and `applyGeneticReportAutofill` all write
+        the VALUE, so what has to be absent is the value."""
+        self.assertIsNone(self._diagnosis_field("本次检测不能确诊 FSHD1"))
+        self.assertEqual(
+            self._diagnosis_field("本次检测确诊 FSHD1")["confidence"], 0.98
+        )
+
+    def test_the_negated_spellings_are_grammar_and_not_a_list(self):
+        """None of these five is `_DIAGNOSIS_VERBS`; each is `_NEGATION`
+        over one of them. If this ever needs an entry per spelling, the
+        grammar has been replaced by a vocabulary again."""
+        for refusal in (
+            "本次检测尚不能确诊 FSHD1",
+            "本次检测暂无法确诊 FSHD1",
+            "本次检测未予确诊 FSHD1",
+            "本次检测不能确诊为 FSHD1",
+            "本次检测无法诊断为 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_a_standard_the_report_says_it_does_not_meet(self):
+        for refusal in (
+            "本次检测不符合 FSHD1 分子诊断标准",
+            "本次检测不完全符合 FSHD1 分子诊断标准",
+            "本次检测未达 FSHD1 诊断标准",
+            "本次检测未达到 FSHD1 诊断标准",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_明确诊断_is_one_verb_and_the_确诊_inside_it_is_consumed(self):
+        """明确 is an adverbial and not a closed-class function word, so
+        `_NEGATOR_LINK` must not reach across it. Without 明确诊断 listed
+        whole, the negator has nothing to attach to and the engine finds
+        a bare 确诊 one character later — the substring failure again."""
+        for refusal in ("本次检测不能明确诊断 FSHD1", "本次检测未能明确诊断 FSHD1"):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+        self.assertEqual(
+            self._genetic("检测结论:", "本次检测明确诊断为 FSHD1")["diagnosis_type"],
+            "FSHD1",
+        )
+
+    # --- the other direction: the verbs a real conclusion uses -------
+
+    def test_符合_and_达_state_the_diagnosis_the_report_did_make(self):
+        for stated in (
+            "受检者 4q35 区 D4Z4 重复序列缩短, 符合 FSHD1 分子诊断标准",
+            "本次检测符合 FSHD1",
+            "本次检测达到 FSHD1 诊断标准",
+            "本次检测达 FSHD1 诊断标准",
+            "本次检测确诊 FSHD1",
+            "本次检测确诊为 FSHD1",
+            "本次检测诊断为 FSHD1",
+            "本次检测提示 FSHD1",
+        ):
+            self.assertEqual(
+                self._genetic("检测结论:", stated)["diagnosis_type"], "FSHD1", stated
+            )
+
+    def test_a_refused_type_no_longer_outranks_the_stated_one(self):
+        """The refused token is printed FIRST, so with nothing refusing
+        it it won the sort and the patient was typed as the type their
+        report says it could not confirm."""
+        self.assertEqual(
+            self._genetic(
+                "检测结论:", "未确诊 FSHD1, 符合 FSHD2 分子诊断标准"
+            )["diagnosis_type"],
+            "FSHD2",
+        )
+        self.assertEqual(
+            self._genetic(
+                "检测结论:", "符合 FSHD1 分子诊断标准, 未确诊 FSHD2"
+            )["diagnosis_type"],
+            "FSHD1",
+        )
+
+    def test_a_refusal_plus_a_recommendation_states_nothing(self):
+        self.assertIsNone(
+            self._genetic(
+                "检测结论:", "不能确诊 FSHD1, 建议评估 FSHD2"
+            )["diagnosis_type"]
+        )
+
+    # --- the vocabulary is per reader, and that is measured ---------
+
+    def test_未达_a_number_is_still_the_bound_the_guard_prints_back(self):
+        """达 IS THE BOUND FAMILY'S ATTAINMENT VERB TOO. `_BOUND_ATOM`
+        holds 未达 as a whole word, and merging the diagnosis verbs into
+        the one shared `_ABSENCE_CLAUSE` made 「未达10个」 a denial: the
+        absence branch of the D4Z4 reader fired ahead of the bound guard
+        and `d4z4_repeat_pathogenic` went from 「未达10」 to no field at
+        all. Same verb, different object — only the reader that knows it
+        is reading a conclusion can tell them apart."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+                "检测结果:",
+                "D4Z4重复单元数为未达10个",
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        field = {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }.get("d4z4_repeat_pathogenic")
+        self.assertIsNotNone(field)
+        self.assertEqual(field["field_value"], "未达10")
+        self.assertIsNone(field["normalized_value"])
+
+    def test_the_value_readers_did_not_learn_the_diagnosis_verbs(self):
+        """`diagnosing` is off by default and only `_read_diagnosis_type`
+        turns it on."""
+        assert_absence = fshd_report_service._states_an_absence
+        self.assertFalse(assert_absence("d4z4重复单元数为未达10个"))
+        self.assertTrue(
+            assert_absence("本次检测未达 fshd1 诊断标准", diagnosing=True)
+        )
+        self.assertFalse(assert_absence("本次检测符合 fshd1", diagnosing=True))
+
+    def test_the_hedges_and_exclusions_are_unchanged(self):
+        for withheld in (
+            "本次检测疑似 FSHD1",
+            "本次检测不能排除 FSHD1",
+            "本次检测不能完全排除 FSHD1",
+            "本次检测排除 FSHD1",
+            "本次检测不支持 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", withheld)["diagnosis_type"], withheld
+            )
+
+
+class ARowThatIsNotAResultRowTest(unittest.TestCase):
+    """A FOOTNOTE, A CRITICAL-VALUE BANNER AND A UNIT LEGEND ALL NAME AN
+    ANALYTE AND PRINT A NUMBER.
+
+    The row reader returned the first line that did both, and the panel
+    pattern fallback ran over haystacks holding the same lines, so the
+    threshold quoted in one of them became the patient's reading — a
+    panic value and an arithmetic constant published on the panel a
+    clinician scans for exactly those analytes.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_footnote_threshold_is_not_the_patients_haemoglobin(self):
+        panel = self._panel(
+            "注: 血红蛋白低于 60 g/L 为危急值, 请立即联系临床.",
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_critical_value_banner_is_not_the_patients_platelet_count(self):
+        panel = self._panel(
+            "危急值提示: 血小板计数 低于 20 请立即复检",
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血小板计数(PLT) 249 125-350",
+        )
+        self.assertEqual(panel.get("plt"), 249)
+
+    def test_a_unit_conversion_legend_is_not_a_reading(self):
+        panel = self._panel(
+            "单位换算说明: 血红蛋白 1 g/dL = 10 g/L",
+            "血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_an_analyte_named_only_in_a_banner_publishes_nothing(self):
+        """THE PATTERN FALLBACK, WHICH IS THE OTHER HALF OF THE SAME
+        DEFECT. With no row to read, the panel pattern used to take the
+        banner's threshold and `_row_context` had no row to disagree."""
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "危急值提示: 血红蛋白 低于 60 g/L 需立即复核",
+        )
+        self.assertNotIn("hgb", panel)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_decorated_banner_is_still_a_banner(self):
+        panel = self._panel(
+            "★ 危急值: 血红蛋白低于 60 g/L",
+            "血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_a_flag_column_saying_危急值_is_still_a_result_row(self):
+        """A PREFIX, NOT A SUBSTRING. A Chinese laboratory prints 危急值
+        in the 提示 column of a row that IS a result, and refusing that
+        row would withhold the very reading the banner exists for."""
+        panel = self._panel("血红蛋白量(HGB) 45 130-175 危急值")
+        self.assertEqual(panel.get("hgb"), 45)
+
+    def test_a_stray_method_heading_does_not_erase_the_table(self):
+        """THE RUN IS THE GENETICS PAGE'S RULE, NOT THE TABLE'S. A bare
+        检测方法 line above an unlabelled results table would otherwise
+        label every row below it METHOD — see `_row_kinds`."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 生化检验报告单",
+                "检验目的: 生化全套",
+                "检测方法",
+                "肌酸激酶(CK) 693 ↑ 50-310 U/L",
+                "乳酸脱氢酶(LDH) 319 ↑ 120-250 U/L",
+            )),
+            "other",
+            "Biochemistry.jpeg",
+        )
+        panel = result["fshd"]["normalized_summary"].get("lab_panel", {})
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertEqual(panel.get("ldh"), 319)
+
+    def test_the_cell_per_line_layout_still_reads_its_own_value_cell(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                "项目",
+                "结果",
+                "参考区间",
+                "血小板计数(PLT)",
+                "249",
+                "125-350",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        panel = result["fshd"]["normalized_summary"].get("lab_panel", {})
+        self.assertEqual(panel.get("plt"), 249)
+
+    def test_a_banner_between_two_cells_publishes_nothing_rather_than_it(self):
+        """An unread cell is visibly missing; the banner's 20 was not."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                "项目",
+                "结果",
+                "参考区间",
+                "血小板计数(PLT)",
+                "注: 血小板低于 20 为危急值",
+                "249",
+                "125-350",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        panel = result["fshd"]["normalized_summary"].get("lab_panel", {})
+        self.assertNotEqual(panel.get("plt"), 20)
+
+
+class AFootnoteIsARegionNotALineTest(unittest.TestCase):
+    """A FOOTNOTE BLOCK IS A HEADER ON ONE LINE AND ITS CONTENT ON THE
+    NEXT, AND A CHINESE LABORATORY NUMBERS AND BRACKETS IT.
+
+    The note guard refused the header — which asserts nothing — and let
+    every line under it stand as a candidate result row; and it only
+    recognised a marker at the very start of a line after a few bullet
+    characters were stripped, so a numbered or bracketed footnote was not
+    a footnote at all. Both halves publish the laboratory's threshold as
+    the patient's reading. Every fixture below is synthetic.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_note_header_reaches_the_block_printed_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血小板计数(PLT) 249 125-350",
+            "备注",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("plt"), 249)
+
+    def test_a_critical_value_header_reaches_the_block_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "危急值提示",
+            "血小板计数 20",
+        )
+        self.assertNotEqual(panel.get("plt"), 20)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_unit_legend_header_reaches_the_block_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "单位换算",
+            "血红蛋白量 1 g/dL = 10 g/L",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_the_whole_block_is_refused_and_not_only_its_first_line(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "备注:",
+            "本结果仅对本次标本负责.",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_a_numbered_footnote_is_a_footnote(self):
+        for lead in ("1. 备注:", "2、备注:", "(1) 备注:", "一、备注:"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead} 血红蛋白量 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_bracketed_footnote_is_a_footnote(self):
+        for lead in ("【备注】", "[注]", "(附注)", "【危急值】"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead} 血红蛋白量 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_numbered_note_header_opens_its_block_too(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "1、备注",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_a_footnote_printed_above_the_table_does_not_refuse_the_table(self):
+        """THE REASON ONLY A BARE HEADER OPENS A REGION. A footnote that
+        carries its own content is a finished statement, and a Chinese
+        laboratory prints one above the rows as often as below them."""
+        panel = self._panel(
+            "注: 血红蛋白低于 60 g/L 为危急值, 请立即联系临床.",
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_row_number_is_not_a_footnote_ordinal(self):
+        """An ordinal is decoration only where a footnote marker follows
+        it. 「1 白细胞计数(WBC) 6.69」 is the table's own index."""
+        panel = self._panel(
+            "1 白细胞计数(WBC) 6.69 3.5-9.5",
+            "2. 血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_a_note_region_is_fused_rather_than_unbounded(self):
+        """`_NOTE_BLOCK_MAX_ROWS` is what keeps a heading MISREAD as a
+        footnote from erasing a whole panel, the way a runaway method run
+        once did."""
+        rows = ("说明",) + tuple(
+            f"备用说明行 {index}" for index in range(fshd_report_service._NOTE_BLOCK_MAX_ROWS)
+        ) + ("血红蛋白量(HGB) 155 130-175",)
+        panel = self._panel(*rows)
+        self.assertEqual(panel.get("hgb"), 155)
+
+
+class AFootnoteIsNotThisPatientsConclusionTest(unittest.TestCase):
+    """THE READERS THAT DECIDE WHAT A REPORT *SAYS* ASK THE ROW MODEL.
+
+    `interpretation_summary` is the sentence the patient reads under
+    报告详情 → 来源追溯 and the sentence the assistant is handed as the
+    report's own words, and it was chosen by walking the raw lines for a
+    keyword. So a footnote that merely DEFINES the pathogenic threshold
+    became this patient's molecular diagnosis. Synthetic throughout.
+    """
+
+    NEGATIVE = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "检测方法: Southern blot",
+        "检测结果: D4Z4 重复单元数 18",
+        "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(self.NEGATIVE + rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_a_numbered_footnote_defining_the_threshold_is_not_a_diagnosis(self):
+        summary = self._genetic(
+            "1. 备注: D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        )
+        self.assertIsNone(summary["diagnosis_type"])
+        self.assertIn("未见", summary["interpretation_summary"])
+
+    def test_a_footnote_block_defining_the_threshold_is_not_a_diagnosis(self):
+        summary = self._genetic(
+            "备注",
+            "D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        )
+        self.assertIsNone(summary["diagnosis_type"])
+        self.assertIn("未见", summary["interpretation_summary"])
+
+    def test_a_footnote_is_never_the_interpretation_summary(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例医学检验所 FSHD1 基因检测报告单",
+                "检测方法: Southern blot",
+                "检测结果:",
+                "D4Z4 重复单元数 18",
+                "备注:",
+                "提示: D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+            )),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        interpretation = summary["interpretation_summary"] or ""
+        self.assertNotIn("即为缩短", interpretation)
+        self.assertNotIn("符合", interpretation)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_the_reports_own_conclusion_still_wins(self):
+        summary = self._genetic()
+        self.assertIn("未见", summary["interpretation_summary"])
+
+
+class ANegatedExclusionIsAHedgeInEverySpellingTest(unittest.TestCase):
+    """THE HEDGE SIDE, ON THE SAME GRAMMAR AS THE ABSENCE SIDE.
+
+    「不排除 FSHD2」 was three literal strings on a list while the absence
+    test was rebuilt out of a negator, its closed class of function words
+    and a verb — so every other spelling of the same clause published the
+    type the report says it CANNOT rule out as this patient's 分型.
+    """
+
+    HEDGES = (
+        "无法排除",
+        "不能排除",
+        "不排除",
+        "不能完全排除",
+        "不能彻底排除",
+        "未能排除",
+        "没有排除",
+        "不予排除",
+        "不除外",
+        "不能除外",
+        "不可完全除外",
+        "尚不能排除",
+    )
+
+    def _diagnosis_type(self, conclusion):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例医学检验所 基因检测报告单",
+                "检测方法: Southern blot",
+                f"检测结论: {conclusion}",
+            )),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]["diagnosis_type"]
+
+    def test_no_spelling_of_a_negated_exclusion_states_the_type(self):
+        for hedge in self.HEDGES:
+            with self.subTest(hedge=hedge):
+                self.assertIsNone(
+                    self._diagnosis_type(f"本次检测{hedge} FSHD2。"), hedge
+                )
+
+    def test_a_bare_exclusion_is_still_an_absence_and_not_a_hedge(self):
+        """The other branch of the same XOR: 「排除 FSHD2」 denies the
+        type rather than deferring it, and either way it is not stated."""
+        self.assertIsNone(self._diagnosis_type("本次检测排除 FSHD2。"))
+
+    def test_a_stated_diagnosis_is_still_stated(self):
+        self.assertEqual(
+            self._diagnosis_type("符合 FSHD1 分子诊断标准。"), "FSHD1"
+        )
+
+    def test_a_hedge_on_one_type_does_not_unpublish_the_other(self):
+        self.assertEqual(
+            self._diagnosis_type("符合 FSHD1 分子诊断标准, 不能完全排除 FSHD2。"),
+            "FSHD1",
+        )
+
+    def test_不见得_is_not_read_as_a_negation(self):
+        """A verb followed by 得 is not that verb — the same lookahead
+        the absence clause carries, on the same grammar."""
+        self.assertIsNotNone(fshd_report_service._HEDGED_EXCLUSION)
+        self.assertIsNone(
+            fshd_report_service._HEDGED_EXCLUSION.search("不见得")
+        )
+
+
+class TheTextRowReadersAskTheRowModelTooTest(unittest.TestCase):
+    """THE TWO READERS THE NOTE-REGION WORK NEVER REACHED.
+
+    `_extract_lab_value` consults `_result_row_mask`, and
+    `_panel_haystacks` blanks a refused line before a pattern sees it —
+    so on a page carrying a footnote the numeric side declines twice.
+    `_read_qualitative_row` and `_read_free_text_row` walked the raw
+    lines, and whatever they return REPLACES the pattern's answer
+    outright, so a footnote that names an analyte and quotes its
+    reference verdict was published as the patient's own reading.
+    Every fixture is synthetic.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 尿常规") + rows),
+            "other",
+            "urine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_footnote_verdict_is_not_this_patients_qualitative_result(self):
+        panel = self._panel(
+            "注: 尿蛋白 阴性 为本实验室参考值",
+            "尿蛋白 阳性",
+        )
+        self.assertEqual(panel.get("urine_protein"), "阳性")
+
+    def test_a_footnote_colour_is_not_this_patients_free_text_result(self):
+        """A urine printed 淡黄色 in a footnote and 深黄色 on the row is
+        the same 参考区间-read-as-结果 defect, one door further out."""
+        panel = self._panel(
+            "注: 颜色 淡黄色 为本实验室参考值",
+            "颜色 深黄色",
+        )
+        self.assertEqual(panel.get("urine_color"), "深黄色")
+
+    def test_a_banner_between_a_name_cell_and_its_verdict_cell_ends_the_row(self):
+        """The forward scan is the cell-per-line reader, and a banner
+        printed between the two cells is not this row's next column —
+        reading through it takes the verdict the banner quotes. The same
+        boundary `_extract_lab_value` puts on its own forward scan, and
+        the same answer: an unread cell is visibly missing, the banner's
+        verdict was not."""
+        lines = ["项目", "结果", "尿蛋白", "注: 本项目参考值为阴性", "阴性"]
+        self.assertIsNone(
+            fshd_report_service._read_qualitative_row(
+                {"urine_protein": ["尿蛋白"]},
+                "urine_protein",
+                lines,
+                fshd_report_service._page_columns(lines),
+            )
+        )
+
+    def test_the_free_text_forward_scan_stops_at_a_banner_too(self):
+        lines = ["项目", "结果", "颜色", "注: 本项目参考值为淡黄色", "淡黄色"]
+        self.assertIsNone(
+            fshd_report_service._read_free_text_row(
+                {"urine_color": ["颜色"]},
+                "urine_color",
+                lines,
+                fshd_report_service._page_columns(lines),
+            )
+        )
+
+    def test_a_footnote_above_the_table_still_does_not_refuse_the_table(self):
+        """The guard may only cost the footnote its reading."""
+        panel = self._panel(
+            "注: 尿蛋白 阴性 为本实验室参考值, 请结合临床。",
+            "尿蛋白 阳性",
+            "颜色 深黄色",
+            "透明度 清亮",
+        )
+        self.assertEqual(panel.get("urine_protein"), "阳性")
+        self.assertEqual(panel.get("urine_color"), "深黄色")
+        self.assertEqual(panel.get("urine_clarity"), "清亮")
+
+
+class TheCommonestChineseFootnoteLeadsAreFootnotesTest(unittest.TestCase):
+    """注意 / 注意事项 / 提示 / 温馨提示 WERE NOT FOOTNOTE LEADS AT ALL.
+
+    注意事项 heads the panic-threshold block and 温馨提示 heads the
+    patient-instruction block on a Chinese laboratory report at least as
+    often as 备注 does, and neither was recognised: 注意事项 begins with
+    注, and the one-character lead needs a separator behind it. So the
+    threshold quoted under one of them was published as this patient's
+    reading. Synthetic fixtures throughout.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_lead_carrying_its_own_content_is_a_footnote(self):
+        for lead in ("注意", "注意事项", "提示", "温馨提示"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead}: 血红蛋白量低于 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_bare_lead_opens_the_block_printed_under_it(self):
+        """提示 is absent on purpose — it is decided as the column
+        heading it also is. See `_row_label` and DECIDED."""
+        for lead in ("注意", "注意事项", "温馨提示"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    lead,
+                    "血红蛋白量低于 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_the_bare_提示_column_heading_does_not_refuse_the_table(self):
+        """THE HALF THAT WOULD HAVE COST MORE THAN IT SAVED. 提示 heads
+        a column on half the tables this file reads, and reading a lone
+        one as a footnote HEADER would open a region over the rows
+        underneath it."""
+        panel = self._panel(
+            "项目", "结果", "提示", "单位",
+            "白细胞计数(WBC)", "6.69", "", "10^9/L",
+            "血红蛋白量(HGB)", "155", "", "g/L",
+        )
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_注意力_is_not_a_footnote_lead(self):
+        """A lead is a lead only where a separator follows it — 注意 opens
+        注意力 exactly as 注 opens 注射用."""
+        self.assertFalse(fshd_report_service._leads_a_note("注意力 正常"))
+        panel = self._panel("注意力 正常", "白细胞计数(WBC) 6.69 3.5-9.5")
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+
+class TheNoteBlockFuseIsCountedInItemsTest(unittest.TestCase):
+    """THE FUSE COUNTED OCR LINES WHILE ITS OWN COMMENT COUNTED ITEMS.
+
+    PaddleOCR returns a text box per line and a footnote item is a
+    sentence, so the four-item block the fuse was sized for is a dozen
+    lines. The fuse blew in the middle of item three and every item after
+    it went back to being a candidate result row — the whole defect
+    `_SCOPE_BLOCK` was added to close, reappearing at item four.
+    """
+
+    BLOCK = (
+        "备注",
+        "1. 血红蛋白量低于 60 g/L",
+        "为危急值,",
+        "请立即通知临床医师",
+        "2. 白细胞计数低于 1.5",
+        "为危急值,",
+        "请立即通知临床医师",
+        "3. 血小板计数低于 20",
+        "为危急值,",
+        "请立即通知临床医师",
+        "4. 中性粒细胞绝对值低于 0.5",
+        "为危急值,",
+        "请立即通知临床医师",
+    )
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_four_item_block_wrapped_across_lines_is_refused_whole(self):
+        panel = self._panel("血红蛋白量(HGB) 155 130-175", *self.BLOCK)
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+        self.assertNotIn("neut_abs", panel)
+        self.assertNotIn("wbc", panel)
+
+    def test_the_last_item_of_the_block_is_refused_like_the_first(self):
+        """The fuse blew at line eight, which is inside item three, so
+        the item that leaked was the LAST one."""
+        panel = self._panel("血红蛋白量(HGB) 155 130-175", *self.BLOCK)
+        self.assertNotEqual(panel.get("neut_abs"), 0.5)
+
+    def test_the_bound_is_stated_in_the_unit_it_is_reasoned_in(self):
+        self.assertEqual(
+            fshd_report_service._NOTE_BLOCK_MAX_ROWS,
+            fshd_report_service._NOTE_BLOCK_MAX_ITEMS
+            * fshd_report_service._NOTE_BLOCK_MAX_ITEM_LINES,
+        )
+
+    def test_the_fuse_still_blows_on_a_block_that_was_never_a_block(self):
+        rows = ("说明",) + tuple(
+            f"备用说明行 {index}"
+            for index in range(fshd_report_service._NOTE_BLOCK_MAX_ROWS)
+        ) + ("血红蛋白量(HGB) 155 130-175",)
+        self.assertEqual(self._panel(*rows).get("hgb"), 155)
+
+
+class AnMmtGradeRangeIsNotADeterminateGradeTest(unittest.TestCase):
+    """「4-5级」 IS AN EXAMINER DECLINING TO CHOOSE, NOT GRADE 4 MINUS.
+
+    The modifier pattern took any 「-」 after the grade as the MRC minus
+    with no lookahead for a following digit, so 「4-5级」 was read as
+    「4-」, the 5 was dropped and `MRC_NORMALIZATION` typed it 3.7 — a
+    number below both ends of the interval it came off, carried onto
+    `deltoid_strength` and averaged into 平均肌力 on the passport, the
+    share page, the referral pack and the markdown export.
+    profile.passport.ts refuses a range it is SHOWN; it cannot refuse one
+    that was manufactured here.
+    """
+
+    def _fields(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join(("神经科专科查体记录", sentence)), "other", "physical.jpeg"
+        )
+        return result["fshd"]["structured_fields"], result
+
+    def _grade(self, sentence):
+        fields, _ = self._fields(sentence)
+        grades = [f for f in fields if f["field_name"] == "mrc_score"]
+        self.assertTrue(grades, sentence)
+        return grades[0]
+
+    def test_a_range_keeps_both_ends_and_is_typed_as_no_number(self):
+        grade = self._grade("体格检查: 三角肌肌力4-5级。")
+        self.assertEqual(grade["field_value"], "4-5")
+        self.assertIsNone(grade["normalized_value"])
+
+    def test_every_separator_the_shared_vocabulary_knows_reads_as_a_range(self):
+        """The containment profile.passport.ts spells out at
+        `STRENGTH_RANGE_CELL`: every dash the ± modifier accepts is in
+        the range class, or 「4‐5级」 is grade 4 minus all over again."""
+        separators = tuple(fshd_report_service._RANGE_DASHES) + tuple(
+            fshd_report_service._RANGE_WORDS
+        )
+        for separator in separators:
+            with self.subTest(separator=separator):
+                grade = self._grade(f"体格检查: 三角肌肌力4{separator}5级。")
+                self.assertEqual(grade["field_value"], f"4{separator}5", separator)
+                self.assertIsNone(grade["normalized_value"], separator)
+
+    def test_the_mrc_modifier_still_means_what_it_means(self):
+        for printed, typed in (("4-", 3.7), ("4+", 4.3), ("4", 4.0), ("3-", 2.7)):
+            with self.subTest(printed=printed):
+                grade = self._grade(f"体格检查: 三角肌肌力{printed}级。")
+                self.assertEqual(grade["field_value"], printed)
+                self.assertEqual(grade["normalized_value"], typed)
+
+    def test_a_range_reaches_the_passport_cell_as_a_range(self):
+        _, result = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
+        self.assertEqual(result["deltoid_strength"], "L4-5 / R4")
+
+    def test_the_unit_may_stand_on_both_bounds_of_the_range(self):
+        """「4级-5级」 is how a Chinese examiner writes the same refusal
+        to choose, and the range branch never saw it: the character
+        after the 4 is 级, so the pattern settled for the bare 「4」."""
+        grade = self._grade("体格检查: 三角肌肌力4级-5级。")
+        self.assertEqual(grade["field_value"], "4-5")
+        self.assertIsNone(grade["normalized_value"])
+
+    def test_every_separator_reads_as_a_range_with_the_unit_repeated(self):
+        separators = tuple(fshd_report_service._RANGE_DASHES) + tuple(
+            fshd_report_service._RANGE_WORDS
+        )
+        for separator in separators:
+            with self.subTest(separator=separator):
+                grade = self._grade(f"体格检查: 三角肌肌力4级{separator}5级。")
+                self.assertEqual(grade["field_value"], f"4{separator}5", separator)
+                self.assertIsNone(grade["normalized_value"], separator)
+
+    def test_a_full_width_modifier_is_the_modifier_it_prints(self):
+        """「4＋级」 was published as the bare 「4」 and typed 4.0 — the
+        examiner wrote 4+, which is 4.3."""
+        for printed, cell, typed in (
+            ("4\uff0b", "4+", 4.3),
+            ("4\uff0d", "4-", 3.7),
+            ("3\uff0d", "3-", 2.7),
+        ):
+            with self.subTest(printed=printed):
+                grade = self._grade(f"体格检查: 三角肌肌力{printed}级。")
+                self.assertEqual(grade["field_value"], cell, printed)
+                self.assertEqual(grade["normalized_value"], typed, printed)
+
+    def test_the_minus_signs_are_all_range_separators(self):
+        """The containment the range branch depends on: every dash the ±
+        modifier accepts is in the range class, so 「4－5级」 is claimed as
+        an interval before the modifier branch is ever reached."""
+        self.assertTrue(
+            set(fshd_report_service._MRC_MINUS_SIGNS)
+            <= set(fshd_report_service._RANGE_DASHES)
+        )
+
+    def test_a_side_still_binds_to_its_own_grade(self):
+        fields, _ = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
+        by_side = {
+            f["side"]: (f["field_value"], f["normalized_value"])
+            for f in fields
+            if f["field_name"] == "mrc_score"
+        }
+        self.assertEqual(by_side["left"], ("4-5", None))
+        self.assertEqual(by_side["right"], ("4", 4.0))
+
+
+class AFootnoteMarkerIsNotAVocabularyTest(unittest.TestCase):
+    """THE FOURTH ROUND OF 「ADD THE MARKER THE LAST PAGE PRINTED」.
+
+    The decoration class enumerated its markers, so the one a Chinese
+    laboratory prints in front of a numbered footnote — the CIRCLED
+    digit, and the full-width stop after an ordinal — was not stripped,
+    `_leads_a_note` never saw the lead standing behind it, and the line
+    was labelled PLAIN: the row kind that may carry a reading.
+
+    Decoration is now the complement of content, so the markers below
+    are examples and not a list to keep in sync. Synthetic throughout.
+    """
+
+    #: Every one of these is printed in front of a footnote item on some
+    #: page. The empty string is the same footnote with no marker at all,
+    #: which has always been read correctly and is here as the control.
+    MARKERS = ("", "1. ", "1、", "(1) ", "[1] ", "*", "※", "★", "①", "②",
+               "⑴", "㈠", "⒈", "1．", "２．", "一、")
+
+    NEGATIVE_GENETICS = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "检测方法: Southern blot",
+        "检测结果: D4Z4 重复单元数 18",
+        "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(self.NEGATIVE_GENETICS + rows),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 生化") + rows),
+            "other",
+            "Biochemistry.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_content_is_stated_positively_and_decoration_is_what_is_left(self):
+        for char in "1一A血q５":
+            self.assertTrue(fshd_report_service._is_row_content(char), char)
+        for char in "①⑴㈠⒈．、)]*※★ -":
+            self.assertFalse(fshd_report_service._is_row_content(char), char)
+
+    def test_every_marker_leaves_the_footnote_a_footnote(self):
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                line = f"{marker}备注: D4Z4 重复单元数低于 10 个即为缩短"
+                self.assertTrue(fshd_report_service._leads_a_note(line), marker)
+
+    def test_a_marked_footnote_is_not_this_patients_type(self):
+        """The defining sentence supplies the 分型 the report EXCLUDES,
+        onto the passport and into patient_profiles."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                summary = self._genetic(
+                    f"{marker}备注: D4Z4 重复单元数低于 10 个即为缩短,"
+                    " 符合 FSHD1 分子诊断标准。",
+                )
+                self.assertIsNone(summary["diagnosis_type"], marker)
+                self.assertEqual(summary["d4z4_repeat_pathogenic"], 18, marker)
+
+    def test_a_marked_footnote_is_not_this_patients_plasma_level(self):
+        """The panic threshold published as the reading — the precise
+        defect the note vocabulary was written for."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                panel = self._panel(
+                    "肌酸激酶(CK) 693 40-200",
+                    f"{marker}注: 血清钾低于 2.8 为危急值, 请立即通知临床医师",
+                )
+                self.assertEqual(panel.get("ck"), 693, marker)
+                self.assertNotIn("potassium", panel)
+
+    def test_an_ordinal_still_has_to_carry_its_own_terminator(self):
+        """A digit run with a NAME after it is a table's row index, and
+        「1 白细胞计数(WBC) 6.69」 must not lose its 1."""
+        row = "1 白细胞计数(WBC) 6.69 3.5-9.5"
+        self.assertEqual(fshd_report_service._note_undecorated(row), row)
+        self.assertFalse(fshd_report_service._leads_a_note(row))
+        panel = self._panel(row)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_chinese_numeral_inside_a_word_is_not_an_ordinal(self):
+        self.assertEqual(
+            fshd_report_service._note_undecorated("十二指肠溃疡病史"),
+            "十二指肠溃疡病史",
+        )
+
+    def test_a_marked_row_that_leads_no_note_still_carries_its_reading(self):
+        """Stripping decoration answers ONE question. A row that is a
+        reading is still a reading with an ordinal in front of it."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                panel = self._panel(f"{marker}肌酸激酶(CK) 693 40-200")
+                self.assertEqual(panel.get("ck"), 693, marker)
+
+
+class AnMrcGradeIsAnchoredToTheMeasurementTest(unittest.TestCase):
+    """THE FIRST GRADE-SHAPED NUMBER IN THE SENTENCE WAS THE STRENGTH.
+
+    The reader searched the whole sentence for `[0-5]` with nothing
+    tying that digit to 肌力 or to 级, so on any sentence naming a muscle
+    a number out of ordinary examiner prose was published as the
+    muscle's MRC grade — onto `deltoid_strength` and into 平均肌力 on the
+    passport, the share page, the referral pack and the export.
+    Synthetic throughout.
+    """
+
+    #: The page is a physical exam whatever the sentence under test says,
+    #: so what is measured here is the READER and not the classifier.
+    PAGE = ("神经科专科查体记录", "四肢肌力检查")
+
+    def _grades(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join(self.PAGE + (sentence,)), "other", "physical.jpeg"
+        )
+        return [
+            f
+            for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "mrc_score"
+        ]
+
+    def test_a_sibling_count_is_not_a_deltoid_grade(self):
+        self.assertEqual(
+            self._grades(
+                "体格检查: 双侧三角肌肌力检查配合欠佳, 患者共有 3 个兄弟姐妹同患此病。"
+            ),
+            [],
+        )
+
+    def test_a_duration_in_years_is_not_a_grade(self):
+        self.assertEqual(
+            self._grades("体格检查: 三角肌无力已 4 年, 未行肌力测定。"), []
+        )
+
+    def test_the_grade_unit_is_an_anchor(self):
+        grades = self._grades("体格检查: 三角肌肌力 4 级。")
+        self.assertEqual(
+            [(g["field_value"], g["normalized_value"]) for g in grades], [("4", 4.0)]
+        )
+
+    def test_the_measurement_name_is_an_anchor_when_the_unit_is_omitted(self):
+        for sentence in ("体格检查: 三角肌肌力 4。", "体格检查: 三角肌 MMT 4。"):
+            with self.subTest(sentence=sentence):
+                grades = self._grades(sentence)
+                self.assertEqual(
+                    [(g["field_value"], g["normalized_value"]) for g in grades],
+                    [("4", 4.0)],
+                    sentence,
+                )
+
+    def test_the_label_does_not_reach_across_a_clause_boundary(self):
+        """A label introduces what follows it, and it stops introducing
+        at the comma."""
+        self.assertEqual(
+            self._grades("体格检查: 三角肌肌力未测, 病程 4 年。"), []
+        )
+
+    def test_a_side_still_binds_to_its_own_anchored_grade(self):
+        grades = self._grades("体格检查: 三角肌肌力左侧 4 级, 右侧 5 级。")
+        self.assertEqual(
+            {g["side"]: g["field_value"] for g in grades}, {"left": "4", "right": "5"}
+        )
+
+
+class ANoteHeaderDoesNotSwallowTheResultsTableTest(unittest.TestCase):
+    """THE REGION HAD NO END AND THE FUSE POINTED THE WRONG WAY.
+
+    A note label that reached only its own line let every threshold under
+    a bare 「备注」 stand as a candidate reading, so the label was given a
+    REGION — and the region was closed by nothing but a sixteen-line
+    fuse. A Chinese laboratory that prints 「说明」 above its results table
+    with no column-header row between them therefore had its ENTIRE panel
+    labelled NOTE and refused, with an empty review queue reporting
+    nothing amiss. Synthetic throughout.
+    """
+
+    #: Sixteen ordinary rows — one more than the fuse would have let
+    #: through even if the fuse had been the boundary. Every value here
+    #: is invented.
+    PANEL_ROWS = (
+        "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+        "红细胞计数(RBC) 5.12 4.3-5.8 10^12/L",
+        "血红蛋白量(HGB) 155 130-175 g/L",
+        "红细胞压积(HCT) 45.1 40-50 %",
+        "平均红细胞体积(MCV) 88.1 82-100 fL",
+        "平均血红蛋白量(MCH) 30.3 27-34 pg",
+        "平均血红蛋白浓度(MCHC) 344 316-354 g/L",
+        "红细胞分布宽度(RDW) 12.6 11.5-14.5 %",
+        "血小板计数(PLT) 249 125-350 10^9/L",
+        "血小板压积(PCT) 0.25 0.11-0.28 %",
+        "中性粒细胞百分比(NEUT%) 58.2 40-75 %",
+        "淋巴细胞百分比(LYMPH%) 32.4 20-50 %",
+        "单核细胞百分比(MONO%) 6.1 3-10 %",
+        "嗜酸性粒细胞百分比(EO%) 2.6 0.4-8 %",
+        "中性粒细胞绝对值(NEUT#) 3.89 1.8-6.3 10^9/L",
+        "淋巴细胞绝对值(LYMPH#) 2.17 1.1-3.2 10^9/L",
+    )
+
+    #: Every analyte the panel reader publishes off `PANEL_ROWS` when
+    #: nothing stands above them — the control this class measures
+    #: against, so that a row lost to a note header is visible as a
+    #: MISSING analyte rather than as a shorter dict.
+    EXPECTED = {
+        "wbc": 6.69,
+        "rbc": 5.12,
+        "hgb": 155.0,
+        "hct": 45.1,
+        "mcv": 88.1,
+        "mch": 30.3,
+        "mchc": 344.0,
+        "rdw_cv": 12.6,
+        "plt": 249.0,
+        "pct": 0.25,
+        "neut_pct": 58.2,
+        "lymph_pct": 32.4,
+        "mono_pct": 6.1,
+        "eos_pct": 2.6,
+        "neut_abs": 3.89,
+        "lymph_abs": 2.17,
+    }
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _assert_whole_panel(self, panel, note=""):
+        for analyte, value in self.EXPECTED.items():
+            self.assertEqual(panel.get(analyte), value, f"{analyte} {note}")
+
+    def test_a_complete_panel_under_a_note_header_keeps_every_row(self):
+        """THE REGRESSION. Sixteen rows, one heading, zero results."""
+        panel = self._panel("说明", *self.PANEL_ROWS)
+        self._assert_whole_panel(panel)
+
+    def test_every_note_header_spelling_leaves_the_panel_alone(self):
+        for header in ("说明", "备注", "附注", "注释", "结果说明", "临床意义",
+                       "注意事项", "温馨提示", "危急值", "单位换算"):
+            with self.subTest(header=header):
+                self._assert_whole_panel(self._panel(header, *self.PANEL_ROWS), header)
+
+    def test_a_blank_line_ends_a_note_region(self):
+        """A footnote block is contiguous prose; the gap after it is the
+        page saying the block finished."""
+        panel = self._panel(
+            "备注",
+            "本报告仅对本次送检标本负责。",
+            "",
+            *self.PANEL_ROWS,
+        )
+        self._assert_whole_panel(panel)
+
+    def test_a_table_header_row_ends_a_note_region(self):
+        panel = self._panel("说明", "项目 结果 参考区间 单位", *self.PANEL_ROWS)
+        self._assert_whole_panel(panel)
+
+    def test_the_note_block_under_the_table_is_still_refused(self):
+        """The other direction, unchanged: a real footnote block still
+        loses every threshold it states."""
+        panel = self._panel(
+            *self.PANEL_ROWS,
+            "备注",
+            "1. 血红蛋白量低于 60 g/L",
+            "为危急值,",
+            "请立即通知临床医师",
+            "2. 血小板计数低于 20",
+            "为危急值,",
+            "请立即通知临床医师",
+        )
+        self._assert_whole_panel(panel)
+
+    def test_a_footnote_quoting_an_interval_does_not_end_its_own_region(self):
+        """A footnote QUOTES an interval; a row prints a READING. The
+        quote is a clause and the reading is a row, and neither answer
+        needs the page to print intervals."""
+        self.assertTrue(
+            fshd_report_service._reads_as_a_note_item(
+                "D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1 分子诊断标准"
+            )
+        )
+        self.assertFalse(
+            fshd_report_service._resumes_the_page_rows("血红蛋白量参考区间 130-175 g/L")
+        )
+        self.assertTrue(
+            fshd_report_service._resumes_the_page_rows("血红蛋白量(HGB) 155 130-175 g/L")
+        )
+
+    def test_a_unit_that_spells_itself_with_digits_is_not_a_reading(self):
+        """「10^9/L」 is the 单位 cell of half a 血常规, and a scan that
+        counts its 10 as a reading ends every region on the first line."""
+        self.assertFalse(
+            fshd_report_service._resumes_the_page_rows(
+                "白细胞计数参考区间 3.5-9.5 10^9/L"
+            )
+        )
+
+
+class ANoteLeadIsReadFromItsEndTest(unittest.TestCase):
+    """THE WHITELIST WAS STILL A WHITELIST.
+
+    A Chinese compound is head-final: 结果说明 is 说明 about the 结果 and
+    特别提示 is a 提示 that is 特别, so a `startswith` test asked the
+    question from the wrong end and had to grow one entry per qualifier a
+    page happened to print. Synthetic throughout.
+    """
+
+    #: The leads a Chinese genetics or laboratory report prints that the
+    #: prefix list could not see, plus the ones it always could.
+    LEADS = ("结果说明", "结果解释", "临床意义", "结果注释", "特别提示",
+             "报告说明", "注解", "备注", "附注", "注意事项", "温馨提示",
+             "危急值提示", "单位换算", "说明")
+
+    NEGATIVE_GENETICS = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "检测方法: Southern blot",
+        "检测结果: D4Z4 重复单元数 18",
+        "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+    )
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 生化") + rows),
+            "other",
+            "Biochemistry.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(self.NEGATIVE_GENETICS + rows),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_every_lead_is_a_lead_bare_and_carrying_content(self):
+        for lead in self.LEADS:
+            with self.subTest(lead=lead):
+                self.assertTrue(fshd_report_service._leads_a_note(lead), lead)
+                self.assertTrue(
+                    fshd_report_service._leads_a_note(f"{lead}: 血清钾低于 2.8 为危急值"),
+                    lead,
+                )
+
+    def test_a_threshold_under_any_lead_is_not_this_patients_plasma_level(self):
+        for lead in self.LEADS:
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "肌酸激酶(CK) 693 40-200",
+                    lead,
+                    "血清钾低于 2.8 为危急值, 请立即通知临床医师",
+                )
+                self.assertEqual(panel.get("ck"), 693, lead)
+                self.assertNotIn("potassium", panel, lead)
+
+    def test_a_definition_under_any_lead_is_not_this_patients_type(self):
+        for lead in self.LEADS:
+            with self.subTest(lead=lead):
+                summary = self._genetic(
+                    lead,
+                    "D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+                )
+                self.assertIsNone(summary["diagnosis_type"], lead)
+                self.assertEqual(summary["d4z4_repeat_pathogenic"], 18, lead)
+
+    def test_an_ordinary_word_ending_in_a_head_is_not_a_lead(self):
+        for line in ("注意力 正常", "注射用头孢曲松钠 1.0g",
+                     "意义不明确的克隆性造血", "十二指肠溃疡病史",
+                     "1 白细胞计数(WBC) 6.69 3.5-9.5"):
+            with self.subTest(line=line):
+                self.assertFalse(fshd_report_service._leads_a_note(line), line)
+
+    def test_an_impression_header_is_not_a_footnote_lead(self):
+        """提示 is deliberately not a HEAD: 检查提示 is a study's own
+        conclusion, and reading it as a footnote erases the sentence
+        every imaging reader publishes. See `_NOTE_LEAD_HEADS`."""
+        for header in ("检查提示", "超声提示", "心电图提示"):
+            with self.subTest(header=header):
+                self.assertFalse(fshd_report_service._leads_a_note(header), header)
+
+    def test_the_head_list_is_named_as_incomplete(self):
+        """The head-final rule generalises the QUALIFIER and nothing
+        about the head. What bounds a head this list does not carry is
+        `_ends_a_note_region`, not the list."""
+        self.assertIn("说明", fshd_report_service._NOTE_LEAD_HEADS)
+        self.assertNotIn("提示", fshd_report_service._NOTE_LEAD_HEADS)
+
+
+class ARepeatIntervalIsNotItsFirstDigitTest(unittest.TestCase):
+    """THE CELL THIS WHOLE PRODUCT TURNS ON, TRUNCATED BY A BACKTRACK.
+
+    The determinate-count pattern refuses a number that opens a printed
+    interval, and the refusal was a lookahead behind `\d+` — which is a
+    statement about wherever the engine last stopped, not about the
+    number. On 「10-20」 the engine gave a digit back, the lookahead then
+    saw 「0」, and the interval was published as a determinate count of 1.
+    Synthetic throughout.
+    """
+
+    SEPARATORS = tuple(fshd_report_service._RANGE_DASHES) + tuple(
+        fshd_report_service._RANGE_WORDS
+    )
+
+    def _genetic(self, printed):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市医学检验所 基因检测报告",
+                "检测项目: FSHD相关基因检测",
+                f"检测结果: D4Z4重复单元数 {printed}",
+            )),
+            "genetic",
+            "Genetic Report.jpeg",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        field = next(
+            (f for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "d4z4_repeat_pathogenic"),
+            None,
+        )
+        return summary, field
+
+    def test_a_two_digit_lower_bound_is_never_a_count_of_its_first_digit(self):
+        for separator in self.SEPARATORS:
+            for printed in (f"10{separator}20", f"11{separator}13", f"12{separator}100"):
+                with self.subTest(printed=printed):
+                    summary, field = self._genetic(printed)
+                    self.assertIsNone(summary["d4z4_repeat_pathogenic"], printed)
+                    self.assertEqual(field["field_value"], printed, printed)
+                    self.assertIsNone(field["normalized_value"], printed)
+
+    def test_the_interval_is_not_published_at_a_read_cells_confidence(self):
+        _, field = self._genetic("10-20")
+        self.assertLess(field["confidence"], 0.97)
+
+    def test_the_source_text_is_not_rewritten_to_a_fragment(self):
+        """A trace that agrees with the wrong number is worse than no
+        trace: the reviewer reads `source_text` to check the cell."""
+        _, field = self._genetic("10-20")
+        self.assertIn("10-20", field["source_text"])
+
+    def test_a_one_digit_lower_bound_is_still_an_interval(self):
+        summary, field = self._genetic("1-10")
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+        self.assertEqual(field["field_value"], "1-10")
+
+    def test_a_determinate_count_of_two_digits_is_still_read(self):
+        """The guard must not cost the ordinary reading it stands next
+        to: 18 is a whole number and stays one."""
+        summary, field = self._genetic("18")
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+        self.assertEqual(field["normalized_value"], 18)
+        self.assertEqual(field["confidence"], 0.97)
+
+
+class ThePairWordIsNotTheSideItStartsWithTest(unittest.TestCase):
+    """左 IS A SUBSTRING OF 左右 AND THE SIDE TEST WAS A SUBSTRING TEST.
+
+    「肌力4级左右」 is an examiner writing APPROXIMATELY grade 4 and
+    「左右对称」 is an examiner writing SYMMETRIC; both were published as
+    left-sided findings. Synthetic throughout.
+    """
+
+    def _grades(self, line):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录", line)),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("muscle_strength", [])
+
+    def test_an_approximate_grade_names_no_side(self):
+        grades = self._grades("三角肌肌力4级左右。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("unspecified", "4")]
+        )
+
+    def test_a_symmetric_finding_is_not_a_left_sided_finding(self):
+        self.assertEqual(
+            fshd_report_service._canonical_side("三角肌左右对称, 未见萎缩。"),
+            "bilateral",
+        )
+
+    def test_the_pair_measured_together_is_one_reading_and_not_two(self):
+        """「左右均为4级」 put a 左 in front of the grade and a 右 behind
+        it, so one grade was published twice."""
+        grades = self._grades("三角肌肌力左右均为4级。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("bilateral", "4")]
+        )
+
+    def test_an_approximation_is_told_from_the_pair_by_what_precedes_it(self):
+        for text, expected in (
+            ("肌力4级左右", "unspecified"),
+            ("直径2.5cm左右", "unspecified"),
+            ("左右上肢肌力对称", "bilateral"),
+            ("左右不等", "bilateral"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(fshd_report_service._canonical_side(text), expected)
+
+    def test_a_named_side_still_binds_to_its_own_grade(self):
+        grades = self._grades("左侧三角肌肌力4级, 右侧三角肌肌力5级。")
+        self.assertEqual(
+            {g["side"]: g["mrc_score"] for g in grades}, {"left": "4", "right": "5"}
+        )
+
+
+class AnAlternationIsAlsoARefusalToChooseTest(unittest.TestCase):
+    """THE REFUSAL WAS SPELLED AS A SEPARATOR CLASS.
+
+    「4-5级」 was the only spelling of 「between two grades」 the reader
+    could see, so 「4级或5级」 published a determinate 4 and 「4或5级」 a
+    determinate 5 — the same sentence read as two different grades
+    depending on where the 级 fell. Synthetic throughout.
+    """
+
+    def _grades(self, line):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录", line)),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("muscle_strength", [])
+
+    def test_no_alternation_of_two_grades_is_typed(self):
+        for line in ("三角肌肌力4或5级。", "三角肌肌力4级或5级。",
+                     "三角肌肌力4或者5级。", "三角肌肌力4级与5级之间。",
+                     "三角肌肌力4级和5级之间。", "三角肌肌力4级、5级不等。"):
+            with self.subTest(line=line):
+                grades = self._grades(line)
+                self.assertEqual(len(grades), 1, line)
+                self.assertIsNone(grades[0]["mrc_numeric"], line)
+                self.assertIn("4", grades[0]["mrc_score"], line)
+                self.assertIn("5", grades[0]["mrc_score"], line)
+
+    def test_the_refused_cell_carries_no_number_downstream(self):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录", "三角肌肌力4级或5级。")),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        grades = [
+            f for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "mrc_score"
+        ]
+        self.assertEqual([g["normalized_value"] for g in grades], [None])
+        observations = [
+            o for o in result["observations"]
+            if o.get("analyte_name") == "mrc_score"
+        ]
+        self.assertTrue(observations)
+        for observation in observations:
+            self.assertIsNone(observation["result"].get("value_num"))
+        # The legacy alias reads back the cell AS PRINTED, which is the
+        # examiner's refusal and not a grade.
+        self.assertEqual(result["deltoid_strength"], "4或5")
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["mrc_score"]["value_num"]
+        )
+
+    def test_a_separator_is_still_a_separator(self):
+        grades = self._grades("三角肌肌力4-5级。")
+        self.assertEqual(
+            [(g["mrc_score"], g["mrc_numeric"]) for g in grades], [("4-5", None)]
+        )
+
+    def test_a_grade_beside_an_unrelated_number_is_still_read(self):
+        """The structural join was tried and refused a grade the examiner
+        DID state: a duration sits one comma away from a grade in
+        ordinary examiner prose."""
+        for line in ("三角肌肌力4级, 5年前发病。", "三角肌肌力4级。患者共有3个兄弟姐妹同患此病。"):
+            with self.subTest(line=line):
+                grades = self._grades(line)
+                self.assertEqual(
+                    [(g["mrc_score"], g["mrc_numeric"]) for g in grades],
+                    [("4", 4.0)],
+                    line,
+                )
+
+    def test_the_second_digit_has_to_be_wearing_a_grade(self):
+        """和 means 「and」 before it means 「or」. 「4级和5年前相比」 joins a
+        grade to a DURATION, and refusing that sentence's grade would
+        trade one silently-wrong reading for one silently-missing one.
+        See `_MRC_SECOND_GRADE`."""
+        for line in ("三角肌肌力4级和5年前相比无变化。",
+                     "三角肌肌力4级和5个月前一致。",
+                     "三角肌肌力4级与5岁弟弟相仿。"):
+            with self.subTest(line=line):
+                self.assertEqual(
+                    [(g["mrc_score"], g["mrc_numeric"]) for g in self._grades(line)],
+                    [("4", 4.0)],
+                    line,
+                )
+
+    def test_the_modifier_branch_is_untouched(self):
+        grades = self._grades("三角肌肌力4+级。")
+        self.assertEqual(
+            [(g["mrc_score"], g["mrc_numeric"]) for g in grades], [("4+", 4.3)]
+        )
+
+    def test_an_alternation_word_is_never_a_range_separator(self):
+        """`_RANGE_SEPARATOR` stays the one place an INTERVAL separator is
+        spelled; an alternation is a different statement and a different
+        class."""
+        known = set(fshd_report_service._RANGE_DASHES) | set(
+            fshd_report_service._RANGE_WORDS
+        )
+        self.assertEqual(known & set(fshd_report_service._ALTERNATION_WORDS), set())
+
+
+class ANoteRegionEndsAtARowOfThisPageTest(unittest.TestCase):
+    """WHAT ENDS A NOTE REGION ON A PAGE THAT HAS NO TABLE.
+
+    The end test was 「a reading printed BESIDE ITS INTERVAL」 — a
+    statement about a laboratory panel's layout, asked of every page —
+    and that one assumption was wrong in both directions at once. A
+    genetics page prints no intervals, so nothing on it could ever close
+    a region; and a footnote item quotes an interval and carries a
+    second number all the time, so a block reopened in the middle of
+    itself. Every fixture below is synthetic.
+    """
+
+    #: A molecular report laid out with its footnote block ABOVE the
+    #: readings, which is the shape that had no boundary at all. Every
+    #: value is invented.
+    GENETICS_NOTE_FIRST = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "备注",
+        "D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        "D4Z4 重复单元数 18",
+        "4q35 单倍型 4qA",
+        "本报告仅对本次送检标本负责。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_genetics_page_can_close_a_note_region_at_all(self):
+        """THE REGRESSION, HALF ONE. No line on a molecular report wears
+        a reference interval, so the sixteen-line fuse was the only
+        boundary and the readings under the footnote were all refused."""
+        summary = self._genetic(*self.GENETICS_NOTE_FIRST)
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_the_threshold_that_footnote_defines_is_still_not_a_diagnosis(self):
+        """The other direction, unchanged: the block that DEFINES the
+        FSHD1 boundary must not type the patient with it."""
+        summary = self._genetic(*self.GENETICS_NOTE_FIRST)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_a_multi_item_genetics_footnote_is_refused_to_its_last_item(self):
+        """Relaxing the interval requirement must not reopen a block
+        that states its threshold across several numbered items."""
+        summary = self._genetic(
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "检测结果: D4Z4 重复单元数 18",
+            "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+            "备注",
+            "1. D4Z4 重复单元数低于 10 个即为缩短",
+            "2. 重复单元数 11 以上为正常参考范围",
+            "3. 符合 FSHD1 分子诊断标准者建议遗传咨询",
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_a_footnote_item_quoting_an_interval_does_not_reopen_the_block(self):
+        """THE REGRESSION, HALF TWO. A turnaround time beside a quoted
+        reference interval satisfied 「a reading beside an interval」
+        exactly, so item one ended the block and item two went back to
+        being a candidate result row: a panic threshold published as this
+        patient's platelet count."""
+        panel = self._panel(
+            "血红蛋白量(HGB) 155 130-175 g/L",
+            "说明",
+            "1. 本项目参考区间 130-175 g/L, 检测周期 3 个工作日",
+            "2. 血小板计数 20 为危急值",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+
+    def test_a_second_interval_in_one_item_does_not_reopen_the_block_either(self):
+        """A paediatric range printed beside the adult one is two
+        intervals on one line and no reading at all."""
+        panel = self._panel(
+            "血红蛋白量(HGB) 155 130-175 g/L",
+            "说明",
+            "1. 儿童参考区间 110-160 g/L 成人参考区间 130-175 g/L",
+            "2. 血小板计数 20 为危急值",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+
+    def test_the_same_string_shape_is_read_two_ways_by_what_follows_it(self):
+        """THE WHOLE REASON A SINGLE LINE CANNOT ANSWER. 「血小板计数 20」
+        and 「D4Z4 重复单元数 18」 are a name and a number in both cases;
+        one is a panic threshold and the other is the cell this product
+        turns on. What says which is whether the page goes on printing
+        ROWS after it — a table is never one row long."""
+        alone = ["备注", "血小板计数 20", "请立即通知临床医师"]
+        self.assertFalse(fshd_report_service._ends_a_note_region(alone, 1))
+        in_a_run = ["备注", "D4Z4 重复单元数 18", "4q35 单倍型 4qA"]
+        self.assertTrue(fshd_report_service._ends_a_note_region(in_a_run, 1))
+
+    def test_a_page_with_no_intervals_at_all_can_still_end_a_region(self):
+        """THE ANSWER FOR THE PAGE THAT HAS NO TABLE. A molecular report
+        prints no interval, no unit and no flag column, and its rows
+        still resume in a run."""
+        genetics = [
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "备注",
+            "D4Z4 重复单元数低于 10 个即为缩短",
+            "4q35 单倍型 4qA",
+            "D4Z4 重复单元数 18",
+        ]
+        self.assertTrue(fshd_report_service._reads_as_a_note_item(genetics[2]))
+        self.assertTrue(fshd_report_service._ends_a_note_region(genetics, 3))
+
+    def test_a_footnote_item_that_quotes_a_range_is_not_a_run(self):
+        """A footnote item that quotes a range looks like a row and is
+        one line long; the block under it is clauses, so nothing
+        resumes."""
+        self.assertFalse(
+            fshd_report_service._ends_a_note_region(
+                [
+                    "示例医学检验所 FSHD1 基因检测报告单",
+                    "备注",
+                    "1 本项目参考区间 11-100 检测周期 3 个工作日",
+                    "2 重复单元数低于 10 个即为缩短",
+                ],
+                2,
+            )
+        )
+
+    def test_a_bound_word_keeps_a_threshold_from_being_a_reading(self):
+        """The same grammar `_extract_genetic` refuses a count by. A
+        footnote states a bound; a row states a value."""
+        for line in ("血红蛋白量低于 60 g/L", "重复单元数 11 以上为正常参考范围",
+                     "重复单元数不足 10 个", "血小板计数 <20"):
+            with self.subTest(line=line):
+                self.assertFalse(fshd_report_service._prints_a_reading(line), line)
+        self.assertTrue(fshd_report_service._prints_a_reading("D4Z4 重复单元数 18"))
+
+    def test_a_thousands_separator_is_not_a_clause_break(self):
+        """`_reads_as_prose` must not read 「3,250」 as two clauses, or a
+        creatine kinase row stops being a row."""
+        self.assertFalse(
+            fshd_report_service._reads_as_prose("肌酸激酶(CK) 3,250 50-310 U/L")
+        )
+        self.assertTrue(
+            fshd_report_service._reads_as_prose("血清钾低于 2.8 为危急值, 请通知临床")
+        )
+
+
+class ANoteRegionEndsWhereTheRowsResumeTest(unittest.TestCase):
+    """A NOTE REGION ENDS WHERE THE PAGE'S OWN ROWS RESUME, IN A RUN.
+
+    The boundary before this one was 「a row of this page」, where 「of
+    this page」 meant 「wearing a reference interval where the page prints
+    intervals」 — a statement about laboratory furniture, which a
+    molecular report does not have and a mixed table does not wear on
+    every row. Three defects came out of that one assumption, and all
+    three are below. Every fixture is synthetic; no value, name or
+    number here belongs to anybody.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 生化") + rows),
+            "other",
+            "Muscle Enzyme.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_a_genetics_page_that_wears_one_interval_still_reads_the_rest(self):
+        """D1. One row of a molecular report printing a reference range
+        put the whole page into a mode its OTHER rows could not satisfy,
+        and 「4q35 单倍型 4qA」 — which carries no number at all outside a
+        Latin token — was swallowed by the footnote above it. The
+        haplotype is a passport field."""
+        summary = self._genetic(
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "检测方法: 脉冲场凝胶电泳",
+            "备注",
+            "①D4Z4 重复单元数低于 10 个即为缩短 符合 FSHD1 分子诊断标准",
+            "4q35 单倍型 4qA",
+            "D4Z4 重复单元数 3 参考范围 11-100",
+            "检测结论: 检出 4q35 D4Z4 阵列缩短",
+        )
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_circled_marker_does_not_reopen_the_block(self):
+        """D2. The block held only because 「1.」 put a full stop on the
+        line and `_reads_as_prose` counted the ordinal's own terminator
+        as a clause break. A page numbering its footnotes ①②③ had item
+        one end the region — it quotes an interval beside a turnaround
+        time — and every item under it went back to being a candidate
+        result row."""
+        panel = self._panel(
+            "肌酸激酶(CK) 693 50-310 U/L",
+            "备注",
+            "①本项目参考区间 50-310 U/L 检测周期 3 个工作日",
+            "②肌酸激酶 5000 为危急值",
+            "③乳酸脱氢酶 1000 为危急值",
+        )
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertNotIn("ldh", panel)
+
+    def test_a_mixed_table_keeps_the_rows_that_print_no_interval(self):
+        """D3. The panel-loss fix only covered tables where EVERY row
+        prints an interval; on a mixed table the rows without one could
+        not end the region and were lost with it."""
+        panel = self._panel(
+            "说明",
+            "肌酸激酶同工酶(CKMB) 28 U/L",
+            "肌酸激酶(CK) 693 50-310 U/L",
+            "乳酸脱氢酶(LDH) 319 120-250 U/L",
+        )
+        self.assertEqual(panel.get("ckmb"), 28)
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertEqual(panel.get("ldh"), 319)
+
+    def test_a_numbered_table_under_a_note_header_is_not_prose(self):
+        """The same 「asked of the decorated line」 mistake in the other
+        direction: a Chinese laboratory numbers its rows, and every one
+        of them read as prose because of its own ordinal."""
+        panel = self._panel(
+            "说明",
+            "1. 肌酸激酶(CK) 693 50-310 U/L",
+            "2. 乳酸脱氢酶(LDH) 319 120-250 U/L",
+        )
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertEqual(panel.get("ldh"), 319)
+
+    def test_a_predicate_is_what_makes_an_item_an_item(self):
+        """A row is a noun phrase and its numbers; an item is a clause
+        about one. The two are the same characters plus a predicate."""
+        self.assertTrue(fshd_report_service._reads_as_a_note_item("血小板计数 20 为危急值"))
+        self.assertFalse(fshd_report_service._reads_as_a_note_item("血小板计数 20"))
+
+    def test_no_analyte_name_is_read_as_a_predicate(self):
+        """The class is closed and chosen so that no analyte carries a
+        member — 「C反应蛋白」 would otherwise refuse itself."""
+        for row in (
+            "C反应蛋白(CRP) 3.2 0-8 mg/L",
+            "必需氨基酸 120 100-200 umol/L",
+            "自由基代谢产物 1.4 0-2",
+            "血清铜等重金属 0.9 0.7-1.5",
+        ):
+            with self.subTest(row=row):
+                self.assertFalse(fshd_report_service._reads_as_a_note_item(row), row)
+
+
+class ASideWordStopsAtTheClauseBreakTest(unittest.TestCase):
+    """THE SIDE GAP EXCLUDED THE GRADE DIGITS AND NOT THE COMMA.
+
+    So a side word bound straight across a clause break to the OTHER
+    side's grade, and the untested side was published at the confidence
+    reserved for a side the examiner actually named. Synthetic
+    throughout.
+    """
+
+    def _grades(self, line):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录", line)),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("muscle_strength", [])
+
+    def test_a_side_that_was_not_measured_gets_no_grade(self):
+        """THE REGRESSION. 「左侧未测」 was published as a left deltoid of
+        grade 4, off the 4 belonging to the right side."""
+        grades = self._grades("三角肌: 左侧未测, 右侧肌力4级。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("right", "4")]
+        )
+
+    def test_neither_side_reaches_across_the_break_in_either_direction(self):
+        grades = self._grades("三角肌: 左侧肌力3级, 右侧未查。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("left", "3")]
+        )
+
+    def test_the_enumerated_pair_is_still_one_statement_about_both_sides(self):
+        """「左、右」 IS THE PAIR WITH A SEPARATOR INSIDE IT, and it is now
+        folded where 「左右」 already was — see `_SIDE_PAIR_SOURCE`. One
+        measurement of both sides is published once, as bilateral, rather
+        than as two sided entries off one grade: the same correction the
+        welded spelling 「肌力左右均为4级」 already had."""
+        grades = self._grades("左、右上肢三角肌肌力均4级。")
+        self.assertEqual(
+            {g["side"]: g["mrc_score"] for g in grades}, {"bilateral": "4"}
+        )
+
+    def test_a_side_word_stops_where_the_other_side_is_named(self):
+        """THE DEFECT THE COMMA FIX DID NOT REACH. 、 was admitted into
+        the gap, so 「左侧…未测、右侧肌力4级」 put the left side word ten
+        characters in front of the RIGHT side's grade and published a
+        left deltoid the examiner recorded as not measured."""
+        grades = self._grades("左侧三角肌未测、右侧三角肌肌力4级。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("right", "4")]
+        )
+
+    def test_the_side_gap_spells_the_same_break_as_the_label_gap(self):
+        """Two gaps in one reader disagreeing about where a clause ends
+        is how this defect got in."""
+        for char in ",;.":
+            with self.subTest(char=char):
+                self.assertIn(char, fshd_report_service._MRC_SIDE_GAP)
+                self.assertIn(char, fshd_report_service._MRC_LABEL_GAP)
+
+    def test_each_side_gap_excludes_its_opposite(self):
+        """Whatever punctuation stands between them, the other side's
+        word is the page saying what follows is not this side's."""
+        left = fshd_report_service._mrc_side_prefix("(?:左|left)", "右")
+        right = fshd_report_service._mrc_side_prefix("(?:右|right)", "左")
+        self.assertIn("右", left)
+        self.assertIn("左", right)
+
+
+class OneExamSentenceNamesAsManyMusclesAsItMeasuresTest(unittest.TestCase):
+    """A 查体 SENTENCE LISTS MUSCLES AND THE READER TOOK THE FIRST ONE.
+
+    A Chinese enumeration comma is not a sentence break, so an examiner
+    recording four muscles in one breath had three of those grades
+    dropped without trace — and reading four muscles off ONE
+    sentence-wide grade regex would have published the first grade
+    against all four, which is worse. Synthetic throughout.
+    """
+
+    def _grades(self, *lines):
+        result = analyze_fshd_report(
+            "\n".join(("示例医院 神经内科查体记录",) + lines),
+            "other",
+            "Physical Exam.jpeg",
+        )
+        return [
+            (g["muscle_name"], g["side"], g["mrc_score"])
+            for g in result["fshd"]["normalized_summary"].get("muscle_strength", [])
+        ]
+
+    def test_four_muscles_in_one_sentence_keep_four_grades(self):
+        """THE REGRESSION. One sentence, four measurements, one entry."""
+        self.assertEqual(
+            self._grades(
+                "双侧三角肌肌力4级、肱二头肌肌力3级、股四头肌肌力5级、胫骨前肌肌力2级。"
+            ),
+            [
+                ("deltoid", "bilateral", "4"),
+                ("biceps", "bilateral", "3"),
+                ("quadriceps", "bilateral", "5"),
+                ("tibialis_anterior", "bilateral", "2"),
+            ],
+        )
+
+    def test_each_muscle_gets_its_own_grade_and_not_the_first_one(self):
+        grades = self._grades("三角肌肌力4级、肱二头肌肌力2级。")
+        self.assertEqual(
+            grades, [("deltoid", "unspecified", "4"), ("biceps", "unspecified", "2")]
+        )
+
+    def test_a_side_word_belongs_to_the_muscle_it_stands_in_front_of(self):
+        """The cut falls at the separator and not at the name, because a
+        Chinese side word PRECEDES what it qualifies."""
+        self.assertEqual(
+            self._grades("右侧三角肌肌力3级, 左侧肱二头肌肌力4级。"),
+            [("deltoid", "right", "3"), ("biceps", "left", "4")],
+        )
+
+    def test_a_leading_双侧_governs_the_whole_enumeration(self):
+        self.assertEqual(
+            self._grades("双侧股四头肌肌力4级、胫骨前肌肌力3级。"),
+            [("quadriceps", "bilateral", "4"), ("tibialis_anterior", "bilateral", "3")],
+        )
+
+    def test_a_muscle_enumerated_into_one_predicate_shares_it(self):
+        """「三角肌、肱二头肌肌力均4级」 is one predicate over two
+        subjects, and the first subject's span holds nothing but its own
+        name. See `_MUSCLE_ENUMERATED_ONLY`."""
+        self.assertEqual(
+            self._grades("三角肌、肱二头肌肌力均4级。"),
+            [("deltoid", "unspecified", "4"), ("biceps", "unspecified", "4")],
+        )
+
+    def test_a_muscle_with_a_statement_of_its_own_borrows_no_grade(self):
+        """The other side of the same rule: a span that says something
+        of its own did not share the next clause's measurement, and
+        publishing that grade would be a number nobody wrote."""
+        self.assertEqual(
+            self._grades("三角肌萎缩明显、肱二头肌肌力3级。"),
+            [("biceps", "unspecified", "3")],
+        )
+
+    def test_one_muscle_named_twice_still_reads_both_of_its_sides(self):
+        """The sentence is divided among the muscles it NAMES, and a
+        muscle named twice is one muscle: its span is the whole
+        sentence, so both sides are still read off it."""
+        self.assertEqual(
+            self._grades("左侧三角肌肌力4级, 右侧三角肌肌力5级。"),
+            [("deltoid", "left", "4"), ("deltoid", "right", "5")],
+        )
+
+    def test_a_sentence_that_records_no_grade_still_records_none(self):
+        """The anchor is untouched: a sibling count is not a grade, on
+        any of the muscles the sentence names."""
+        self.assertEqual(
+            self._grades("双侧三角肌与肱二头肌肌力检查配合欠佳, 患者共有3个兄弟姐妹同患此病。"),
+            [],
+        )
+
+    def test_the_statement_spans_cover_the_sentence_without_overlapping(self):
+        sentence = "双侧三角肌肌力4级、肱二头肌肌力3级、股四头肌肌力5级"
+        statements = fshd_report_service._muscle_statements(sentence)
+        self.assertEqual([s.start for s in statements][0], 0)
+        self.assertEqual([s.end for s in statements][-1], len(sentence))
+        for previous, current in zip(statements, statements[1:]):
+            self.assertEqual(previous.end, current.start)
 
 if __name__ == "__main__":
     unittest.main()

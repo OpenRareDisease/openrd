@@ -1,12 +1,18 @@
-type OcrPayloadLike = {
-  fields?: Record<string, unknown>;
-} | null;
+import { readGeneticEvidence, type GeneticEvidenceDocumentLike } from './genetic-evidence.js';
 
-export interface AutofillDocumentLike {
-  documentType: string | null;
-  uploadedAt: string | null;
-  ocrPayload: OcrPayloadLike | unknown;
-}
+/**
+ * WHICH REPORT THIS FILLS FROM IS NOT DECIDED HERE.
+ *
+ * It used to be: this module took the newest document typed
+ * `genetic_report`, falling back to the newest document carrying any
+ * genetic key. That rule disagreed with the one the passport uses, and
+ * both answers reached a reader at once — the passport printing one
+ * report's D4Z4 count, the registry export printing another's, neither
+ * page saying the other existed. `pickGeneticEvidenceDocument` is the
+ * single answer and `readGeneticEvidence` reads the values off it, so
+ * what lands in the baseline is what the passport shows.
+ */
+export type AutofillDocumentLike = GeneticEvidenceDocumentLike;
 
 export interface AutofillProfileLike {
   diagnosisDate: string | null;
@@ -28,26 +34,6 @@ const asRecord = (value: unknown): Record<string, unknown> | null => {
   }
 
   return value as Record<string, unknown>;
-};
-
-const pickTextField = (record: Record<string, unknown> | null, keys: string[]) => {
-  if (!record) {
-    return null;
-  }
-
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value !== 'string') {
-      continue;
-    }
-
-    const trimmed = value.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-
-  return null;
 };
 
 const hasMeaningfulValue = (value: unknown) => {
@@ -95,102 +81,27 @@ const extractYear = (value: string | null) => {
   return yearMatch ? Number(yearMatch[0]) : null;
 };
 
-const getTimestamp = (value: string | null) => {
-  if (!value) {
-    return 0;
-  }
-
-  const timestamp = new Date(value).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
-};
-
-const getDocumentType = (document: AutofillDocumentLike) => {
-  const payload = asRecord(document.ocrPayload);
-  const fields = asRecord(payload?.fields);
-  return (
-    pickTextField(fields, ['classifiedType', 'classified_type', 'reportType', 'report_type']) ||
-    document.documentType ||
-    'other'
-  );
-};
-
-const latestDocument = (
-  documents: AutofillDocumentLike[],
-  predicate: (document: AutofillDocumentLike) => boolean,
-) => {
-  const matches = documents.filter(predicate);
-  if (matches.length === 0) {
-    return null;
-  }
-
-  return matches.reduce((latest, current) =>
-    getTimestamp(current.uploadedAt) > getTimestamp(latest.uploadedAt) ? current : latest,
-  );
-};
-
 const deriveGeneticReportAutofill = (
   documents: AutofillDocumentLike[],
 ): GeneticReportAutofill | null => {
-  const latestGenetic = latestDocument(
-    documents,
-    (document) => getDocumentType(document) === 'genetic_report',
-  );
-  const fallbackGenetic = latestDocument(documents, (document) => {
-    const payload = asRecord(document.ocrPayload);
-    const fields = asRecord(payload?.fields);
-    return Boolean(
-      pickTextField(fields, [
-        'diagnosisType',
-        'diagnosis_type',
-        'geneticType',
-        'd4z4Repeats',
-        'd4z4RepeatPathogenic',
-        'd4z4_repeat_pathogenic',
-        'haplotype',
-        'haplotype4q',
-        'methylationValue',
-        'methylation_value',
-      ]),
-    );
-  });
+  const reading = readGeneticEvidence(documents);
+  const diagnosisDate = normalizeDate(reading.diagnosisDate);
 
-  const source = latestGenetic ?? fallbackGenetic;
-  if (!source) {
-    return null;
-  }
-
-  const payload = asRecord(source.ocrPayload);
-  const fields = asRecord(payload?.fields);
-  if (!fields) {
-    return null;
-  }
-
-  const diagnosisType = pickTextField(fields, [
-    'diagnosisType',
-    'geneticType',
-    'geneType',
-    'diagnosis_type',
-    'genetic_type',
-  ]);
-  const d4z4 = pickTextField(fields, [
-    'd4z4Repeats',
-    'd4z4RepeatPathogenic',
-    'd4z4_repeat_pathogenic',
-    'd4z4_repeats',
-  ]);
-  const haplotype = pickTextField(fields, ['haplotype', 'haplotype4q', 'haplotype_4q']);
-  const methylation = pickTextField(fields, ['methylationValue', 'methylation_value']);
-  const diagnosisDate = normalizeDate(pickTextField(fields, ['diagnosisDate', 'diagnosis_date']));
-
-  if (!diagnosisType && !d4z4 && !haplotype && !methylation && !diagnosisDate) {
+  if (
+    !reading.diagnosisType &&
+    !reading.d4z4 &&
+    !reading.haplotype &&
+    !reading.methylation &&
+    !diagnosisDate
+  ) {
     return null;
   }
 
   return {
-    diagnosisType,
-    d4z4,
-    haplotype,
-    methylation,
+    diagnosisType: reading.diagnosisType,
+    d4z4: reading.d4z4,
+    haplotype: reading.haplotype,
+    methylation: reading.methylation,
     diagnosisDate,
   };
 };
@@ -220,6 +131,30 @@ export const applyGeneticReportAutofill = (
   const nextFoundation = { ...foundation };
   const nextDiseaseBackground = { ...diseaseBackground };
 
+  // EVERY FIELD BELOW IS A VALUE THE REPORT PRINTED, COPIED AS PRINTED.
+  //
+  // That is the whole of what this function is allowed to do, and the
+  // rule it is now written to. 分型, D4Z4 重复数, 单倍型 and 甲基化 are
+  // the laboratory's statements about this patient, so a report is a
+  // source for them; `foundation.diagnosisYear` below is the year part
+  // of the 诊断日期 the report itself carries, which is the same kind of
+  // copy in a different shape.
+  //
+  // 「是否确诊 FSHD」 IS NOT ONE OF THEM, AND IS NOT WRITTEN HERE ANY
+  // MORE. That field is the patient's own answer to whether a doctor has
+  // diagnosed them — it is answered by the patient and by nobody else,
+  // and no report can supply it. This function used to assert it `true`
+  // whenever any of the four cells above stated a result, which put an
+  // answer this platform invented into the archive under the patient's
+  // question. The archive is not a page: unlike a sentence on the
+  // passport it survives a re-read of the report, and the portable
+  // exports read it back.
+  //
+  // It is also not the same fact as 基因确诊. Molecular confirmation is
+  // what the evidence gate decides off the report and is derived, never
+  // stored (`geneticallyConfirmed` in profile.passport.ts); a patient
+  // can carry a clinical diagnosis without it, and the two may disagree.
+  // Both are kept, and neither is written from the other.
   let baselineChanged = false;
   baselineChanged =
     assignMissingValue(nextDiseaseBackground, 'diagnosisType', derived.diagnosisType) ||
@@ -231,14 +166,6 @@ export const applyGeneticReportAutofill = (
   baselineChanged =
     assignMissingValue(nextDiseaseBackground, 'methylation', derived.methylation) ||
     baselineChanged;
-
-  if (
-    !hasMeaningfulValue(nextDiseaseBackground.diagnosedFshd) &&
-    (derived.diagnosisType || derived.d4z4 || derived.haplotype || derived.methylation)
-  ) {
-    nextDiseaseBackground.diagnosedFshd = true;
-    baselineChanged = true;
-  }
 
   const nextDiagnosisDate = normalizeDate(profile.diagnosisDate) ?? derived.diagnosisDate;
   const nextGeneticMutation = hasMeaningfulValue(profile.geneticMutation)

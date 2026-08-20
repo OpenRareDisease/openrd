@@ -8,7 +8,9 @@ import {
   ApiError,
   getClinicalPassportSummary,
   getMyPatientProfile,
+  readPassportValueOrigins,
   type ClinicalPassportSummary,
+  type PassportValueOrigin,
   type PatientProfile,
 } from '../../lib/api';
 import { formatDateLabel } from '../../lib/clinical-visuals';
@@ -124,6 +126,52 @@ const normalizeDisplayValue = (value?: string | null) => {
 const uniqueDisplayValues = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map((value) => normalizeDisplayValue(value)).filter(Boolean)));
 
+/**
+ * 「D4Z4 3（报告读取）」 — one printed value with the source the API
+ * recorded beside it, or null for a value the passport did not print.
+ *
+ * The bracket is the API's own `labelZh` and the shape is the API's
+ * own: `withValueOrigin` in profile.passport.ts writes
+ * 「值（来源）」 into the markdown export and the referral pack, the
+ * passport screen sets the same phrase under the value, and the share
+ * page prints it beside one. This screen is one tap from that passport
+ * and prints the same three values, so a second vocabulary here would
+ * be the app disagreeing with itself about where a number came from —
+ * including the API's own 「转录自非基因报告文件」, which is the whole
+ * difference between a laboratory's number and a clinic's transcription
+ * of one.
+ *
+ * `absent` gets no bracket: 「—（未填）」 is two ways of saying one
+ * thing, and `normalizeDisplayValue` has already dropped the value.
+ * A null origin gets none either — the note under the card is what
+ * says the server did not send them, because a missing bracket read as
+ * 「off a report」 is the one direction this record exists to prevent.
+ *
+ * The prefix is attached only once there is something to attach it to,
+ * so no row can come out as a bare 「D4Z4」.
+ */
+const labelledValue = (
+  prefix: string | null,
+  value: string | null | undefined,
+  origin: PassportValueOrigin | null,
+) => {
+  const normalized = normalizeDisplayValue(value);
+  if (!normalized) return null;
+  const labelled = prefix ? `${prefix} ${normalized}` : normalized;
+  return origin && origin.kind !== 'absent' ? `${labelled}（${origin.labelZh}）` : labelled;
+};
+
+/** One card of the 档案控制台: label/value rows, and — where there is
+ *  one — a line about the rows rather than another row. Written out
+ *  rather than inferred from the literal, so that the card carrying a
+ *  `note` does not change how the other cards' items are typed. */
+interface ConsoleSection {
+  key: string;
+  title: string;
+  items: Array<{ label: string; value: string; accent?: boolean }>;
+  note?: string | null;
+}
+
 const buildPassportId = (
   profile: PatientProfile | null,
   passport?: ClinicalPassportSummary | null,
@@ -202,37 +250,99 @@ export default function ArchiveScreen() {
         normalizeDisplayValue(reportInsights.diagnosisDate) ||
         normalizeDisplayValue(passport?.diagnosis.diagnosisDate) ||
         '未填写';
+  /**
+   * THE TWO GENETIC ROWS COME OFF THE PASSPORT, WHOLE.
+   *
+   * Both used to be assembled here field by field, and every field
+   * preferred the archive's own copy to the report's, falling through
+   * to the report only where the archive was empty:
+   * `baseline.diseaseBackground.diagnosisType` for 分型, `.d4z4` for
+   * D4Z4, `.haplotype` for 单倍型, `.methylation` for 甲基化.
+   *
+   * That is the per-row merge `pickGeneticEvidenceDocument` exists to
+   * forbid. 分型, 单倍型, EcoRI 片段, D4Z4 重复数 and 甲基化 are one
+   * assay's reading, and a line holding a repeat count out of the
+   * archive next to a haplotype read off a laboratory report reads as
+   * one report that stated both — which is the sentence the whole
+   * picker was written to stop this product saying. Rendered before the
+   * change, on a profile whose archive said FSHD2 / 10 / 55% and whose
+   * one parsed genetics report said FSHD1 / 3 / 4qA / 25%: this row
+   * printed 「FSHD1 · D4Z4 10 · 单倍型 4qA · 甲基化 55%」 — three sources
+   * in five words — while 分型/诊断方式 directly above it printed FSHD2
+   * and 临床护照 printed FSHD1 · 3 · 25%.
+   *
+   * `passport.diagnosis` is the answer everything else already uses.
+   * The API resolves each of these values off the ONE document the
+   * picker names and falls back to the archive per value with an origin
+   * recorded beside it (`valueOrigins`), which is what the passport
+   * screen, the share page, the referral pack and both registry exports
+   * print. Reading it here is what makes 我的档案 and 临床护照 incapable
+   * of naming different numbers for the same assay.
+   *
+   * 单倍型 is gone rather than re-sourced. It is on no passport row —
+   * the API prints it only inside the joined 基因证据 string, and only
+   * ever off the report — so the archive's own copy, which this line
+   * used to prefer, appears nowhere else in the product. A patient whose
+   * report states one still sees it on 临床护照 and 病程.
+   *
+   * `profile.geneticMutation` is gone for the opposite reason: it is not
+   * dropped, it is already inside `diagnosis.geneticType`, which the API
+   * resolves as report → baseline → that column.
+   *
+   * AND EACH VALUE KEEPS THE SOURCE IT ARRIVED WITH. The move brought
+   * `valueOrigins` onto this screen along with the numbers, and for one
+   * round the numbers were printed without it — 「FSHD1 · D4Z4 3 · 甲基化
+   * 25%」, the same line whether a laboratory measured them, an
+   * administrator took them down over the phone, or this platform read
+   * them off a 病历摘要 quoting somebody's report. A tap away, 临床护照
+   * prints each of those three states differently under the same value.
+   * The bracket is the API's own phrase; see `labelledValue`.
+   */
+  const valueOrigins = useMemo(
+    () => readPassportValueOrigins(passport?.diagnosis.valueOrigins),
+    [passport],
+  );
+  /**
+   * The three values this card takes off the passport whole.
+   *
+   * `diagnosisDate` is the fourth key in the map and is deliberately
+   * not here: 确诊时间 above is resolved on this screen from the
+   * baseline's 确诊年份, then the profile column, then the report
+   * insights, and only then the passport — so the passport's origin for
+   * its own 诊断日期 is not a statement about the string this row
+   * prints. A bracket taken from it would be attributing one value's
+   * source to another.
+   */
+  const originFor = (key: 'geneticType' | 'd4z4Repeats' | 'methylationValue') =>
+    valueOrigins?.[key] ?? null;
   const diagnosisTypeText =
-    profile?.baseline?.diseaseBackground?.diagnosisType ||
-    normalizeDisplayValue(reportInsights.geneticType) ||
-    normalizeDisplayValue(passport?.diagnosis.geneticType) ||
+    labelledValue(null, passport?.diagnosis.geneticType, originFor('geneticType')) ??
     '等待报告识别';
   const geneticInfoText =
     uniqueDisplayValues([
-      profile?.geneticMutation,
-      normalizeDisplayValue(reportInsights.geneticType),
-      profile?.baseline?.diseaseBackground?.d4z4
-        ? `D4Z4 ${profile.baseline.diseaseBackground.d4z4}`
-        : reportInsights.d4z4Repeats !== '—'
-          ? `D4Z4 ${reportInsights.d4z4Repeats}`
-          : passport?.diagnosis.d4z4Repeats && passport.diagnosis.d4z4Repeats !== '—'
-            ? `D4Z4 ${passport.diagnosis.d4z4Repeats}`
-            : null,
-      profile?.baseline?.diseaseBackground?.haplotype
-        ? `单倍型 ${profile.baseline.diseaseBackground.haplotype}`
-        : reportInsights.haplotype !== '—'
-          ? `单倍型 ${reportInsights.haplotype}`
-          : null,
-      profile?.baseline?.diseaseBackground?.methylation
-        ? `甲基化 ${profile.baseline.diseaseBackground.methylation}`
-        : reportInsights.methylationValue !== '—'
-          ? `甲基化 ${reportInsights.methylationValue}`
-          : passport?.diagnosis.methylationValue && passport.diagnosis.methylationValue !== '—'
-            ? `甲基化 ${passport.diagnosis.methylationValue}`
-            : null,
+      labelledValue(null, passport?.diagnosis.geneticType, originFor('geneticType')),
+      labelledValue('D4Z4', passport?.diagnosis.d4z4Repeats, originFor('d4z4Repeats')),
+      labelledValue('甲基化', passport?.diagnosis.methylationValue, originFor('methylationValue')),
     ]).join(' · ') || '等待相关报告识别';
+  /**
+   * The line that has to be there when the brackets are not.
+   *
+   * `readPassportValueOrigins` returns null for an API build that sends
+   * no origins at all — this app is a web export WeChat caches for days
+   * — and silence would then be read as 「every one of these came off a
+   * report」 by anyone who has learned what the bracket means. Written
+   * only when the passport actually printed one of the three: a card
+   * showing 等待报告识别 has no value whose source could be missing.
+   *
+   * The wording is the passport's own 逐项来源 note, narrowed to the
+   * values this card prints.
+   */
+  const missingOriginsNote =
+    passport && !valueOrigins && geneticInfoText !== '等待相关报告识别'
+      ? '服务端这一版没有把逐项来源发全：上面这几个值是从报告里读出来的，还是谁填进去的，本平台这次说不出来。'
+      : null;
 
-  const consoleSections = useMemo(
+  const consoleSections = useMemo<ConsoleSection[]>(
     () => [
       {
         key: 'personal',
@@ -262,6 +372,7 @@ export default function ArchiveScreen() {
             value: geneticInfoText,
           },
         ],
+        note: missingOriginsNote,
       },
       {
         key: 'background',
@@ -280,7 +391,15 @@ export default function ArchiveScreen() {
         ],
       },
     ],
-    [diagnosisDateText, diagnosisTypeText, displayName, geneticInfoText, passportId, profile],
+    [
+      diagnosisDateText,
+      diagnosisTypeText,
+      displayName,
+      geneticInfoText,
+      missingOriginsNote,
+      passportId,
+      profile,
+    ],
   );
   return (
     <SafeAreaView style={styles.container}>
@@ -502,6 +621,13 @@ export default function ArchiveScreen() {
                         </View>
                       ))}
                     </View>
+                    {/* Only 「the server did not send the sources」 ever
+                        writes one of these, and it is written only
+                        while there is a value above it whose source is
+                        missing — see `missingOriginsNote`. */}
+                    {section.note ? (
+                      <Text style={styles.consoleCardNote}>{section.note}</Text>
+                    ) : null}
                   </View>
                 ))}
               </View>

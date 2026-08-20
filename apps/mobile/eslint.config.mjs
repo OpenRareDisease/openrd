@@ -67,6 +67,18 @@ export default defineConfig([
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
 
+  // Jest test environments run in the RUNNER's realm, not in the app
+  // and not inside a test file: they are CommonJS modules jest loads
+  // itself, so `require`, `module` and `process` are the only way to
+  // write one. Kept out of `__tests__/` because jest's default
+  // `testMatch` treats every file under that directory as a suite and
+  // fails an environment for containing no tests.
+  {
+    files: ['test-support/**/*.{js,cjs}'],
+    languageOptions: { globals: globals.node, sourceType: 'commonjs' },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
+
   // Jest module mocking is `require`-based by construction: the factory
   // has to run after `jest.mock` hoisting, which an ESM import cannot
   // do — so both rules are wrong here rather than the code being wrong.

@@ -12,6 +12,7 @@
 
 import type { ITool, ToolContext, ToolExecutionResult } from './base.js';
 import { ToolValidationError, isPlainObject, safeParseJson } from './base.js';
+import { MUSCLE_GROUPS } from '../../patient-profile/profile.constants.js';
 import type { ConsentLevel } from '../retrievers/base.js';
 import {
   isKnownMetricKey,
@@ -28,8 +29,11 @@ const PARAMETERS_SCHEMA = {
   properties: {
     metricKey: {
       type: 'string',
-      description:
-        'Optional filter to a single tracked metric. Function tests: `stair_climb`, `ten_meter_walk`, `sit_to_stand`, `six_minute_walk`, `timed_up_and_go`, `custom`. Symptom scores: `fatigue`, `pain`, `dyspnea`, `sleep_quality`, `anxiety_about_progression`. Muscle self-test: `muscle_<group>` optionally suffixed `_left` / `_right` (groups: deltoid, biceps, triceps, tibialis, quadriceps, hamstrings, gluteus). Omit to get every series plus the event tally — that is the right choice for falls and for any "how am I doing overall" question.',
+      // The group list is the enum itself, not a copy of it: a group the
+      // schema does not name is a curve the model cannot ask for, and
+      // `face` and `abdominal` sat in the database unasked-for while
+      // this sentence listed only the groups that predated them.
+      description: `Optional filter to a single tracked metric. Function tests: \`stair_climb\`, \`ten_meter_walk\`, \`sit_to_stand\`, \`six_minute_walk\`, \`timed_up_and_go\`, \`custom\`. Symptom scores: \`fatigue\`, \`pain\`, \`dyspnea\`, \`sleep_quality\`, \`anxiety_about_progression\`. Muscle self-test: \`muscle_<group>\` optionally suffixed \`_left\` / \`_right\` (groups: ${MUSCLE_GROUPS.join(', ')}). Omit to get every series plus the event tally — that is the right choice for falls and for any "how am I doing overall" question.`,
     },
     windowDays: {
       type: 'integer',
@@ -78,8 +82,21 @@ const validate = (raw: unknown): GetMyRecordsArgs => {
 
 export class GetMyRecordsTool implements ITool {
   readonly name = 'get_my_records';
+  /**
+   * A tool description is an instruction, so it may not name a field
+   * the result cannot carry.
+   *
+   * It opened on 「stair-climb times, sleep scores」. The readings
+   * themselves — `latestValue`, `series`, `unit` — are on the precise
+   * allowlist only, so at basic consent that sentence promised a model
+   * numbers it was never going to be handed, over a patient who had
+   * recorded them. What survives both modes is which metric, how many
+   * readings, over how many days and which way they moved, so that is
+   * what the sentence claims; the raw points are in front of the model
+   * when consent allows them and need no promise.
+   */
   readonly description =
-    "Retrieve the authenticated user's own followup records as trends: stair-climb times, sleep scores and other tracked metrics (each with how many readings, over how many days, and which direction they moved), plus a tally of logged events such as falls. Use this for any question about how the user has been doing over time — 「我最近是不是变差了」, 「我的上楼速度有变化吗」, 「最近摔过几次」 — and before drafting anything that summarises recent change.";
+    "Retrieve the authenticated user's own followup records as trends: tracked metrics such as stair climb and sleep quality, each with how many readings, over how many days, and which direction they moved, plus a tally of logged events such as falls. Use this for any question about how the user has been doing over time — 「我最近是不是变差了」, 「我的上楼速度有变化吗」, 「最近摔过几次」 — and before drafting anything that summarises recent change.";
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

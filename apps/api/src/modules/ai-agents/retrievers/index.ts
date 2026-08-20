@@ -9,6 +9,7 @@ export type {
   RetrieverKind,
 } from './base.js';
 export { buildSnippet, emptyResult } from './base.js';
+export { ClinicalTrialsRetriever } from './clinical-trials.js';
 export { MedicalKbRetriever, type MedicalKbRetrieverOptions } from './medical-kb.js';
 export { PatientFollowupRetriever } from './patient-followups.js';
 export { PatientProfileRetriever } from './patient-profile.js';

@@ -16,6 +16,7 @@ import {
   SUBMISSION_KINDS,
   SYMPTOM_KEYS,
 } from './profile.constants.js';
+import { SAFE_VALUE_MAX_LENGTH } from '../ai-agents/security/allowlist.js';
 
 const isoDateString = z
   .string()
@@ -522,9 +523,25 @@ export const EDITABLE_OCR_FIELDS = [
   'methylationValue',
 ] as const;
 
+/**
+ * THE ONE CEILING, NOT THIS SCHEMA'S OWN.
+ *
+ * This was `max(300)`, and the redactor refuses a value over
+ * `SAFE_VALUE_MAX_LENGTH` (200) as evidently not the short structured
+ * value its key promised — see `isUntrustworthyValue` in
+ * ai-agents/security/pii-redactor.ts. Two limits for one question, and the write
+ * path's was the looser one: a patient could store 300 characters under
+ * `d4z4Repeats` / `haplotype` / `methylationValue` through the
+ * product's own correction screen, above a ceiling the read path was
+ * enforcing on the way out. Importing the constant is what stops the
+ * two disagreeing again — moving the redactor's limit moves this one.
+ *
+ * The cap is on the FIELD, not on the request: this schema still
+ * accepts one entry per `EDITABLE_OCR_FIELDS` key.
+ */
 export const ocrFieldsPatchSchema = z.object({
   fields: z
-    .record(z.string(), z.string().trim().max(300))
+    .record(z.string(), z.string().trim().max(SAFE_VALUE_MAX_LENGTH))
     .refine((fields) => Object.keys(fields).length > 0, '至少提供一个要修正的字段')
     .refine(
       (fields) =>

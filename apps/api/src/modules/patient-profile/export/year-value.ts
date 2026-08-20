@@ -78,19 +78,40 @@ export const decodeYear = (raw: unknown): YearAnswer => {
   return { kind: 'not_asked' };
 };
 
+/** A decoded year together with the name of the store it came out of. */
+export interface FirstYearAnswer<K extends string> {
+  readonly answer: YearAnswer;
+  /** The candidate that answered, or null when none of them did. */
+  readonly from: K | null;
+}
+
 /**
- * `decodeYear` over several candidates, first real answer wins, and
- * 「记不清了」 beats a later blank. Order the candidates most-specific
- * first: an explicitly recorded diagnosis YEAR outranks the year
- * component of a diagnosis DATE, because the date may itself have
- * been reconstructed.
+ * `decodeYear` over several NAMED candidates, first real answer wins,
+ * and 「记不清了」 beats a later blank. Order the candidates
+ * most-specific first: an explicitly recorded diagnosis YEAR outranks
+ * the year component of a diagnosis DATE, because the date may itself
+ * have been reconstructed.
+ *
+ * WHY THE CANDIDATES ARE NAMED. This walk used to return the answer
+ * alone, and a caller that has to write a sentence about where the year
+ * came from then had two ways to recover it: ask `decodeYear` a second
+ * time about one of the candidates, or hedge. The first is a second
+ * copy of this rule, free to drift from it — the defect the genetic
+ * pickers were consolidated to end. The second is what 确诊年份's
+ * provenance sentence did: it told a registry this platform could not
+ * tell a questionnaire answer from a read-time fill, in every state,
+ * including the states where the questionnaire's own slot is empty and
+ * it plainly can. So the walk hands back which store answered, and the
+ * sentence branches on it instead of guessing.
  */
-export const decodeFirstYear = (...raws: readonly unknown[]): YearAnswer => {
-  for (const raw of raws) {
+export const decodeFirstYearFrom = <K extends string>(
+  candidates: ReadonlyArray<readonly [K, unknown]>,
+): FirstYearAnswer<K> => {
+  for (const [name, raw] of candidates) {
     const decoded = decodeYear(raw);
-    if (decoded.kind !== 'not_asked') return decoded;
+    if (decoded.kind !== 'not_asked') return { answer: decoded, from: name };
   }
-  return { kind: 'not_asked' };
+  return { answer: { kind: 'not_asked' }, from: null };
 };
 
 export interface SerialisedYear {

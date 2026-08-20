@@ -141,13 +141,122 @@ const pushRegion = (
   }
 };
 
-export const formatDateLabel = (value?: string | null) => {
-  if (!value) return '—';
+/**
+ * A calendar date with no time part.
+ *
+ * The API hands most of these values over as bare 「YYYY-MM-DD」: the
+ * passport's `latestMriDate`, every monitoring slot's `latestDate` and
+ * the diagnosis date are built by `profile.passport.ts`'s own
+ * `formatDate`, which slices a `date` column rather than stamping an
+ * instant on it. `new Date('2025-05-09')` is UTC midnight, and
+ * `getMonth` / `getDate` then read it back in the DEVICE's zone — so
+ * every phone west of Greenwich printed 05-08 for a report dated
+ * 05-09, on the PDF that gets handed to a clinician, while the share
+ * page and the markdown export of the same passport both said 05-09.
+ * A calendar date has no zone to convert between; the digits are the
+ * answer.
+ */
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * THE ONE CALENDAR THIS PRODUCT PRINTS DATES IN — the same one
+ * apps/api/src/modules/patient-profile/profile.passport.ts declares,
+ * with the same value and the same arithmetic, because the passport
+ * PDF this file dates is handed to the SAME CLINICIAN who is reading
+ * the share page and the referral pack the server rendered.
+ *
+ * The values that reach the `Date` path below are instants — the
+ * summary's `generatedAt`, a timeline row's `timestamp`, the moment an
+ * administrator typed a baseline field — and this file resolved them
+ * in the DEVICE's zone while the server resolved them in the SERVER's.
+ * apps/api/Dockerfile sets no TZ and node:20-bookworm-slim is UTC,
+ * while the handsets are in China at UTC+8: eight hours apart in
+ * production, which is a DIFFERENT DAY on the printed sheet for
+ * anything filed between 16:00 and 24:00 UTC. A device is even less
+ * fixable than a server — a patient who lands in another country has
+ * moved the zone, and no deployment setting reaches that.
+ *
+ * A FIXED OFFSET, NOT `Intl.DateTimeFormat({ timeZone })`: this runs
+ * on Hermes, where a full ICU timezone database is not something to
+ * depend on, and the server has to compute the identical answer.
+ * China has run a single UTC+8 zone with no daylight saving since
+ * 1991, and everything older than that arrives here as bare
+ * 「YYYY-MM-DD」, which `formatProductDate` returns untouched without
+ * any arithmetic at all.
+ */
+export const PRODUCT_TIME_ZONE = 'Asia/Shanghai';
+const PRODUCT_UTC_OFFSET_MINUTES = 8 * 60;
+
+/**
+ * The `YYYY-MM-DD` an instant falls on in `PRODUCT_TIME_ZONE`.
+ *
+ * Shift the instant by the offset, then read it back with the UTC
+ * accessors: those are the only accessors on `Date` that do not consult
+ * the ambient zone, so the answer is the same on every handset. The
+ * same arithmetic as `productCalendarParts` / `toProductCalendarDay` in
+ * apps/api's profile.passport.ts, because the two sides have to produce
+ * the same digits for the same instant.
+ */
+const toProductCalendarDay = (date: Date) => {
+  const shifted = new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000);
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${month}-${day}`;
+};
+
+/**
+ * THE WHOLE DATE, ON THE PRODUCT'S CALENDAR — the renderer for anything
+ * this app prints onto a DOCUMENT rather than into a chip.
+ *
+ * Named after apps/api's `formatProductDate` and answering identically,
+ * because the mobile clinical-passport PDF is handed to the SAME
+ * clinician who is reading the server's markdown export and share page
+ * of the same passport, and those two print `YYYY-MM-DD`.
+ *
+ * WHY THE YEAR IS NOT OPTIONAL HERE. `formatDateLabel` below drops it,
+ * and that is right for a card chip on a screen the patient is
+ * scrolling — the surrounding UI says which record it belongs to and
+ * the cell is narrow. It is wrong for a sheet that goes into a referral
+ * folder: the passport PDF's own 时间轴 lists a genetic report, a
+ * pulmonary function report and a strength entry in one column, and
+ * with the years stripped a reader cannot see that the genetics is two
+ * years older than the rest. The 生成时间 of a printed document with no
+ * year on it is worse still.
+ *
+ * Returns null for an empty value so the caller decides the fallback
+ * («—», 「未记录时间」), and returns an unparseable string unchanged
+ * rather than hiding it behind a dash.
+ */
+export const formatProductDate = (value?: string | null): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  // Slice the digits rather than re-parsing them: re-parsing is where
+  // the day was lost, and it is lost the same way every time.
+  if (DATE_ONLY.test(trimmed)) return trimmed;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${month}-${day}`;
+  if (Number.isNaN(date.getTime())) return trimmed || null;
+  return toProductCalendarDay(date);
+};
+
+/**
+ * The compact `MM-DD` chip, for the screens — 最近一次, a timeline row's
+ * time cell, a chart's x-axis label.
+ *
+ * Built by slicing the string `formatProductDate` just produced rather
+ * than re-parsing it: re-parsing is where the day was lost the first
+ * time, and doing it a second way here is how the chip and the printed
+ * document would come to disagree about one record.
+ *
+ * NOT THE RENDERER FOR THE PASSPORT PDF ANY MORE — that document prints
+ * whole dates through `formatProductDate`. Same split, and for the same
+ * reason, as apps/api's `formatProductDate` / `formatDateLabel` pair.
+ */
+export const formatDateLabel = (value?: string | null) => {
+  const formatted = formatProductDate(value);
+  if (!formatted) return '—';
+  const parts = DATE_ONLY.exec(formatted);
+  if (!parts) return formatted;
+  return `${parts[2]}-${parts[3]}`;
 };
 
 /**

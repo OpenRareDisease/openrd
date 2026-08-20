@@ -11,6 +11,7 @@ import {
   type LegalAcceptanceSummary,
 } from '../../lib/api';
 import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_TITLES } from '../../lib/legal-content';
+import { buildConsentAsks } from '../../lib/legal-updates';
 import styles from './styles';
 
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
@@ -96,6 +97,15 @@ const PrivacySettingsScreen = () => {
    */
   const [acceptances, setAcceptances] = useState<LegalAcceptanceSummary | null>(null);
   const [withdrawing, setWithdrawing] = useState(false);
+  /** Documents this build can ask about, off the fetch above.
+   *  `buildConsentAsks` is the same computation the entry gate runs,
+   *  but NOT the same read: the gate reads LegalConsentContext, which
+   *  probes once per session, while this is a fetch on mount and again
+   *  after a withdrawal. The two can therefore disagree about what is
+   *  owed, which is why 看看改了什么 below goes to a screen that
+   *  re-reads the ledger on mount rather than trusting the context's
+   *  list. */
+  const pendingConsents = buildConsentAsks(acceptances);
 
   const loadAcceptances = useCallback(() => {
     getLegalAcceptances()
@@ -1205,6 +1215,41 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.shareHint}>你还没有生成过任何链接。</Text>
           ) : null}
         </View>
+
+        {/* 待重新确认 — the way back to a re-consent the patient put off.
+            The gate in app/_layout asks on entry, and 暂不同意 defers it
+            for the session; without this row the only way to reconsider
+            would be to close and reopen the app. It reads the same
+            `outstanding` the gate does, off this screen's own fetch —
+            see the note on `pendingConsents` for why those two reads
+            can differ. */}
+        {pendingConsents.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>有条款等你确认</Text>
+            <Text style={styles.settingDescription}>
+              {pendingConsents.map((ask) => `《${ask.title}》`).join('、')}
+              {/* 「改过」 is only true of a document this account did
+                  accept once. An account whose ledger holds no live row
+                  for it is not looking at a revision, and saying so
+                  here would be a false sentence in the one place a
+                  patient checks what they agreed to. Why the row is
+                  missing — never asked, withdrawn, a write that never
+                  landed — is not in this payload, so neither branch
+                  names a cause. */}
+              {pendingConsents.every((ask) => ask.acceptedVersion)
+                ? '改过一处实质变更，按《隐私政策》第 9 条要重新征得你的同意。'
+                : '还等你确认一次。'}
+              可以先读一遍这一版说了什么，再决定同意还是不同意——不同意不会锁住你的账号。
+            </Text>
+            <Button
+              label="看看改了什么"
+              variant="tinted"
+              fullWidth
+              accessibilityHint="打开条款更新页，读这一版改了什么，然后决定是否同意"
+              onPress={() => router.push('/p-legal_update')}
+            />
+          </View>
+        ) : null}
 
         {/* 授权记录 — the ledger the consent documents point at.
             Rendered only when the read succeeded; a failed fetch leaves

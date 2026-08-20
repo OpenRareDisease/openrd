@@ -231,7 +231,8 @@ export const isDamagedExtraction = (text: string): boolean => {
 
 /**
  * Remove the `[label]` line the ingest pipeline prepends to every chunk
- * (scripts/kb-ingest.py:328 — `tagged = f"[{section.label}]\n{...}"`).
+ * (_chunk_sections in scripts/kb-ingest.py —
+ * `tagged = f"[{section.label}]\n{...}"`).
  *
  * 7,524 of the corpus's 10,241 chunks carry one (measured 2026-08-11).
  * It is the pipeline's own annotation — usually `[page 92]`, sometimes
@@ -261,6 +262,157 @@ export const isDamagedExtraction = (text: string): boolean => {
 const INGEST_LABEL = /^\s*\[[^\]\n]{0,120}\]\s*\n?/;
 
 export const stripIngestLabel = (text: string): string => (text ?? '').replace(INGEST_LABEL, '');
+
+/**
+ * The identity of a chunk's TEXT, for deciding whether two hits are the
+ * same passage.
+ *
+ * WHY THIS IS NOT `content.replace(/\s+/g, ' ').trim()`
+ *
+ * Because that key called every row in this corpus distinct. Replaying
+ * both over the live `kb_chunks` (2026-08-19) puts 406 chunks into 190
+ * duplicate groups that the collapsing key had called distinct, 168 of
+ * the groups spanning more than one source file — while the collapsing
+ * key finds 10,241 distinct texts in 10,241 rows, i.e. it drops nothing
+ * at all. The dedup below was a no-op on the corpus it was written for.
+ *
+ * The 22% exact-duplicate redundancy that motivated it was real and is
+ * gone (kb-prune, and the re-chunk). What is left is the same paragraph
+ * reaching the index through two DIFFERENT converters, and two things
+ * make those copies differ in bytes while being the same text:
+ *
+ *   1. The ingest label. `[page 5]` is on the .pdf copy and not on the
+ *      .docx copy of the same document — the pipeline's own annotation,
+ *      which `stripIngestLabel` above exists to keep out of every
+ *      judgement, and which this one key was still reading as though the
+ *      document had said it.
+ *   2. Where the spaces went. The .docx extraction of 文献/the road to
+ *      the target road-2023 says 「of FSHD」 as `ofFSHD` and 「in
+ *      patients」 as `inpatients`; the .pdf of the same document keeps
+ *      both spaces. Collapsing RUNS of whitespace cannot reconcile that,
+ *      because the run on one side is length zero.
+ *
+ * So: strip the label, then ignore whitespace entirely rather than
+ * normalising it. Two passages that differ only in where the spaces
+ * fall are one passage — that is the whole claim, and it is the case
+ * being caught. Nothing else can collide: removing whitespace never
+ * merges texts whose other characters differ, and `isJunk` has already
+ * dropped anything under 30 characters, where a coincidence would have
+ * to live.
+ *
+ * WHAT IT COST TO GET THIS WRONG
+ *
+ * Asked 「FSHD 的 D4Z4 重复单元数和病情严重程度是什么关系？」 against
+ * the live service, the top two hits were the .docx and .pdf copies of
+ * one paragraph — identical at 939 characters once normalised the way
+ * this function does it. That paragraph is the only place in the corpus
+ * that lays out severity by repeat band (1–3 more severe and faster
+ * progressing, 7–10 generally milder), so the model was handed the
+ * ladder twice, in the two highest-ranked slots, and two of the eight
+ * citation cards pointed at the same sentences in two files. The band
+ * numbers are the corpus's; being shown them twice is this key's.
+ */
+export const contentFingerprint = (text: string): string =>
+  stripIngestLabel(text).replace(/\s+/g, '');
+
+/**
+ * A saved registry results page, and the day it was saved.
+ *
+ * WHAT IS WRONG WITH THESE CHUNKS
+ *
+ * The corpus contains one of them today:
+ * `05.相关研究/第一批：2025年3月31日/A.全球范围内FSHD药物研究进展汇总.htm`,
+ * a ClinicalTrials.gov search-results page saved as HTML. Measured
+ * against the live `kb_chunks` table on 2026-08-13:
+ *
+ *   SELECT count(*) FROM kb_chunks
+ *    WHERE source_file ILIKE '%全球范围内FSHD药物研究进展%';   -- 40
+ *
+ * Chunks 0–36 are the site's GLOSSARY, not the results. Chunks 37–39
+ * are the results table, and they are Google-translated: 「NCT04635891
+ * 招聘」 for Recruiting, 「面肩关节疾病」 for facioscapulohumeral, and
+ * 「查看 24 项研究中的 1-10 项」 — ten of twenty-four studies, because
+ * that is what fit on page one. 39 of the 40 survive `isJunk` (replayed
+ * the exported predicates above over the stored contents; only chunk 0
+ * is dropped, on the scrape banner in its body).
+ *
+ * So a patient asking 「哪些试验在招募」 could be shown NCT numbers with
+ * a status word that was true on one day in 2025, mistranslated, and
+ * incomplete. And nothing in the text says when: the ONLY date attached
+ * to that document is the 第一批：2025年3月31日 in its folder name,
+ * which reaches neither the prompt (context-builder renders the chunk's
+ * `source_file`, not its folder) nor the citation card.
+ *
+ * WHAT THIS DOES ABOUT IT
+ *
+ * Stamps the date onto the text, so the date travels wherever the text
+ * travels — into the prompt and into the snippet the patient opens. It
+ * does NOT drop the chunk: the page is a real record of what was
+ * registered in March 2025 and that is a legitimate thing to retrieve;
+ * what it is not is a statement about today. The live answer comes from
+ * `list_clinical_trials` (tools/list-clinical-trials.ts), which
+ * companion-tools.ts adds to any trial-shaped question.
+ *
+ * DETECTION is on the RAW chunk text — the ingest label included — and
+ * on `html_title`, because the label IS the saved page's title and the
+ * body of a middle-of-the-document chunk says nothing about where it
+ * came from. `SCRAPE_PATTERN` is reused rather than re-spelled: the
+ * same two literals that make `isNavigationBoilerplate` call the banner
+ * furniture are what identify the document here.
+ */
+const SCRAPE_TITLE_KEYS = ['html_title', 'source_file', 'folder_path'] as const;
+
+/** `第一批：2025年3月31日` and `2025-03-31`, in that order of
+ *  preference. Nothing else is guessed at — a document whose path
+ *  carries no date is stamped as undated, which is a true statement
+ *  about it and a warning in its own right. */
+const SNAPSHOT_DATE_PATTERNS: readonly RegExp[] = [
+  /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/,
+  /(\d{4})-(\d{2})-(\d{2})/,
+];
+
+const pad2 = (value: string): string => value.padStart(2, '0');
+
+/** `YYYY-MM-DD` from the first date-looking run in the chunk's path
+ *  metadata, or `null`. */
+export const registrySnapshotDate = (metadata: Record<string, unknown>): string | null => {
+  for (const key of ['folder_path', 'source_file'] as const) {
+    const value = metadata[key];
+    if (typeof value !== 'string') continue;
+    for (const pattern of SNAPSHOT_DATE_PATTERNS) {
+      const match = pattern.exec(value);
+      if (match) return `${match[1]}-${pad2(match[2] as string)}-${pad2(match[3] as string)}`;
+    }
+  }
+  return null;
+};
+
+/** True when this chunk came out of a saved registry results page.
+ *  `rawContent` must be the text as the service returned it, before
+ *  `stripIngestLabel` — the label is where the page title lives. */
+export const isRegistrySnapshotChunk = (
+  rawContent: string,
+  metadata: Record<string, unknown>,
+): boolean => {
+  if (SCRAPE_PATTERN.test(rawContent ?? '')) return true;
+  return SCRAPE_TITLE_KEYS.some((key) => {
+    const value = metadata[key];
+    return typeof value === 'string' && SCRAPE_PATTERN.test(value);
+  });
+};
+
+/** Prompt-side stamp. Chinese because the model answers in Chinese and
+ *  routinely paraphrases this kind of line into the answer. */
+export const registrySnapshotNote = (scrapedOn: string | null): string =>
+  [
+    '【平台标注·这不是当前状态】',
+    scrapedOn
+      ? `以下内容来自 ${scrapedOn} 保存的 ClinicalTrials.gov 网页，是那一天的静态快照。`
+      : '以下内容来自一次保存的 ClinicalTrials.gov 网页，静态快照，而且保存日期没有记录下来。',
+    '里面的招募状态只在保存那天成立，现在很可能已经变了；页面上的中文是网页机器翻译，状态词可能是错的（例如 Recruiting 被译成「招聘」）。',
+    '要回答「现在还在不在招募」，必须用 list_clinical_trials 工具返回的数据，并把它给出的读取时间一起告诉用户。',
+    '这一段只能用来说明当时登记过哪些研究。',
+  ].join('');
 
 const isJunk = (raw: string): boolean => {
   const text = stripIngestLabel(raw);
@@ -545,13 +697,23 @@ export class MedicalKbRetriever implements IRetriever {
     const citations: Citation[] = [];
     let dropped = 0;
     let duplicates = 0;
-    // The corpus carries the same text under multiple rows — 12,352
-    // rows for 9,596 distinct contents when this was measured, i.e.
-    // 22% redundancy from repeated ingests. Retrieval surfaced them as
-    // separate hits: one observed query returned 12 chunks that were
-    // only 9 distinct texts, so a quarter of both the context budget
-    // and the citation list was spent restating the same paragraph.
-    // Deduping here fixes the symptom for every caller; the corpus
+    /** chunkId -> the scrape date stamped on it (`null` when the path
+     *  carried none), for every chunk identified as a saved registry
+     *  page. Keyed by chunk so the counts reported below can be taken
+     *  over the chunks that survive the trim rather than over every
+     *  candidate — the model is told about the ones it can see. */
+    const registrySnapshots = new Map<string, string | null>();
+    // The corpus carries the same text under multiple rows. It was
+    // 12,352 rows for 9,596 distinct contents when this was first
+    // measured — 22% redundancy from repeated ingests, and one observed
+    // query returned 12 chunks that were only 9 distinct texts, so a
+    // quarter of both the context budget and the citation list was spent
+    // restating the same paragraph. Those exact duplicates are gone from
+    // the index now, but the redundancy is not: the same document is
+    // ingested as both .docx and .pdf, and the two converters disagree
+    // about the ingest label and about where the spaces go. See
+    // `contentFingerprint` for what that costs and why the key ignores
+    // both. Deduping here fixes the symptom for every caller; the corpus
     // itself still wants a pass on the ingest side.
     const seenContent = new Set<string>();
 
@@ -565,7 +727,7 @@ export class MedicalKbRetriever implements IRetriever {
         return;
       }
 
-      const fingerprint = content.replace(/\s+/g, ' ').trim();
+      const fingerprint = contentFingerprint(content);
       if (seenContent.has(fingerprint)) {
         duplicates += 1;
         return;
@@ -573,6 +735,25 @@ export class MedicalKbRetriever implements IRetriever {
       seenContent.add(fingerprint);
 
       const chunkId = randomUUID();
+
+      // Stamped AFTER the dedup fingerprint above, so two copies of the
+      // same scraped page still collapse to one chunk, and before
+      // anything reads `content` — the whole point is that no consumer
+      // can see this text without its date.
+      let promptContent = content;
+      let snippetSource = content;
+      if (isRegistrySnapshotChunk(content, metadata)) {
+        const scrapedOn = registrySnapshotDate(metadata);
+        registrySnapshots.set(chunkId, scrapedOn);
+        promptContent = `${registrySnapshotNote(scrapedOn)}\n${content}`;
+        // The card gets a short marker rather than the whole note: the
+        // snippet is capped at 180 characters and the note is longer
+        // than that, so pasting it in full would replace the preview
+        // with the warning and the patient would open a card that shows
+        // nothing about the source it points at.
+        snippetSource = `（${scrapedOn ?? '日期不详'}的网页快照）${content}`;
+      }
+
       const sourceFile = extractSourceFile(metadata);
       const chunkIndex = extractChunkIndex(metadata);
       const distance = coerceDistance(typeof raw === 'string' ? null : raw?.distance);
@@ -590,7 +771,7 @@ export class MedicalKbRetriever implements IRetriever {
       chunks.push({
         id: chunkId,
         source: this.id,
-        content,
+        content: promptContent,
         metadata,
         distance,
         sourceFile,
@@ -603,7 +784,7 @@ export class MedicalKbRetriever implements IRetriever {
         source: this.id,
         sourceFile,
         chunkIndex,
-        snippet: buildSnippet(content),
+        snippet: buildSnippet(snippetSource),
         authorityLabel,
       });
 
@@ -618,6 +799,14 @@ export class MedicalKbRetriever implements IRetriever {
     const kept = chunks.slice(0, wanted);
     const keptIds = new Set(kept.map((c) => c.id));
 
+    // Over `kept`, not over every candidate: a stamped chunk that the
+    // trim discarded is not in the prompt, and telling the model 「其中
+    // 一段是 2025 年的快照」 about a chunk it cannot see would send it
+    // looking for a caveat that has nothing to attach to.
+    const keptSnapshots = kept
+      .filter((chunk) => registrySnapshots.has(chunk.id))
+      .map((chunk) => registrySnapshots.get(chunk.id) ?? null);
+
     return {
       retrieverId: this.id,
       chunks: kept,
@@ -627,6 +816,13 @@ export class MedicalKbRetriever implements IRetriever {
         queriesUsed: payload.queries,
         droppedJunk: dropped,
         droppedDuplicates: duplicates,
+        registrySnapshotChunks: keptSnapshots.length,
+        /** Distinct scrape dates among them, sorted. A stamped chunk
+         *  whose path carried no date contributes nothing here, which
+         *  is why the count above is the one the wrapper branches on. */
+        registrySnapshotDates: [
+          ...new Set(keptSnapshots.filter((d): d is string => d !== null)),
+        ].sort(),
         previewAnswer: parsed.answer ?? null,
       },
     };

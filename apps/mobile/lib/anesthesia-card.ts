@@ -1,10 +1,12 @@
-import type { ClinicalPassportSummary } from './api';
+import { readPassportValueOrigins, type ClinicalPassportSummary } from './api';
+import { formatProductDate } from './clinical-visuals';
 
 /**
  * The content of the anesthesia card, as data.
  *
  * Kept separate from the drawing code so the clinical text can be
- * tested without a canvas. Everything below traces to one of:
+ * tested without a canvas. Every CLINICAL SENTENCE below traces to one
+ * of:
  *
  *  [AANA] Mani A, Jha S, Kumar V, Kumar S. Balancing Risks in
  *         Obstetrics: Anesthesia Management in Facioscapulohumeral
@@ -12,8 +14,26 @@ import type { ClinicalPassportSummary } from './api';
  *  [AAN]  Tawil R, Kissel JT, Heatwole C, Pandya S, Gronseth G,
  *         Benatar M. Neurology. 2015;85(4):357-364.
  *
- * Both are in the corpus. Two things that are NOT sources, and were
- * the obvious places to reach for:
+ * Both are in the corpus.
+ *
+ * THE ENUMERATION USED TO SAY 「EVERYTHING BELOW」 AND THE CARD PRINTS A
+ * THIRD CITATION. `sources` ends with 「神经肌肉病麻醉的完整共识见 ENMC,
+ * Eur J Neurol. 2022;29:3479-3753」, which is neither of the two above.
+ * Nothing in this repo backs it: none of the 235 files under
+ * `content/medical-kb` is an ENMC or a Eur J Neurol document. And
+ * 3479-3753 is 275 pages — an issue's span, not an article's.
+ *
+ * It is a POINTER printed on the card rather than the basis of any
+ * sentence above it, which is why the two-source claim was true of the
+ * clinical text and false of the file. Both halves are recorded here
+ * instead of the line being deleted: an anesthetist may already have
+ * followed it, and whether it names a real consensus is a question for
+ * someone with the journal in front of them, not a rendering question.
+ * Either the corpus gains the document and this header gains a third
+ * entry, or the line comes off the card.
+ *
+ * Two things that are NOT sources, and were the obvious places to reach
+ * for:
  *
  *  - The FSHD Society's 「手术麻醉」 page in the corpus is a webinar
  *    landing page. The saved file is 4.7 MB of WordPress and one
@@ -46,13 +66,40 @@ export type AnesthesiaCardModel = {
 const hasValue = (value: string | null | undefined): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim() !== '—';
 
+/**
+ * A calendar date with no time part, ON THE PRODUCT'S CALENDAR.
+ *
+ * Two different kinds of value reach this function. A monitoring
+ * slot's `latestDate` is a bare 「YYYY-MM-DD」 the API already sliced
+ * out of a `date` column, and re-parsing a string that is already the
+ * answer is where the day was lost the first time: `new
+ * Date('2025-05-09')` is UTC midnight, so `getDate` in the device's
+ * zone printed 2025-05-08 on the card an anesthetist reads before
+ * putting this patient under, for a pulmonary function report the
+ * passport dated 05-09.
+ *
+ * `today` is a real instant, AND RESOLVING IT WITH THOSE SAME
+ * ACCESSORS LOST THE DAY AGAIN, on the one line that was not being
+ * watched: 生成日期 printed 2026-08-04 on a handset in Los Angeles for
+ * the instant the server's markdown export and share page both date
+ * 2026-08-05, so the card's own date and the 最近… report dates beside
+ * it were being read off two different calendars. The reader uses the
+ * gap between them to judge whether the lung and heart lines are
+ * still current, and this is a printed sheet — nobody can re-derive
+ * which zone the handset was in months later.
+ *
+ * `formatProductDate` answers both cases on `PRODUCT_TIME_ZONE`: a
+ * bare date comes back untouched, an instant is shifted and read with
+ * the UTC accessors. It hands an unparseable string back unchanged so
+ * screens can still show it; this card drops it instead, because on
+ * these lines a date in parentheses is read as a date.
+ */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 const formatDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  const formatted = formatProductDate(value.trim());
+  return formatted && DATE_ONLY.test(formatted) ? formatted : null;
 };
 
 /** One line per monitoring slot: the finding, or「上传了但读不出」, or
@@ -89,20 +136,75 @@ export const buildAnesthesiaCard = (
   summary: ClinicalPassportSummary,
   today: Date,
 ): AnesthesiaCardModel => {
-  const { confirmation, d4z4Repeats } = summary.diagnosis;
+  const { confirmation, geneticType } = summary.diagnosis;
+  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
 
-  // The same distinction the passport itself draws. An anesthetist
-  // reading 「FSHD」 on a card will plan around FSHD; if nobody has
-  // actually confirmed that, they are entitled to know before they
-  // choose an airway plan on the strength of it.
+  /**
+   * The line an anesthetist plans an airway from. It names no author
+   * it has not been told.
+   *
+   * A non-genetic `confirmation` says nothing about who filed anything
+   * and nothing about whether a genetic report exists: a report parsed
+   * to nothing but a 分型 lands in one of those states with that 分型
+   * read off the report by OCR.
+   *
+   * 「这张卡上没有」 is a claim about this card and stays true: the
+   * unconfirmed branch prints no repeat count. A D4Z4 重复数 the API
+   * resolved from the baseline is deliberately kept off an airway card
+   * — it is a number somebody typed from a phone call, and this reader
+   * cannot check it against anything.
+   *
+   * AND IT NO LONGER NAMES THE THREE TESTS. 「（D4Z4 重复数、4q 单倍型或
+   * EcoRI 片段）」 was this card's own copy of the rule `confirmation` is
+   * graded by, printed onto a card that gets folded into a wallet and
+   * read months later. The rule lives on the API side and moves there —
+   * a report naming both probes rather than stating a haplotype has a
+   * 4q 单倍型 on it and earns no confirmation — and at that point a card
+   * promising the anesthetist those three names is telling them the
+   * report they are holding was never read. What the card can say is
+   * what is on the card.
+   */
+  const unconfirmedLine = '诊断：FSHD —— 未经基因确诊：这张卡上没有可作确诊依据的基因结果';
+  // Whose 分型 it is, when the platform has been told. Without it the
+  // reader is left to assume, and 「the patient says FSHD1」 and 「we read
+  // FSHD1 off their report」 are different things to plan from.
+  const geneticTypeOrigin = origins?.geneticType ?? null;
+  const geneticTypeNote =
+    hasValue(geneticType) && geneticTypeOrigin && geneticTypeOrigin.kind !== 'absent'
+      ? `；档案里的分型为 ${geneticType}（${geneticTypeOrigin.labelZh}）`
+      : '';
+  /**
+   * The repeat count printed inside 「基因确诊（…）」, and ONLY the
+   * laboratory's own determinate one.
+   *
+   * `confirmation` grades the evidence and says nothing about which of
+   * the values on this card came off a report, so a card can be
+   * confirmed while the printed 重复数 came from the baseline. Set bare
+   * after 「基因确诊」, that number reads as the laboratory's.
+   *
+   * THAT WAS ASKED OF `valueOrigins.d4z4Repeats`, WHICH IS THE WRONG
+   * QUESTION: it says the row came off a document and says nothing
+   * about what the cell reads. Rendered: a report whose repeat-count
+   * cell read 「1-10」 put 「诊断：FSHD，基因确诊（D4Z4 重复数 1-10）」 on
+   * the card an anaesthetist plans an airway from. The API reads that
+   * cell — a range, a kb length and a 0 are each refused there, with
+   * the reasons — and sends the one number this line may carry.
+   *
+   * An API build that predates the field cannot answer the question,
+   * and this drops the number rather than falling back to the printed
+   * row — the direction that cannot overstate.
+   */
+  const laboratoryRepeatCount = summary.diagnosis.laboratoryRepeatCount;
+  const confirmedRepeats =
+    typeof laboratoryRepeatCount === 'string' && hasValue(laboratoryRepeatCount)
+      ? laboratoryRepeatCount
+      : null;
   const diagnosisLine =
     confirmation === 'genetic'
-      ? hasValue(d4z4Repeats)
-        ? `诊断：FSHD，基因确诊（D4Z4 重复数 ${d4z4Repeats}）`
+      ? confirmedRepeats
+        ? `诊断：FSHD，基因确诊（D4Z4 重复数 ${confirmedRepeats}）`
         : '诊断：FSHD，基因确诊'
-      : confirmation === 'self_reported'
-        ? '诊断：FSHD —— 本人填报，本平台尚未收到基因报告'
-        : '诊断：FSHD —— 本平台尚无诊断依据记录';
+      : `${unconfirmedLine}${geneticTypeNote}`;
 
   const patientLines = [
     diagnosisLine,

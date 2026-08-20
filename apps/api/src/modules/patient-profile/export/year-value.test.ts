@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { decodeFirstYear, decodeYear, serialiseYear } from './year-value.js';
+import { decodeFirstYearFrom, decodeYear, serialiseYear } from './year-value.js';
+
+/** The 确诊年份 chain as `normaliseSource` orders it: the baseline
+ *  questionnaire's own slot first, then the profile column the year is
+ *  read off when that slot is empty. */
+const chain = (baseline: unknown, profileColumn: unknown) =>
+  decodeFirstYearFrom([
+    ['baseline', baseline],
+    ['profileColumn', profileColumn],
+  ] as const);
 
 describe('year-value — 「记不清了」 is a value, not a blank', () => {
   it('separates 记不清了 from 未采集 all the way to the wire', () => {
@@ -52,9 +61,26 @@ describe('year-value — 「记不清了」 is a value, not a blank', () => {
     // The regression this guards: falling through 「记不清了」 to a
     // null diagnosisDate and reporting 未采集, i.e. losing the answer
     // the patient actually gave.
-    expect(decodeFirstYear('记不清了', null)).toEqual({ kind: 'unknown' });
-    expect(decodeFirstYear(null, '2014-06-01')).toEqual({ kind: 'year', year: 2014 });
-    expect(decodeFirstYear(2014, '2011-01-01')).toEqual({ kind: 'year', year: 2014 });
-    expect(decodeFirstYear(null, null)).toEqual({ kind: 'not_asked' });
+    expect(chain('记不清了', null).answer).toEqual({ kind: 'unknown' });
+    expect(chain(null, '2014-06-01').answer).toEqual({ kind: 'year', year: 2014 });
+    expect(chain(2014, '2011-01-01').answer).toEqual({ kind: 'year', year: 2014 });
+    expect(chain(null, null).answer).toEqual({ kind: 'not_asked' });
+  });
+
+  /**
+   * WHICH STORE ANSWERED, which is the half the provenance sentences
+   * are written from. A caller that only has the year cannot tell the
+   * 「the questionnaire slot holds it」 state from the 「that slot is
+   * empty and the fallback column supplied it」 state, and 确诊年份's
+   * sentence hedged over both because of it.
+   */
+  it('names the store that answered, and names none when nothing did', () => {
+    expect(chain(2014, '2011-01-01').from).toBe('baseline');
+    expect(chain(null, '2014-06-01').from).toBe('profileColumn');
+    // 记不清了 is an answer, so the store that holds it is the store
+    // that answered — the walk does not fall through it looking for a
+    // year.
+    expect(chain('记不清了', '2011-01-01').from).toBe('baseline');
+    expect(chain(null, null).from).toBeNull();
   });
 });

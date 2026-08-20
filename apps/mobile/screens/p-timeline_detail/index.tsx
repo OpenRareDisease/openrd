@@ -36,7 +36,20 @@ const TAG_BLURB: Record<string, string> = {
   事件: '你手动记录的一次病程事件。它会进入病程时间轴和临床护照，也会作为 AI 回答你问题时的依据。',
   功能测试:
     '一次功能测试结果。它会画进趋势线，并参与「最近有没有加重」的判断，所以填错的数值值得删掉重记。',
-  报告: '一份你上传的报告。识别出的关键信息会自动补进档案，可以在报告详情里核对或修正。',
+  // What this used to promise is gone rather than hedged.
+  // 「识别出的关键信息会自动补进档案」: the autofill reads exactly one
+  // document — whichever one the API picks as this profile's genetic
+  // evidence — and fills only the profile fields still empty, so it
+  // does nothing for a blood panel, nothing for any genetics report
+  // other than the picked one, and nothing for a field the patient
+  // already filled in themselves. 「可以在报告详情里核对或修正」:
+  // correction is offered only where the OCR PATCH is accepted, so a
+  // report still being parsed, one that failed, and one the pipeline
+  // never settled all have nothing there to correct.
+  // This screen is handed a title, a timestamp and a tag; it knows
+  // neither the report's type nor its parse status, so it can promise
+  // neither. What is left is what a 报告 card is.
+  报告: '一份你上传的报告。',
   日常记录:
     '根据你最近的记录自动生成的变化摘要，本身没有独立的原始数据——删掉对应的原始记录后它会自动消失。',
   肌力: '一次肌力记录，会进入肌力趋势和临床护照。',

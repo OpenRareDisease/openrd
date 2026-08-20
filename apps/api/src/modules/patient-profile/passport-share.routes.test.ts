@@ -85,16 +85,51 @@ const TOKEN = 'lJ8Qm3Zt7bF0xR2cN6vY1sK4hW9dA5pG-eU_TnC8oI0';
 const summary = {
   patientName: '张三',
   generatedAt: '2026-08-05T00:00:00Z',
+  fieldOrigins: [],
   diagnosis: {
     confirmation: 'self_reported' as const,
     geneticType: 'FSHD1',
     diagnosisDate: '2019-04-02',
     d4z4Repeats: null,
     methylationValue: null,
+    // Every diagnosis value the page prints carries its own source now
+    // (PassportValueOriginDTO). This file is about routing, so the
+    // shape is here only to keep the renderer fed; what the page does
+    // with each state is pinned in passport-share.html.test.ts, from
+    // profiles rather than from a literal.
+    valueOrigins: {
+      geneticType: { kind: 'patient', labelZh: '本人填写' },
+      d4z4Repeats: { kind: 'absent', labelZh: '未填' },
+      methylationValue: { kind: 'absent', labelZh: '未填' },
+      diagnosisDate: { kind: 'patient', labelZh: '本人填写' },
+    },
     geneEvidence: null,
+    // Read by the renderer, so it is here for the same reason
+    // `valueOrigins` is. Null is 「this profile states no reading that
+    // was shown and not judged」; what the page does with the other
+    // state is pinned in passport-share.html.test.ts.
+    geneticEvidence: { readingsNotJudged: null },
   },
-  motor: { summary: '上肢抬举受限', latestMeasurementAt: null, highlights: [] },
-  imaging: { summary: null, latestMriDate: null },
+  // `average` and the imaging trio are read by the renderer, so they are
+  // here for the same reason `valueOrigins` is. This literal is not
+  // type-checked against the DTO — it reaches the page through a mocked
+  // service — so a field the page reads and this stub omits surfaces as
+  // a 500 from a ROUTING test, which says nothing about routing. What
+  // the page does with each value is pinned in
+  // passport-share.html.test.ts, from profiles rather than from a
+  // literal.
+  motor: {
+    summary: '上肢抬举受限',
+    average: '3.2',
+    latestMeasurementAt: null,
+    highlights: [],
+  },
+  imaging: {
+    summary: null,
+    latestMriDate: null,
+    highlights: [],
+    freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+  },
   monitoring: { items: [] },
   timeline: [],
   nextSteps: [],
@@ -254,8 +289,14 @@ describe('还没进 handler 就失败的，也得是一张页', () => {
     const flood = '203.0.113.7';
     queryMock.mockResolvedValue({ rows: [], rowCount: 0 });
 
+    // 61 requests is exactly the budget (60/60s) plus one, which left
+    // no margin: a window that rolls over mid-loop resets the counter
+    // and the 429 never arrives, so this test failed roughly once a
+    // run. The bound is now well above one full budget, which makes a
+    // single rollover harmless — the requests after it refill the
+    // window on their own.
     let res = await request(app).get(`/s/passport/${TOKEN}`).set('x-forwarded-for', flood);
-    for (let i = 0; i < 60 && res.status !== 429; i += 1) {
+    for (let i = 0; i < 200 && res.status !== 429; i += 1) {
       res = await request(app).get(`/s/passport/${TOKEN}`).set('x-forwarded-for', flood);
     }
 

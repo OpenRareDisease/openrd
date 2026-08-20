@@ -14,7 +14,10 @@ import {
   ApiError,
   type AccountDeletionStatus,
 } from '../../lib/api';
+import { APP_NAME, readAppVersion } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
+import { isAdminRole } from '../../lib/admin-access';
+import { AUDIT_MECHANISM } from '../p-admin/common';
 import { isFeatureEnabled } from '../../lib/feature-flags';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import ListGroup, { Row } from '../common/ListGroup';
@@ -44,6 +47,7 @@ const downloadJsonInBrowser = (payload: unknown, filename: string) => {
 
 const SettingsScreen = () => {
   const router = useRouter();
+  const appVersion = readAppVersion();
   const { confirm, notify } = useAppDialog();
   const [isExporting, setIsExporting] = useState(false);
   const [deletion, setDeletion] = useState<AccountDeletionStatus | null>(null);
@@ -311,6 +315,55 @@ const SettingsScreen = () => {
             detail="按指南，结合你已录入的信息，哪些检查值得和医生确认"
             onPress={() => router.push('/p-surveillance')}
           />
+          {/* 临床试验 sits in this group and not in 探索 · 即将上线,
+              which is where a page about trials would be expected to
+              go. The distinction that group encodes is whether the page
+              is finished and sourced: 临床试验广场 in there is still an
+              UnavailableScreen, while this one shows what
+              ClinicalTrials.gov actually says with the date we copied
+              it on every screenful. Putting it behind the 即将上线
+              badge would cost it its readership, which is the failure
+              this group's header comment already describes.
+
+              The「· 在中国」half of the group title earns it too: the
+              one thing this page has to tell a mainland reader is that
+              the list does NOT cover trials registered only with
+              药物临床试验登记与信息公示平台, and where to go instead. */}
+          <Row
+            icon="flask-vial"
+            label="临床试验"
+            detail="注册库上登记的 FSHD 试验，以及这份名单是哪天抄下来的"
+            onPress={() => router.push('/p-trials')}
+          />
+          {/* 病友经验 and 康复：辅具与运动 sit in this group for the
+              same reason 临床试验 does: each is a finished page, and an
+              即将上线 badge on a finished page costs it the readership
+              this group exists to protect. 病友经验 is the shelf of
+              published, bylined narratives in screens/p-community;
+              康复：辅具与运动 is the orthosis and walking-aid ladder plus
+              the six-month home-exercise plan in screens/p-rehab_share.
+
+              A row here is what makes either page findable. 探索 ·
+              即将上线 below sits behind EXPO_PUBLIC_ENABLE_EXPLORE —
+              one flag over that whole group, off by default — so a
+              finished page listed there instead gets no row in a
+              default build. The routes are not gated, so a deep link
+              into a web export still resolves; what the flag withholds
+              is the way to find the page. See the comment on that
+              group below, and
+              __tests__/finished-explore-entries.test.tsx. */}
+          <Row
+            icon="users"
+            label="病友经验"
+            detail="病友自己写下、已公开发表的经历；本页只放摘录和出处"
+            onPress={() => router.push('/p-community')}
+          />
+          <Row
+            icon="heart-pulse"
+            label="康复：辅具与运动"
+            detail="辅具与助行器怎么选，以及六个月的居家运动计划"
+            onPress={() => router.push('/p-rehab_share')}
+          />
           <Row
             icon="clipboard-list"
             label="残疾评定准备"
@@ -408,21 +461,30 @@ const SettingsScreen = () => {
           )}
         </ListGroup>
 
-        {/* 探索 · 即将上线 — five placeholder destinations that shipped
-            nothing yet. Listing them next to privacy, audit history and
-            account deletion made the whole page read as equally real,
-            so they now sit behind EXPO_PUBLIC_ENABLE_EXPLORE: the
-            screens and routes stay, only the discoverability is gated.
-            Flip the flag per-build as each one actually launches. */}
+        {/* 探索 · 即将上线 — the rows listed below, and only those. Each
+            one still opens an UnavailableScreen. Listing them next to
+            privacy, audit history and account deletion made the whole
+            page read as equally real, so they sit behind
+            EXPO_PUBLIC_ENABLE_EXPLORE: the screens and routes stay,
+            only the discoverability is gated.
+
+            One flag covers the whole group, so it cannot be flipped
+            per destination as that destination launches — flipping it
+            for the one that is ready surfaces the ones that are not.
+            A page that becomes real leaves this list AND gets a row of
+            its own above: doing only the first leaves it with no entry
+            at all, and doing only the second leaves a duplicate row
+            that comes back whenever the flag is on. See
+            __tests__/trials-entry.test.tsx and
+            __tests__/finished-explore-entries.test.tsx, which pin both
+            ways of getting this wrong. */}
         {isFeatureEnabled('explore') ? (
           <ListGroup title="探索 · 即将上线">
             {(
               [
-                { title: '患者社区', icon: 'users', route: '/p-community' },
                 { title: '专家咨询', icon: 'user-doctor', route: '/p-expert_consult' },
                 { title: '临床试验广场', icon: 'flask-vial', route: '/p-trial_square' },
                 { title: '医疗资源地图', icon: 'map-location-dot', route: '/p-resource_map' },
-                { title: '康复经验分享', icon: 'heart-pulse', route: '/p-rehab_share' },
               ] as const
             ).map((item) => (
               <Row
@@ -443,6 +505,36 @@ const SettingsScreen = () => {
           </ListGroup>
         ) : null}
 
+        {/* 后台 — the ONLY door into the back office, and it does not
+            exist for a patient.
+
+            Not `disabled`, not a 「无权限」 notice: §B4 asks for an entry
+            point that is invisible to a patient, so a non-admin renders
+            nothing at all here and the routes themselves are replaced
+            with /p-home by the gate in app/_layout.tsx. This is a
+            drawing decision made from the role cached at sign-in —
+            lib/admin-access.ts says why that is allowed to be stale,
+            and why it is not the access control.
+
+            THE FOOTNOTE IS THE BACK OFFICE'S OWN SENTENCE, imported
+            rather than written again here. It used to promise that
+            every page an operator opened was recorded — 「包括只是打开
+            看看」 — which is the wording each back-office screen stopped
+            using once 全量导出 turned out to request nothing on mount.
+            What is true of all of them is the mechanism, so that is
+            what this door says; what varies from screen to screen is
+            said by the screen, in its own ADMIN_AUDIT_NOTICE_*. */}
+        {isAdminRole(user?.role) ? (
+          <ListGroup title="后台" footnote={AUDIT_MECHANISM}>
+            <Row
+              icon="file-shield"
+              label="运维与患者档案"
+              detail="健康检查、解析失败队列、语料状态、AI 调用量，以及患者列表"
+              onPress={() => router.push('/p-admin')}
+            />
+          </ListGroup>
+        ) : null}
+
         {/* 退出登录 — an outlined button rather than another list row:
             it is an action, not a destination, and it should not be
             one tap away from the rows above it. */}
@@ -456,9 +548,26 @@ const SettingsScreen = () => {
         />
 
         {/* 版本信息 */}
+        {/* Three separate untruths lived in these two lines. The name
+            was the repository's, not the product's — a patient reading
+            this back to us would name a GitHub org. The version was
+            typed as 1.0.0 against app.json's 2.5.0, one and a half
+            years of releases apart, which points a bug report at the
+            wrong build. And the year was 2024 on a screen rendered in
+            2026. All three are now derived: none can go stale without
+            the thing they describe changing too.
+
+            The version renders only when the Expo config can be read.
+            A version we cannot read is not one to guess at here — 关于
+            我们 made the same call for the same reason. */}
         <View style={styles.versionInfo}>
-          <Text style={styles.versionText}>FSHD-openrd v1.0.0</Text>
-          <Text style={styles.copyrightText}>© 2024 FSHD-openrd. 保留所有权利</Text>
+          <Text style={styles.versionText}>
+            {APP_NAME}
+            {appVersion ? ` v${appVersion}` : ''}
+          </Text>
+          <Text style={styles.copyrightText}>
+            © {new Date().getFullYear()} {APP_NAME}. 保留所有权利
+          </Text>
         </View>
       </ScrollView>
 

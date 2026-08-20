@@ -54,7 +54,14 @@ export type AnswerBlock =
   | { kind: 'quote'; spans: TextSpan[] }
   | { kind: 'code'; text: string }
   | { kind: 'rule' }
-  /** A table row, flattened to label + value. See `flattenTable`. */
+  /** A table row, flattened to label + value. See `flattenTable`.
+   *
+   *  `label` is PLAIN TEXT, and that is a contract rather than an
+   *  accident of typing — every renderer prints it straight into a
+   *  `<Text>`, so any inline syntax left in it reaches the reader as
+   *  characters. `flattenTable` is the only writer and it strips the
+   *  markup off; see the note there for why the emphasis is dropped
+   *  rather than carried. */
   | { kind: 'pair'; label: string; spans: TextSpan[] };
 
 export interface TextSpan {
@@ -72,12 +79,34 @@ export interface TextSpan {
 /* ------------------------------------------------------------------ */
 
 /**
- * One pass over a line, longest-marker-first so `***x***` is not eaten
- * by the `**` rule and `~~` is not eaten by `~`.
+ * One pass over ONE LOGICAL BLOCK, longest-marker-first so `***x***` is
+ * not eaten by the `**` rule and `~~` is not eaten by `~`.
  *
  * Ordering inside the alternation is the whole algorithm; changing it
  * changes what wins. Escapes come first so `\*` never opens emphasis,
  * and code spans come before emphasis so `` `a * b` `` stays literal.
+ *
+ * A BLOCK, NOT A LINE — every `[^\n]` here used to be `[^\n]` for real,
+ * and that single character was the bug. `parseAnswer` fed this one
+ * source line at a time, so a run of emphasis that WRAPPED had its
+ * opening marker on one line and its closing marker on the next, and
+ * neither line contained a pair. The patient got 「这里有一个**很重要的 /
+ * 提醒**，请注意」 with the asterisks printed, which is the exact failure
+ * this module was written to remove — and it fired on ordinary output,
+ * because the system prompt tells the model bold IS rendered while
+ * saying nothing about keeping a bolded run on one line. Every promised
+ * inline construct failed the same way: bold, italic, bold+italic,
+ * inline code, links, strikethrough.
+ *
+ * So the newline exclusions are gone and `parseAnswer` now hands this
+ * function a whole paragraph. The exclusions were never a rule about
+ * meaning; they were an artefact of only ever being given one line.
+ * What bounds a run now is the BLOCK: a blank line or any block-level
+ * construct closes the paragraph before it reaches here, so emphasis
+ * still cannot leak from one paragraph into the next.
+ *
+ * `href` keeps its `\s` exclusion: a URL that wrapped is a broken URL,
+ * and joining its halves would fabricate a link target.
  */
 const INLINE_SOURCE = [
   // Escapes first, so `\*` can never open emphasis.
@@ -88,19 +117,19 @@ const INLINE_SOURCE = [
   // group — and inline code stopped working the moment these
   // alternatives were concatenated.
   /(?<tick>`+)(?<code>[\s\S]*?)\k<tick>/,
-  /\[(?<link>[^\]\n]*)\]\((?<href>[^)\s]+)\)/,
-  /\*\*\*(?<bi>[^\n]+?)\*\*\*/,
+  /\[(?<link>[^\]]*)\]\((?<href>[^)\s]+)\)/,
+  /\*\*\*(?<bi>[\s\S]+?)\*\*\*/,
   // `**很重要的 *提醒***` — italic closing at the very end of a bold
   // run. Both delimiters collide into `***`, and the plain `**` rule
   // below consumes two of the three, leaving a bare `*` on screen.
   // Split explicitly: the head stays bold, the tail is bold+italic.
-  /\*\*(?<bHead>[^*\n]*)\*(?<biTail>[^*\n]+?)\*\*\*/,
-  /\*\*(?<b>[^\n]+?)\*\*/,
-  /~~(?<s>[^\n]+?)~~/,
-  /\*(?<i1>[^*\n]+?)\*/,
+  /\*\*(?<bHead>[^*]*)\*(?<biTail>[^*]+?)\*\*\*/,
+  /\*\*(?<b>[\s\S]+?)\*\*/,
+  /~~(?<s>[\s\S]+?)~~/,
+  /\*(?<i1>[^*]+?)\*/,
   // Never intra-word: this app renders OCR field keys, and
   // `stool_occult_blood` must not become 「stool occult blood」.
-  /(?<![0-9A-Za-z_])_(?<i2>[^_\n]+?)_(?![0-9A-Za-z_])/,
+  /(?<![0-9A-Za-z_])_(?<i2>[^_]+?)_(?![0-9A-Za-z_])/,
 ]
   .map((r) => r.source)
   .join('|');
@@ -126,6 +155,8 @@ const push = (spans: TextSpan[], span: TextSpan) => {
 const inherit = (spans: TextSpan[], style: Partial<TextSpan>): TextSpan[] =>
   spans.map((span) => ({ ...style, ...span }));
 
+/** Takes a whole block's text — which may contain soft line breaks —
+ *  not a single line. See `INLINE_SOURCE`. */
 export const parseSpans = (line: string): TextSpan[] => {
   const spans: TextSpan[] = [];
   const matcher = inlineMatcher();
@@ -217,7 +248,37 @@ const splitRow = (line: string): string[] => {
  * header: a lone `| TPPA | 阴性 |` vanished, and so did the first row
  * after a blank line inside a table, because the block restarted and
  * ate that row as a header nobody asked for.
+ *
+ * THE LABEL COLUMN GOES THROUGH THE INLINE PASS TOO, AND IT DID NOT.
+ * Every other field this module emits is `TextSpan[]`; `label` is a
+ * string, and it was the raw cell — so the one column the system prompt
+ * asks the model to put the 指标 in was the one column whose Markdown
+ * was never parsed. 「| **D4Z4 重复数** | 3 次 |」 reached the chat bubble
+ * as `**D4Z4 重复数**`, asterisks and all, while the identical
+ * characters one paragraph above rendered bold correctly. Both halves of
+ * that are the prompt's own instructions: 【排版】 asks for bold AND asks
+ * for 第一列放指标名, so a bold 指标 is not an edge case, it is what the
+ * paragraph produces.
+ *
+ * THE EMPHASIS IS DROPPED RATHER THAN CARRIED, and the flattening is why.
+ * A table cell is bold to stand out from its row; once the row is a
+ * label/value pair the label column already carries its own weight and
+ * colour, so the marker has nothing left to distinguish. Keeping it
+ * would mean widening `pair` to a second span list, which every renderer
+ * of this type would have to grow a branch for — a larger change than
+ * the reader gets anything from. What is NOT acceptable is the third
+ * option, which is what shipped: printing the markers.
+ *
+ * `parseSpans` and not a strip-the-markers regex, so the label agrees
+ * with the value beside it about what the syntax MEANT — `\*` unescapes
+ * to a literal asterisk instead of being deleted, a code span keeps its
+ * contents, and a link keeps its label. One inline grammar, read once.
  */
+const plainCell = (cell: string): string =>
+  parseSpans(cell)
+    .map((span) => span.text)
+    .join('');
+
 const flattenTable = (rows: string[][], headerRow: string[] | null): AnswerBlock[] =>
   rows.map((cells) => {
     const [label = '', value = '', ...rest] = cells;
@@ -228,7 +289,7 @@ const flattenTable = (rows: string[][], headerRow: string[] | null): AnswerBlock
       })
       .filter(Boolean);
     const tail = extras.length > 0 ? `（${extras.join('，')}）` : '';
-    return { kind: 'pair' as const, label, spans: parseSpans(`${value}${tail}`) };
+    return { kind: 'pair' as const, label: plainCell(label), spans: parseSpans(`${value}${tail}`) };
   });
 
 /** Decide what a run of pipe lines actually is, then flatten it. */
@@ -278,6 +339,26 @@ const SETEXT = /^(=+|-+)$/;
 const indentColumns = (line: string): number =>
   (line.match(/^[ \t]*/)?.[0] ?? '').replace(/\t/g, '    ').length;
 
+/**
+ * The leaf block currently being accumulated.
+ *
+ * THE POINT OF THIS TYPE is that a leaf block is a run of source lines,
+ * not one source line. Every text line used to be pushed as a finished
+ * block the moment it was read, which is why nothing could span a soft
+ * line break — not emphasis (see `INLINE_SOURCE`) and not the block
+ * itself: a two-line sentence became two paragraphs, a wrapped list
+ * item became a list item followed by an orphan paragraph, and a
+ * wrapped quote became a quote followed by an unquoted paragraph
+ * carrying the rest of the citation.
+ *
+ * Lines accumulate here and are parsed ONCE, when something closes the
+ * block: a blank line, any block-level construct, or the end of input.
+ */
+type PendingBlock =
+  | { kind: 'paragraph'; lines: string[] }
+  | { kind: 'quote'; lines: string[] }
+  | { kind: 'listItem'; marker: string; depth: number; lines: string[] };
+
 export const parseAnswer = (raw: string): AnswerBlock[] => {
   const blocks: AnswerBlock[] = [];
   const lines = (raw ?? '').split('\n');
@@ -285,19 +366,51 @@ export const parseAnswer = (raw: string): AnswerBlock[] => {
   let pipeBlock: string[] = [];
   let fence: string | null = null;
   let code: string[] = [];
-  /** Indent of the list item currently open, so a continuation line
-   *  can be told from a new paragraph. -1 when no list is open. */
-  let openListIndent = -1;
-  /** Whether the previous source line was blank. A setext underline
-   *  has to touch the paragraph it underlines; a `---` with a blank
-   *  line above it is a thematic break. */
-  let previousLineBlank = true;
+  let pending: PendingBlock | null = null;
 
   const flushPipes = () => {
     if (pipeBlock.length > 0) {
       blocks.push(...parsePipeBlock(pipeBlock));
       pipeBlock = [];
     }
+  };
+
+  /**
+   * Close the open leaf block and parse its lines as one unit.
+   *
+   * THE LINES ARE REJOINED WITH THE NEWLINE THEY ARRIVED WITH, rather
+   * than with a space. CommonMark renders a soft break as whitespace
+   * because HTML reflows; this app draws each block into a `<Text>`,
+   * where a `\n` is a line break and a space is a space. Keeping the
+   * newline is right on both counts:
+   *
+   *  - It preserves the shape the model chose. A model that writes
+   *    three short lines under one heading meant three lines, and
+   *    joining them with a space would run them together into a
+   *    paragraph nobody asked for.
+   *  - It never fabricates a space inside Chinese text, and never
+   *    deletes the one Latin text needs. 「…是一种 / 常染色体…」 must not
+   *    gain a space and 「the patient / should rest」 must not lose one;
+   *    the newline is correct for both, because it is what the model
+   *    actually wrote.
+   *
+   * The emphasis now spans the break because `parseSpans` sees the
+   * whole string at once — which was the point.
+   */
+  const flushPending = () => {
+    if (!pending) return;
+    const spans = parseSpans(pending.lines.join('\n'));
+    if (pending.kind === 'listItem') {
+      blocks.push({ kind: 'listItem', marker: pending.marker, depth: pending.depth, spans });
+    } else {
+      blocks.push({ kind: pending.kind, spans });
+    }
+    pending = null;
+  };
+
+  const flush = () => {
+    flushPending();
+    flushPipes();
   };
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -322,31 +435,29 @@ export const parseAnswer = (raw: string): AnswerBlock[] => {
 
     const fenceOpen = line.match(FENCE);
     if (fenceOpen) {
-      flushPipes();
+      flush();
       fence = fenceOpen[1];
-      openListIndent = -1;
       continue;
     }
 
     if (isPipeLine(line)) {
+      flushPending();
       pipeBlock.push(line);
       continue;
     }
     flushPipes();
 
     if (!line) {
-      // A blank line closes an open list item, so the next paragraph
-      // is a paragraph rather than a continuation of it.
-      openListIndent = -1;
-      previousLineBlank = true;
+      // A blank line closes whatever leaf block is open, so the next
+      // text starts a block of its own rather than continuing this one.
+      flushPending();
       continue;
     }
 
     const heading = line.match(HEADING);
     if (heading) {
+      flushPending();
       blocks.push({ kind: 'heading', level: heading[1].length, spans: parseSpans(heading[2]) });
-      openListIndent = -1;
-      previousLineBlank = false;
       continue;
     }
 
@@ -363,24 +474,30 @@ export const parseAnswer = (raw: string): AnswerBlock[] => {
     // was observed on screen: a three-line paragraph of advice about
     // 呼吸功能 rendered at heading size and weight because a `---`
     // appeared two lines below it.
+    //
+    // Both conditions are now read off `pending` instead of off the
+    // last emitted block plus a `previousLineBlank` flag. A paragraph
+    // is OPEN only while it is being accumulated, and a blank line or
+    // any other construct closes it — so 「touches a paragraph」 and
+    // 「pending is a paragraph」 are the same question, asked once.
     const setext = line.match(SETEXT);
-    const previous = blocks[blocks.length - 1];
-    if (setext && !previousLineBlank && previous?.kind === 'paragraph') {
-      blocks[blocks.length - 1] = {
+    if (setext && pending?.kind === 'paragraph') {
+      blocks.push({
         kind: 'heading',
         level: setext[1].startsWith('=') ? 1 : 2,
-        spans: previous.spans,
-      };
-      previousLineBlank = false;
+        spans: parseSpans(pending.lines.join('\n')),
+      });
+      pending = null;
       continue;
     }
 
     const ordered = line.match(ORDERED);
     const bullet = line.match(BULLET);
     if (ordered || bullet) {
+      flushPending();
       const text = (ordered ? ordered[2] : bullet![2]).trim();
       const task = text.match(TASK);
-      blocks.push({
+      pending = {
         kind: 'listItem',
         marker: task
           ? task[1].toLowerCase() === 'x'
@@ -390,43 +507,43 @@ export const parseAnswer = (raw: string): AnswerBlock[] => {
             ? `${ordered[1]}.`
             : '·',
         depth,
-        spans: parseSpans(task ? task[2] : text),
-      });
-      openListIndent = columns;
-      previousLineBlank = false;
+        lines: [task ? task[2] : text],
+      };
       continue;
     }
 
     // Checked after the list rules, so `- item` wins over `---`.
     if (RULE.test(line)) {
+      flushPending();
       blocks.push({ kind: 'rule' });
-      openListIndent = -1;
-      previousLineBlank = false;
       continue;
     }
 
+    // Consecutive `>` lines are ONE quotation. They used to be one
+    // quote block each, so a citation long enough to wrap was drawn as
+    // a stack of separate quotes.
     const quote = line.match(QUOTE);
     if (quote) {
-      blocks.push({ kind: 'quote', spans: parseSpans(quote[1]) });
-      openListIndent = -1;
-      previousLineBlank = false;
+      if (pending?.kind === 'quote') pending.lines.push(quote[1]);
+      else {
+        flushPending();
+        pending = { kind: 'quote', lines: [quote[1]] };
+      }
       continue;
     }
 
-    // An indented line under an open list item is that item's second
-    // sentence, not a new block. Emitting it flush-left broke the
-    // numbering visually — 「1. 先做基因检测 / 这一步需要空腹。/ 2. …」
-    // read as a step, an unrelated remark, and another step.
-    const last = blocks[blocks.length - 1];
-    if (openListIndent >= 0 && columns > openListIndent && last?.kind === 'listItem') {
-      last.spans = [...last.spans, { text: ' ' }, ...parseSpans(line)];
-      previousLineBlank = false;
+    // A plain line while a leaf block is open CONTINUES it — the lazy
+    // continuation CommonMark specifies, and the reason a wrapped list
+    // item no longer sheds its tail into a paragraph of its own. This
+    // subsumes the old indent test: 「1. 先做基因检测 / 这一步需要空腹。」
+    // is the item's second sentence whether or not the model indented
+    // it, and models mostly do not.
+    if (pending) {
+      pending.lines.push(line);
       continue;
     }
 
-    blocks.push({ kind: 'paragraph', spans: parseSpans(line) });
-    openListIndent = -1;
-    previousLineBlank = false;
+    pending = { kind: 'paragraph', lines: [line] };
   }
 
   // An unterminated fence still has to render — the model got cut off
@@ -434,7 +551,7 @@ export const parseAnswer = (raw: string): AnswerBlock[] => {
   if (fence !== null && code.length > 0) {
     blocks.push({ kind: 'code', text: code.join('\n') });
   }
-  flushPipes();
+  flush();
 
   return blocks;
 };

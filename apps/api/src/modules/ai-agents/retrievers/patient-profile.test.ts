@@ -1,5 +1,5 @@
 import type { Pool, QueryResult } from 'pg';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
 import { PatientProfileRetriever } from './patient-profile.js';
@@ -15,6 +15,14 @@ const silentLogger = {
     return silentLogger;
   },
 };
+
+/** Restored so the day-column suite below cannot leak a timezone into
+ *  whatever runs next in the same worker. */
+const ORIGINAL_TZ = process.env.TZ;
+afterAll(() => {
+  if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+  else process.env.TZ = ORIGINAL_TZ;
+});
 
 const makeCtx = (overrides: Partial<RetrieveContext> = {}): RetrieveContext => ({
   userId: 'user-1',
@@ -185,5 +193,519 @@ describe('PatientProfileRetriever', () => {
     expect(result.chunks).toHaveLength(1);
     expect(result.chunks[0].metadata.hasBaseline).toBe(false);
     expect((result.chunks[0].metadata.fields as Record<string, unknown>) ?? {}).toEqual({});
+  });
+});
+
+/**
+ * WHERE AN ARCHIVED GENETICS CELL CAME FROM.
+ *
+ * The redactor decides what the assistant may say about
+ * `diseaseBackground.d4z4` / `.haplotype`, and it had nothing to decide
+ * with: it passed `fromLaboratoryReport: false` as a constant. So the
+ * prompt asserted `not_read_off_a_laboratory_report` about every
+ * archived genetics cell — including the ones the read-time autofill
+ * copied out of a parsed genetics report, whose provenance the passport
+ * resolves to 「报告读取」 and whose TREAT-NMD sentence ends 「所以这个值是
+ * 基因报告的解析结果」 in the same run.
+ */
+describe('the genetics cells carry where they came from', () => {
+  const sequencedPool = (profileRows: unknown[], documentRows: unknown[]) => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: profileRows, rowCount: profileRows.length })
+      .mockResolvedValueOnce({ rows: documentRows, rowCount: documentRows.length });
+    return { query } as unknown as Pool;
+  };
+
+  const geneticsDocument = (fields: Record<string, unknown>, documentType = 'genetic_report') => ({
+    id: 'doc-1',
+    document_type: documentType,
+    status: 'parsed',
+    uploaded_at: '2026-01-05T00:00:00Z',
+    // The uploader's declaration stamped into the blob beside the
+    // parser's classification, which is what every OCR provider writes
+    // and what `isLaboratoryGeneticReport` reads for its last question.
+    ocr_payload: { fields: { classifiedType: documentType, documentType, ...fields } },
+  });
+
+  const cellsFor = async (documentRows: unknown[]) => {
+    const result = await new PatientProfileRetriever(
+      sequencedPool([POPULATED_ROW], documentRows),
+    ).search({ question: '' }, makeCtx());
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    return {
+      d4z4: fields.d4z4,
+      haplotype: fields.haplotype,
+    };
+  };
+
+  const flagsFor = async (documentRows: unknown[]) => {
+    const result = await new PatientProfileRetriever(
+      sequencedPool([POPULATED_ROW], documentRows),
+    ).search({ question: '' }, makeCtx());
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    return {
+      d4z4: fields.d4z4FromLaboratoryReport,
+      haplotype: fields.haplotypeFromLaboratoryReport,
+    };
+  };
+
+  it('says so when the archived cells match the laboratory report they were read off', async () => {
+    expect(await flagsFor([geneticsDocument({ d4z4Repeats: '3/22', haplotype: '4qA' })])).toEqual({
+      d4z4: true,
+      haplotype: true,
+    });
+  });
+
+  /**
+   * THE CELL THE BOX AND THE REPORT DISAGREE ABOUT IS THE REPORT'S.
+   *
+   * SUPERSEDES 「refuses per cell when only one of them matches」, which
+   * stood here and pinned the opposite: over a report reading D4Z4 5
+   * beside an archived 3/22 it asserted `d4z4FromLaboratoryReport:
+   * false`, on the stated ground that 「a patient hand-corrected one
+   * box, or the report was re-parsed — the cell that no longer matches
+   * is not a value this platform read off anything」.
+   *
+   * THAT IS TRUE OF THE ARCHIVED STRING AND IT WAS THE WRONG THING TO
+   * SHOW. The retriever kept the box's 3/22 and refused to grade it,
+   * while the passport, the share page, the referral pack, the PDF and
+   * both registry exports printed the report's 5 with 「报告读取」 beside
+   * it — `buildReportInsights` resolves these cells document-first
+   * (`d4z4FromDocument || d4z4FromBaseline`) and `normaliseSource` in
+   * export/export-source.ts spells the reason out: the read-time
+   * autofill fills an EMPTY slot and never corrects a full one, so a
+   * patient who answered the questionnaire before uploading the
+   * corrected report keeps their old answer forever, which is an
+   * ordinary state and not an edge case.
+   *
+   * SUPERSEDED BY the product owner's decision of 2026-08-19, taken
+   * after this was measured on a record whose report states D4Z4 4 and
+   * 甲基化 28% while the boxes hold 6 and 41%: the passport graded that
+   * record 基因确诊 and the assistant, reading the boxes and refusing to
+   * grade them, told the patient they were NOT genetically confirmed.
+   * Document-first precedence, the passport's own ordering. The
+   * patient's typed value is not destroyed by this — it is still on
+   * their profile screen and in `baseline_payload` — it is no longer
+   * what the assistant reads.
+   */
+  it('takes the report’s own value for a cell the archived box disagrees with', async () => {
+    expect(await cellsFor([geneticsDocument({ d4z4Repeats: '5', haplotype: '4qA' })])).toEqual({
+      d4z4: '5',
+      haplotype: '4qA',
+    });
+    expect(await flagsFor([geneticsDocument({ d4z4Repeats: '5', haplotype: '4qA' })])).toEqual({
+      d4z4: true,
+      haplotype: true,
+    });
+  });
+
+  it('refuses both when the evidence document is a transcription', async () => {
+    // `pickGeneticEvidenceDocument` takes a 病历摘要 quoting a result
+    // when no genetics report read anything out — for display. It is
+    // not a measurement, and nothing may be graded off it.
+    expect(
+      await flagsFor([
+        geneticsDocument({ d4z4Repeats: '3/22', haplotype: '4qA' }, 'medical_summary'),
+      ]),
+    ).toEqual({ d4z4: false, haplotype: false });
+  });
+
+  it('refuses both when there is no document at all', async () => {
+    expect(await flagsFor([])).toEqual({ d4z4: false, haplotype: false });
+  });
+});
+
+/**
+ * THE READ-TIME PROJECTION, WHICH THIS RETRIEVER DID NOT RUN.
+ *
+ * `applyGeneticReportAutofill` fills an EMPTY 分型 / D4Z4 重复数 /
+ * 单倍型 / 甲基化 box, and an empty 确诊年份 and `diagnosis_date`, out of
+ * the report `pickGeneticEvidenceDocument` names. `getProfileByUserId`
+ * and `getBaselineByUserId` both apply it, so the passport, the share
+ * page, the referral pack, the PDF, the three registry exports and the
+ * patient's own questionnaire screen are all built on its output. This
+ * retriever read `baseline_payload` straight out of SQL, so for a
+ * patient whose genetics came off a report rather than out of the form
+ * the passport printed the count with 「报告读取」 beside it while
+ * `get_my_profile` returned a profile with no genetics in it at all.
+ */
+describe('the assistant reads the profile the platform serves', () => {
+  const sequencedPool = (profileRows: unknown[], documentRows: unknown[]) => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: profileRows, rowCount: profileRows.length })
+      .mockResolvedValueOnce({ rows: documentRows, rowCount: documentRows.length });
+    return { query } as unknown as Pool;
+  };
+
+  /** A profile whose registration form was never filled in. */
+  const EMPTY_FORM_ROW = {
+    ...POPULATED_ROW,
+    id: 'profile-report-derived',
+    diagnosis_date: null,
+    genetic_mutation: null,
+    baseline_payload: { foundation: {}, diseaseBackground: {}, currentStatus: {} },
+  };
+
+  const REPORT_FIELDS = {
+    diagnosisType: 'FSHD1',
+    d4z4Repeats: '4',
+    haplotype: '4qA',
+    methylationValue: '28%',
+    diagnosisDate: '2021-03-08',
+    geneticTestMethod: 'Southern blot',
+  };
+
+  const document = (
+    over: {
+      id?: string;
+      classifiedType?: string;
+      declaredType?: string;
+      uploadedAt?: string;
+      page?: string;
+      fields?: Record<string, unknown>;
+    } = {},
+  ) => ({
+    id: over.id ?? 'doc-lab',
+    document_type: over.classifiedType ?? 'genetic_report',
+    status: 'parsed',
+    uploaded_at: new Date(over.uploadedAt ?? '2026-02-01T09:00:00.000Z'),
+    ocr_payload: {
+      fields: {
+        classifiedType: over.classifiedType ?? 'genetic_report',
+        documentType: over.declaredType ?? over.classifiedType ?? 'genetic_report',
+        ...(over.fields ?? REPORT_FIELDS),
+      },
+      extractedText:
+        over.page ?? '基因检测报告\n检测机构：合成实验室\n检测方法：Southern blot\n检测结论：见上',
+    },
+  });
+
+  const TRANSCRIPTION_PAGE = '门诊病历摘要\n主诉：双肩无力\n现病史：进行性加重';
+
+  const fieldsFor = async (row: unknown, documentRows: unknown[]) => {
+    const result = await new PatientProfileRetriever(sequencedPool([row], documentRows)).search(
+      { question: '我的基因结果是什么' },
+      makeCtx(),
+    );
+    return (result.chunks[0].metadata.fields as Record<string, unknown>) ?? {};
+  };
+
+  it('fills the empty genetics boxes from the report, as every other surface does', async () => {
+    const fields = await fieldsFor(EMPTY_FORM_ROW, [document()]);
+    expect(fields.diagnosisType).toBe('FSHD1');
+    expect(fields.d4z4).toBe('4');
+    expect(fields.haplotype).toBe('4qA');
+    expect(fields.methylation).toBe('28%');
+    // The report's own 诊断日期, and the year the autofill derives from
+    // it into `foundation.diagnosisYear`.
+    expect(fields.diagnosisDate).toBe('2021-03-08');
+    expect(fields.diagnosisYear).toBe(2021);
+  });
+
+  /**
+   * AND THE CONFIRMATION GUARD IS FED THE RIGHT FACTS BY IT.
+   *
+   * `resolveGeneticCells` asks what this platform holds for each cell
+   * and whether it read that off the laboratory's own report. Before
+   * the projection ran here it was asked of an EMPTY cell and answered
+   * 「nothing, and not from a laboratory」 for every report-derived
+   * profile — which is the state the redactor turns into
+   * `not_read_off_a_laboratory_report`, on the profile whose passport
+   * says 报告读取.
+   */
+  it('grades those cells as the laboratory reading the passport calls them', async () => {
+    const fields = await fieldsFor(EMPTY_FORM_ROW, [document()]);
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(true);
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
+    expect(fields.haplotypeFromLaboratoryReport).toBe(true);
+    expect(fields.methylationFromLaboratoryReport).toBe(true);
+  });
+
+  /**
+   * THE PROJECTION MUST NOT WIDEN WHAT MAY BE GRADED.
+   *
+   * A 病历摘要 quoting the result is picked for DISPLAY when no genetics
+   * report read anything out, and the autofill fills the same empty
+   * boxes off it. The value reaches the assistant — for some patients
+   * it is the only copy that exists — and every flag stays false, which
+   * is 「转录自非基因报告文件」 on the passport and a refusal to grade
+   * everywhere else.
+   */
+  it('shows a transcribed value and grades none of it', async () => {
+    const fields = await fieldsFor(EMPTY_FORM_ROW, [
+      document({
+        id: 'doc-summary',
+        classifiedType: 'medical_summary',
+        declaredType: 'other',
+        page: TRANSCRIPTION_PAGE,
+      }),
+    ]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.haplotype).toBe('4qA');
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(false);
+    expect(fields.d4z4FromLaboratoryReport).toBe(false);
+    expect(fields.haplotypeFromLaboratoryReport).toBe(false);
+    expect(fields.methylationFromLaboratoryReport).toBe(false);
+  });
+
+  it('reads the laboratory report and not the transcription when a profile has both', async () => {
+    const fields = await fieldsFor(EMPTY_FORM_ROW, [
+      document({
+        id: 'doc-summary',
+        classifiedType: 'medical_summary',
+        declaredType: 'other',
+        page: TRANSCRIPTION_PAGE,
+        uploadedAt: '2026-03-01T09:00:00.000Z',
+        fields: { ...REPORT_FIELDS, d4z4Repeats: '9' },
+      }),
+      document(),
+    ]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
+  });
+
+  /**
+   * A FULL BOX THE REPORT CONTRADICTS.
+   *
+   * SUPERSEDES 「never overwrites a box the patient filled in」, which
+   * asserted `d4z4: '3/22'` and `methylation: '12%'` off this same
+   * fixture — the archived answers — with both laboratory flags false,
+   * on a profile whose report reads 4 and 28%. Superseded by the same
+   * owner decision of 2026-08-19 recorded above `takes the report’s own
+   * value for a cell the archived box disagrees with`: the assistant
+   * reads what the passport prints, and the passport prints the
+   * document's cell.
+   *
+   * THE AUTOFILL'S OWN RULE IS UNCHANGED AND IS NOT WHAT THIS TESTS.
+   * `applyGeneticReportAutofill` still fills empty boxes only and still
+   * writes nothing to the archive; `baseline_payload` on disk keeps the
+   * patient's 3/22 and 12%, and their profile screen keeps showing
+   * them. What changed is which of the two the retriever hands the
+   * prompt.
+   */
+  it('hands over the report’s cell, not the archived answer it contradicts', async () => {
+    const fields = await fieldsFor(POPULATED_ROW, [document()]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(true);
+    // The one box this fixture already agreed with the report on reads
+    // the same either way.
+    expect(fields.haplotype).toBe('4qA');
+    expect(fields.haplotypeFromLaboratoryReport).toBe(true);
+  });
+
+  /**
+   * A CELL NO DOCUMENT STATES KEEPS THE ARCHIVED ANSWER.
+   *
+   * Document-first is a precedence and not a deletion: where the picked
+   * report is silent about a cell, the patient's own answer is the only
+   * thing this platform holds and it is what the assistant reads —
+   * ungraded, which is the passport's `profile_column` slot and the
+   * refusal the redactor defaults to.
+   */
+  it('keeps the archived answer for a cell the report says nothing about', async () => {
+    const fields = await fieldsFor(POPULATED_ROW, [
+      document({ fields: { haplotype: '4qA', geneticTestMethod: 'Southern blot' } }),
+    ]);
+    expect(fields.d4z4).toBe('3/22');
+    expect(fields.d4z4FromLaboratoryReport).toBe(false);
+    expect(fields.methylation).toBe('12%');
+    expect(fields.methylationFromLaboratoryReport).toBe(false);
+    expect(fields.diagnosisType).toBe('FSHD1');
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(false);
+  });
+
+  /**
+   * A TRANSCRIPTION STILL WINS THE CELL AND STILL GRADES NOTHING.
+   *
+   * The precedence is 「the picked document's cell」, and
+   * `pickGeneticEvidenceDocument` picks a 病历摘要 when no genetics
+   * report read anything out. The value the patient sees on their
+   * passport comes off that page, so it is the value the assistant
+   * reads too — with every flag false, which is 「转录自非基因报告文件」
+   * on the passport and a refusal to grade everywhere else. This is the
+   * one shape where the precedence moves a value the patient typed out
+   * of the prompt WITHOUT a laboratory behind the replacement, and it
+   * is deliberate: two surfaces naming different numbers for one
+   * measurement is the defect, not which of them is better attested.
+   */
+  it('takes a transcribed cell over the archived answer and grades none of it', async () => {
+    const fields = await fieldsFor(POPULATED_ROW, [
+      document({
+        id: 'doc-summary',
+        classifiedType: 'medical_summary',
+        declaredType: 'other',
+        page: TRANSCRIPTION_PAGE,
+      }),
+    ]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(false);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(false);
+    expect(fields.haplotypeFromLaboratoryReport).toBe(false);
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(false);
+  });
+
+  /**
+   * THE RECORD THE DECISION WAS MEASURED ON.
+   *
+   * Report: D4Z4 4, 甲基化 28%, 单倍型 4qA, Southern blot. Boxes: 6 and
+   * 41%. The passport grades this record 基因确诊 and prints 4 and 28%
+   * with 「报告读取」; the retriever used to hand the prompt 6 and 41%
+   * with `not_read_off_a_laboratory_report` on both, and
+   * `readGeneticConfirmation` — which takes a cell only where the flag
+   * is TRUE — then answered NOT confirmed to a genetically confirmed
+   * patient.
+   */
+  it('gives the confirmation guard the laboratory’s own two cells', async () => {
+    const fields = await fieldsFor(
+      {
+        ...POPULATED_ROW,
+        id: 'profile-disagreeing',
+        baseline_payload: {
+          ...POPULATED_ROW.baseline_payload,
+          diseaseBackground: {
+            ...POPULATED_ROW.baseline_payload.diseaseBackground,
+            d4z4: '6',
+            methylation: '41%',
+          },
+        },
+      },
+      [document()],
+    );
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
+    expect(fields.haplotype).toBe('4qA');
+    expect(fields.haplotypeFromLaboratoryReport).toBe(true);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(true);
+  });
+
+  it('emits nothing for a profile with no form and no documents', async () => {
+    const fields = await fieldsFor({ ...EMPTY_FORM_ROW, baseline_payload: null }, []);
+    expect(fields).not.toHaveProperty('d4z4');
+    expect(fields).not.toHaveProperty('haplotype');
+    expect(fields).not.toHaveProperty('diagnosisYear');
+  });
+});
+
+/**
+ * A `date` COLUMN IS A DAY, AND `toISOString` IS NOT HOW YOU READ ONE.
+ *
+ * node-postgres decodes `date` (OID 1082) as `new Date(y, m - 1, d)` —
+ * midnight in the SERVER PROCESS'S ZONE — and this retriever re-read
+ * that instant in UTC. This product runs `TZ=Asia/Shanghai`
+ * (apps/api/Dockerfile), where midnight local is the PREVIOUS DAY in
+ * UTC. The questionnaire's 确诊年份 is mirrored into
+ * `patient_profiles.diagnosis_date` as `${year}-01-01` (`upsertBaseline`)
+ * and the redactor reduces the cell to a YEAR, so a year start shifted
+ * one day back is the PREVIOUS YEAR: a patient who answered 2023 was
+ * told by the assistant they were diagnosed in 2022, in the same
+ * request whose passport, PDF and registry exports all said 2023.
+ */
+describe.each(['Asia/Shanghai', 'America/Los_Angeles'])('day columns in %s', (timeZone) => {
+  /**
+   * `process.env.TZ` is honoured by Node for every `Date` created after
+   * it is assigned, which is what lets one suite render the same column
+   * east and west of Greenwich — the defect only appears east, and the
+   * western run is what pins that the fix did not trade one shift for
+   * another. Restored afterwards so this file cannot leak a timezone
+   * into whatever runs next in the same worker. Same harness as
+   * profile.passport.dates.test.ts.
+   */
+  beforeEach(() => {
+    process.env.TZ = timeZone;
+  });
+
+  /** A `date` column as node-postgres decodes it: midnight in the
+   *  server process's own zone. */
+  const dayColumn = (year: number, month: number, day: number) => new Date(year, month - 1, day);
+
+  const fieldsFor = async (row: Record<string, unknown>) => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [row], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const result = await new PatientProfileRetriever({ query } as unknown as Pool).search(
+      { question: 'x' },
+      makeCtx(),
+    );
+    return (result.chunks[0].metadata.fields as Record<string, unknown>) ?? {};
+  };
+
+  it('keeps the 1 January a questionnaire year is stored as', async () => {
+    const fields = await fieldsFor({
+      ...POPULATED_ROW,
+      diagnosis_date: dayColumn(2023, 1, 1),
+      baseline_payload: { foundation: {}, diseaseBackground: {} },
+    });
+    expect(fields.diagnosisDate).toBe('2023-01-01');
+  });
+
+  it('keeps the day of a date of birth', async () => {
+    const fields = await fieldsFor({
+      ...POPULATED_ROW,
+      date_of_birth: dayColumn(1990, 4, 15),
+    });
+    expect(fields.dateOfBirth).toBe('1990-04-15');
+  });
+
+  /**
+   * AND `uploaded_at` IS AN INSTANT, NOT A DAY. It was read through the
+   * same day formatter, which threw away the time — and the time is
+   * what `pickGeneticEvidenceDocument` orders two otherwise-equal
+   * candidates by. Truncated, two reports uploaded the same afternoon
+   * tie and fall through to the id comparator, so this retriever could
+   * pick the other report from the one the passport and the exports
+   * read.
+   */
+  it('picks the later of two same-day reports, as the picker on every other path does', async () => {
+    const report = (id: string, at: string, d4z4: string) => ({
+      id,
+      document_type: 'genetic_report',
+      status: 'parsed',
+      uploaded_at: new Date(at),
+      ocr_payload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          d4z4Repeats: d4z4,
+          haplotype: '4qA',
+          geneticTestMethod: 'Southern blot',
+        },
+        extractedText: '基因检测报告\n检测方法：Southern blot',
+      },
+    });
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            ...POPULATED_ROW,
+            baseline_payload: { foundation: {}, diseaseBackground: {} },
+          },
+        ],
+        rowCount: 1,
+      })
+      // The ids are chosen so the two answers differ: the picker's last
+      // tie-break is ascending `id`, so a `time` collapsed to a day
+      // takes `aa-earlier` and its 9, while the real instants take
+      // `zz-later` and its 4.
+      .mockResolvedValueOnce({
+        rows: [
+          report('zz-later', '2026-02-01T18:00:00.000Z', '4'),
+          report('aa-earlier', '2026-02-01T09:00:00.000Z', '9'),
+        ],
+        rowCount: 2,
+      });
+    const result = await new PatientProfileRetriever({ query } as unknown as Pool).search(
+      { question: 'x' },
+      makeCtx(),
+    );
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    expect(fields.d4z4).toBe('4');
   });
 });

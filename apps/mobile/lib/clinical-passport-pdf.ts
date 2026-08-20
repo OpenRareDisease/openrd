@@ -1,5 +1,11 @@
-import type { ClinicalPassportSummary } from './api';
-import { formatDateLabel } from './clinical-visuals';
+import {
+  readPassportGeneticEvidence,
+  readPassportValueOrigin,
+  readPassportValueOrigins,
+  type ClinicalPassportSummary,
+  type PassportValueOrigin,
+} from './api';
+import { formatProductDate } from './clinical-visuals';
 import { parseAnswer, type TextSpan } from '../screens/common/answer-format';
 
 const escapeHtml = (value: string) =>
@@ -15,8 +21,49 @@ const safeText = (value: string | null | undefined, fallback = '—') => {
   return escapeHtml(text && text.length > 0 ? text : fallback);
 };
 
+/**
+ * EVERY DATE THIS FILE RENDERS, WITH ITS YEAR.
+ *
+ * This used to be `formatDateLabel`, which is the `MM-DD` chip the
+ * screens print, and it stripped the year off the 生成时间 and 最近更新
+ * of the document, off every monitoring slot's 最近日期 and off every
+ * row of the 时间轴. This is the one artefact in the product that gets
+ * PRINTED AND HANDED OVER, and it is read beside the server's markdown
+ * export and share page of the same passport, both of which print
+ * `YYYY-MM-DD`.
+ *
+ * The 时间轴 is where the loss actually costs something: a genetic
+ * report from 2024, a blood report from 2025 and a strength entry from
+ * 2025 came out as three yearless rows in one list, so a clinician
+ * could not see that the genetics is two years older than everything
+ * under it. A dated document with no year on it does not survive a
+ * referral folder.
+ *
+ * `formatProductDate` also fixes the calendar for the same reason it
+ * fixes the year — see PRODUCT_TIME_ZONE in clinical-visuals.ts.
+ *
+ * WHAT IT CANNOT SPEAK FOR, AND WHY THE HEADING NO LONGER SAYS
+ * 「EVERY DATE ON THIS SHEET」. Several of the strings this page prints
+ * arrive from the API already finished — `summaryCards[].meta`,
+ * `monitoring.items[].summary`, `diagnosis.diagnosisDate`, the
+ * 门诊准备 note — and they go out through `safeText`, never through
+ * here. The three hero-card `meta` sentences carried the last yearless
+ * dates on the sheet (「最近记录 03-03」, 「最近 MRI 02-13」,
+ * 「最近监测 02-15」, printed beside 「诊断日期 2019-05-03」) until
+ * profile.passport.ts stopped building them with its own `MM-DD`
+ * slicer. Re-parsing a server-authored sentence here to repair a date
+ * inside it would be a second date parser on the far side of a wire,
+ * which is exactly the mistake this product has already paid for; the
+ * fix belongs where the sentence is built, and it was made there.
+ *
+ * The DOCUMENT-level guarantee is therefore held by a rendering test,
+ * not by this function: apps/mobile/test-support/passport-date-parity
+ * -suite.ts renders the whole sheet under two device zones and asserts
+ * that no bare `MM-DD` survives anywhere in it, `.metric-meta`
+ * included.
+ */
 const safeDate = (value: string | null | undefined, fallback = '—') =>
-  escapeHtml(value ? formatDateLabel(value) : fallback);
+  escapeHtml(formatProductDate(value) ?? fallback);
 
 const renderList = (items: string[], emptyLabel: string) => {
   if (items.length === 0) {
@@ -144,6 +191,105 @@ export const buildClinicalPassportPdfHtml = (
         ${renderVisitPrepHtml(visitPrep.trim())}
       </section>
     `
+    : '';
+
+  /**
+   * 契约 §B3 在这张纸上的落点：基线里不是患者本人填的字段，逐条列出。
+   *
+   * 三种情况分开处理，`undefined` 不当成「没有标记」。这一项是新加的，
+   * 而这个 App 是 web export，微信浏览器会缓存好几天——新前端配上还没升
+   * 级的后端时字段就是 undefined。把它读成「都是本人填的」，恰好就是这
+   * 整块代码要防的那句假话，所以那种情况直接说服务端没给。
+   */
+  const origins = summary.fieldOrigins;
+  const fieldOriginsBlock =
+    origins === undefined
+      ? `<div class="note">
+          <p class="note-title">字段来源</p>
+          <p class="info-value">服务端这一版没有返回字段来源，无法确认本节的值是否都由患者本人填写。</p>
+        </div>`
+      : origins.length === 0
+        ? ''
+        : `<div class="note">
+          <p class="note-title">这些字段不是患者本人填的</p>
+          <ul>${origins
+            .map(
+              (origin) =>
+                `<li>${escapeHtml(origin.labelZh)}：${
+                  origin.state === 'admin_entered'
+                    ? `「肌愈通」管理员于 ${safeDate(origin.at, '未记录时间')} 代为录入，不是患者本人填写。`
+                    : `来源记录读不出来（${escapeHtml(origin.detail ?? '原因未记录')}），只能确定不是患者本人填写。`
+                }</li>`,
+            )
+            .join('')}</ul>
+        </div>`;
+
+  /**
+   * 逐项来源：`originLine` 把它印成值下面单独的一行
+   * （`.value-origin`），不是只写在横幅里。
+   *
+   * `confirmation` 是证据等级，本节各个值的来源互不相同（见
+   * profile.passport.ts 里 PassportValueOriginKind 的注释）。来源必须跟
+   * 着值走：`confirmation === 'genetic'` 时下面那条横幅根本不印，而那种
+   * 档案的分型仍然可能不是从报告里读出来的。拿着这张纸的医生要能分清哪
+   * 个数是实验室出的，哪个是患者对自己的叙述。
+   *
+   * 服务端没给来源时不留空，也不默认「都是本人填的」——那正是这一块要
+   * 防的假话。和本文件 `fieldOriginsBlock` 一样：undefined 不是「没有」。
+   */
+  const valueOrigins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  /**
+   * 证据摘要那一行的来源。`valueOrigins` 那张表里没有它——证据摘要是几个
+   * 值拼出来的，服务端挨着分量单独定，作为 `geneEvidenceOrigin` 发过来。
+   */
+  const geneEvidenceOrigin = readPassportValueOrigin(summary.diagnosis.geneEvidenceOrigin);
+  // `absent` 的值下面不印小字：那一栏本来就没有内容，「—（未填）」是同一件
+  // 事说两遍。
+  const originLine = (origin: PassportValueOrigin | null) =>
+    origin && origin.kind !== 'absent'
+      ? `<p class="value-origin">${escapeHtml(origin.labelZh)}</p>`
+      : '';
+  const diagnosisCard = (label: string, value: string, origin: PassportValueOrigin | null) => `
+          <article class="info-card">
+            <p class="info-label">${escapeHtml(label)}</p>
+            <p class="info-value">${safeText(value)}</p>
+            ${originLine(origin)}
+          </article>`;
+  // 说的是「没发全」而不是「一条都没发」：服务端可能给了那张表却没给证据摘
+  // 要的来源，那种情况下这一节里有的值带着小字、有的没有，而这句话对两边都
+  // 是真的。
+  const valueOriginsFallback =
+    valueOrigins && geneEvidenceOrigin
+      ? ''
+      : `<div class="note">
+          <p class="note-title">逐项来源</p>
+          <p class="info-value">服务端这一版没有把本节的逐项来源发全，本节中没有标注来源的值是从报告里读出来的还是谁填进去的，本平台无法说明。</p>
+        </div>`;
+
+  /**
+   * 这一节印出来的读数，本平台是怎么看待它的 —— 服务端写好的那两句，原样
+   * 取过来。
+   *
+   * 这张纸此前只印数值和横幅：「D4Z4 重复数 18kb（报告读取）」 的正上方
+   * 是 「本节里没有从基因报告里读出来的、可作确诊依据的基因结果」，中间
+   * 没有一句把两者接起来。分享页和转诊资料都已经改掉了这个缺陷，这是同
+   * 一个缺陷的第三张纸；拿着它的人十秒钟之内没法跟患者核对任何一行。
+   *
+   * 不自己写第二套措辞：这两句都在服务端 `buildGeneticEvidence` 里，护
+   * 照屏幕、导出的 markdown 和分享页印的就是它们。
+   *
+   * 服务端没给这一段时是 null，那就一句都不印 —— 少一句解释，好过印一句
+   * 本平台没说过的话。
+   */
+  const geneticEvidence = readPassportGeneticEvidence(summary.diagnosis.geneticEvidence);
+  const unjudgedLine = (text: string) => `<p class="unjudged">${escapeHtml(text)}</p>`;
+  const readingsNotJudgedLine = geneticEvidence?.readingsNotJudged
+    ? unjudgedLine(geneticEvidence.readingsNotJudged)
+    : '';
+  // 「灰区提示：」 是导出的 markdown 给这段话的前缀，这里照用：这段话以
+  // 「你的」开头，而这张纸是递给医生的，前缀说明了它在讲哪一件事。
+  const greyZoneLine = geneticEvidence?.greyZoneNote
+    ? unjudgedLine(`灰区提示：${geneticEvidence.greyZoneNote}`)
     : '';
 
   const summaryCards = summary.summaryCards
@@ -402,6 +548,17 @@ export const buildClinicalPassportPdfHtml = (
         line-height: 1.5;
         border-radius: 4px;
       }
+      /* Explains a number printed a few lines below it, and must not be
+         read as a second warning: the amber above is the only amber on
+         the page and that is what makes it legible. Plain text at
+         reading size, above the cards it is about — the same place the
+         分享页 and the 转诊资料 set the same sentences. */
+      .unjudged {
+        margin: 6px 0 10px;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: #4c5b68;
+      }
       /* Ordinary card text, which is what these two always were. They
          are not matched by the 「.section-copy, …」 block below, so they
          carry their own size and rhythm rather than inheriting body
@@ -464,6 +621,18 @@ export const buildClinicalPassportPdfHtml = (
         font-size: 12px;
         color: #8a8077;
       }
+      /* The source of the value directly above it. Set below the value
+         rather than beside it so it cannot be mistaken for a second
+         reading, and kept at ink weight rather than grey-on-grey
+         because this page gets photocopied at a 一块钱 print shop and a
+         clinician who loses this line loses the difference between a
+         laboratory's number and a patient's account of themselves. */
+      .value-origin {
+        margin: 4px 0 0;
+        font-size: 11px;
+        line-height: 1.5;
+        color: #6c5a4b;
+      }
       .note,
       .list-block {
         margin-top: 12px;
@@ -521,39 +690,73 @@ export const buildClinicalPassportPdfHtml = (
             <h2>诊断证据</h2>
             <p class="section-copy">集中查看基因结果、诊断日期和证据摘要。</p>
             ${
+              /*
+               * 横幅只说证据，不说是谁填的。
+               *
+               * `confirmation` 是证据等级（见 profile.passport.ts 里
+               * PassportDiagnosisConfirmation 的注释），本节各张卡片的来源
+               * 各不相同：基因确诊靠的是基因报告上同时写明的 D4Z4 长度和
+               * 允许型 4qA 单倍型，所以「基因确诊」时的分型仍可能是患者自己
+               * 打的字；而只解析出 diagnosisType 的报告不足以基因确诊，那一
+               * 行却是系统从报告里读出来的。
+               *
+               * 逐项来源印在下面每个值自己下面那一行，证据摘要也一样，
+               * 见 「originLine」。
+               *
+               * 横幅里的「从基因报告里读出来的」不能删：D4Z4 重复数和
+               * 甲基化两张卡片也可以印基线里的值 —— 患者自己在建档表单
+               * 里填的 —— 卡片上带着自己的来源那一行。少了这个限定，
+               * 横幅就会压在医生看得见的数字上面。
+               *
+               * 「可作确诊依据的」也不能删，它换掉了原来那串读数列表。那
+               * 串列表是把服务端的评级规则抄进了这张纸，而规则是一个合取：
+               * 报告只写了重复数、没写单倍型，就不算确诊 —— 那个数字就印
+               * 在横幅下面的卡片上，括号里写着「报告读取」。用词与 API 的
+               * 分享页、转诊资料一致。
+               */
               summary.diagnosis.confirmation === 'genetic'
                 ? ''
                 : `<p class="unconfirmed-banner">${
-                    summary.diagnosis.confirmation === 'self_reported'
-                      ? '⚠ 未经基因确诊：本节内容由患者本人填写，尚无基因检测报告佐证，请勿据此确认诊断。'
-                      : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
+                    // 报告在，读过了，读出来的就是 4qB。下面三句都在说
+                    // 「本节里没有从基因报告里读出来的结果」，印在这一
+                    // 种档案上就是假话 —— 单倍型那一行就在同一页上，
+                    // 括号里写着「报告读取」。这一句说的是那个结果本身
+                    // 是什么意思，并且明说它不是排除诊断：这张纸会递给
+                    // 一年只见三例 FSHD 的医生，两个方向都不能锚定。
+                    summary.diagnosis.confirmation === 'genetic_non_permissive'
+                      ? '⚠ 未构成基因确诊：本节读到的基因报告上，4q 单倍型不是允许型 4qA。指南所指的 FSHD1 是 D4Z4 重复序列在允许型 4qA 等位基因上的缩短，故本节不作已确诊处理，也未据此套用按重复数分组的建议。这不是排除诊断：报告写的是所检测的那条等位基因，请以报告原件与临床判断为准。'
+                      : summary.diagnosis.confirmation === 'admin_entered'
+                        ? '⚠ 未经基因确诊：本节里没有从基因报告里读出来的、可作确诊依据的基因结果，且档案里的「确诊年份」不是患者本人填写的（详见本节末尾的字段来源），请勿据此确认诊断。'
+                        : summary.diagnosis.confirmation === 'self_reported'
+                          ? '⚠ 未经基因确诊：本节里没有从基因报告里读出来的、可作确诊依据的基因结果，本节内容不构成诊断依据，请勿据此确认诊断。'
+                          : // 不写「本节为空」：这个状态只表示没有分型、没有诊断
+                            // 日期；甲基化不在这两项里，没跟着分型或诊断日期一
+                            // 起进来的 D4Z4 重复数也不在，两张卡片上都可能有值。
+                            '⚠ 尚无诊断依据：本节没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果，请勿据此确认诊断。'
                   }</p>`
             }
+            ${
+              /* 紧挨着它们要解释的那几张卡片的上面，而不是排在本节末尾：
+                 上面那条横幅否认的，正是下面那一格印出来的数。 */
+              readingsNotJudgedLine
+            }
+            ${greyZoneLine}
           </div>
           <span class="freshness">${escapeHtml(summary.diagnosis.freshness.label)}</span>
         </div>
         <div class="info-grid">
-          <article class="info-card">
-            <p class="info-label">基因类型</p>
-            <p class="info-value">${safeText(summary.diagnosis.geneticType)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">D4Z4 重复数</p>
-            <p class="info-value">${safeText(summary.diagnosis.d4z4Repeats)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">甲基化值</p>
-            <p class="info-value">${safeText(summary.diagnosis.methylationValue)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">诊断日期</p>
-            <p class="info-value">${safeText(summary.diagnosis.diagnosisDate)}</p>
-          </article>
+          ${diagnosisCard('基因类型', summary.diagnosis.geneticType, valueOrigins?.geneticType ?? null)}
+          ${diagnosisCard('D4Z4 重复数', summary.diagnosis.d4z4Repeats, valueOrigins?.d4z4Repeats ?? null)}
+          ${diagnosisCard('甲基化值', summary.diagnosis.methylationValue, valueOrigins?.methylationValue ?? null)}
+          ${diagnosisCard('诊断日期', summary.diagnosis.diagnosisDate, valueOrigins?.diagnosisDate ?? null)}
         </div>
         <div class="note">
           <p class="note-title">证据摘要</p>
           <p class="info-value">${safeText(summary.diagnosis.geneEvidence)}</p>
+          ${originLine(geneEvidenceOrigin)}
         </div>
+        ${valueOriginsFallback}
+        ${fieldOriginsBlock}
       </section>
 
       <section class="section">

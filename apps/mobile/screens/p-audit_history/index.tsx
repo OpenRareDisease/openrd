@@ -21,6 +21,7 @@ import {
   getMyAuditHistory,
   getMyConsentHistory,
 } from '../../lib/api';
+import { humanizeFieldKeys, humanizeToolName } from '../p-qna/humanize';
 import { COLOR, INTERACTION } from '../../lib/design';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
@@ -204,7 +205,17 @@ const AuditRow = ({ entry }: { entry: AiAuditEntry }) => {
               ]
                 .filter(Boolean)
                 .join(' · ');
-              const label = detail ? `${tool.name} · ${detail}` : tool.name;
+              // THE TOOL'S CHINESE NAME, not its wire id. `humanizeToolName`
+              // is the product's own table for exactly these strings and
+              // this screen did not use it, so 「本次调用了什么」 read
+              // 「get_my_profile · 3 段 · 412ms」 — on the page a patient is
+              // sent to in order to find out what the AI was given.
+              // `humanize-allowlist-parity.test.ts` already checks that
+              // every tool the live route registers has an entry, in both
+              // directions; an unregistered id still falls through to
+              // itself, which is the table's own documented behaviour.
+              const name = humanizeToolName(tool.name);
+              const label = detail ? `${name} · ${detail}` : name;
               return (
                 <Text key={tool.toolCallId} style={isError ? styles.defValueAlert : undefined}>
                   {index > 0 ? '\n' : ''}
@@ -219,7 +230,19 @@ const AuditRow = ({ entry }: { entry: AiAuditEntry }) => {
       {entry.fieldsUsed.length > 0 ? (
         <View style={styles.defRow}>
           <Text style={styles.defLabel}>使用字段</Text>
-          <Text style={styles.defValue}>{entry.fieldsUsed.join('、')}</Text>
+          {/* THE SAME TABLE THE 问答 CITATION LINE USES. These are
+              allowlist keys off the API — `d4z4_clinical`,
+              `methylation_origin`, `reportDate_year` — and this row
+              printed them joined with 、 under a Chinese label. The
+              patient came here to check what was read about them and
+              got the engineering vocabulary the rest of the app exists
+              to remove. `humanizeFieldKeys` collapses the `_clinical` /
+              `_withheld` / `_origin` siblings onto the cell they are
+              about and dedupes, so 「D4Z4 基因结果」 appears once however
+              many spellings of it the turn used. An unmapped key still
+              prints verbatim — that is the table's stated fallback, and
+              the parity test is what keeps the gap from growing. */}
+          <Text style={styles.defValue}>{humanizeFieldKeys(entry.fieldsUsed).join('、')}</Text>
         </View>
       ) : null}
 

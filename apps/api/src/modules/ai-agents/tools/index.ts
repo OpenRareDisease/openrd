@@ -9,5 +9,6 @@ export {
 export { GetMyProfileTool } from './get-my-profile.js';
 export { GetMyRecordsTool } from './get-my-records.js';
 export { GetMyReportsTool } from './get-my-reports.js';
+export { ListClinicalTrialsTool } from './list-clinical-trials.js';
 export { SearchMedicalKbTool } from './search-medical-kb.js';
 export { ToolRegistry } from './registry.js';

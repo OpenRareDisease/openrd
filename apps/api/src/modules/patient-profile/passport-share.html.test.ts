@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
+import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
 import {
   buildPassportSharePage,
   buildPickupFormPage,
   buildPickupUnavailablePage,
 } from './passport-share.html.js';
 import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
-import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
+import {
+  buildClinicalPassportSummary,
+  type ClinicalPassportSummaryDTO,
+} from './profile.passport.js';
+import type { PatientProfileDTO } from './profile.service.js';
 
 /**
  * This page is opened by a neurologist who may meet three FSHD patients
@@ -30,6 +35,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
     completion: { completed: 2, total: 4 },
     metrics: [],
     summaryCards: [],
+    fieldOrigins: [],
     diagnosis: {
       ready: true,
       confirmation: 'genetic',
@@ -40,7 +46,26 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
       d4z4Repeats: '4',
       methylationValue: '—',
       diagnosisDate: '2023-05-01',
+      // Present only so the renderer has something to read. A literal
+      // cannot express where a value came from — which is the whole
+      // question — so every assertion about a source lives in the
+      // block below this one, built from a profile through the real
+      // summariser.
+      valueOrigins: {
+        geneticType: { kind: 'report', labelZh: '报告读取', documentId: 'd1' },
+        d4z4Repeats: { kind: 'report', labelZh: '报告读取', documentId: 'd1' },
+        methylationValue: { kind: 'absent', labelZh: '未填' },
+        diagnosisDate: { kind: 'report', labelZh: '报告读取', documentId: 'd1' },
+      },
       geneEvidence: 'D4Z4 4 拷贝',
+      geneEvidenceOrigin: { kind: 'report', labelZh: '报告读取', documentId: 'd1' },
+      // The graded evidence, present for the same reason `valueOrigins`
+      // is: the page reads it. `readingsNotJudged` is the only member
+      // this literal has an opinion about — null is 「this report states
+      // no reading that was shown and not judged」, which is what a
+      // 4-repeat count is. The case where it is non-null is built from
+      // a profile through the real summariser further down.
+      geneticEvidence: { readingsNotJudged: null },
     },
     motor: {
       ready: true,
@@ -92,6 +117,20 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
     ],
     ...over,
   }) as unknown as ClinicalPassportSummaryDTO;
+
+/**
+ * The one <div class="row"> whose <dt> is `label`, so an assertion can
+ * name the row it means. Page-wide `toContain` was how the aggregated
+ * authorship bug hid: 「（管理员代填）appears somewhere」 was true whether
+ * it sat on the field the administrator wrote or on the one they could
+ * not have.
+ */
+const rowOf = (html: string, label: string): string => {
+  const rows = html.match(/<div class="row">[\s\S]*?<\/div>/g) ?? [];
+  const row = rows.find((candidate) => candidate.includes(`<dt>${label}</dt>`));
+  if (row === undefined) throw new Error(`no row labelled ${label}`);
+  return row;
+};
 
 const page = (over: Record<string, unknown> = {}) =>
   buildPassportSharePage(summary(over), { expiresAt: '2026-08-12T12:00:00.000Z' });
@@ -199,26 +238,269 @@ describe('确诊状态必须在数值之前出现', () => {
     expect(banner).toBeLessThan(firstValue);
   });
 
-  it('自填的分型和日期在值本身上也标出来', () => {
-    // A clinician who scrolled past the banner, or printed only the
-    // second page, must still not read 「FSHD1」 as something a lab said.
+  it('逐个列出不是本人填写的字段，带管理员账号和时间', () => {
     const html = page({
-      diagnosis: { ...summary().diagnosis, confirmation: 'self_reported' },
+      fieldOrigins: [
+        {
+          path: 'diseaseBackground.diagnosisType',
+          labelZh: 'FSHD 分型',
+          state: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-13T04:11:07.912Z',
+          detail: null,
+        },
+      ],
     });
-    expect(html).toContain('（本人填写）');
+
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(html).toContain('FSHD 分型');
+    expect(html).toContain('2026-08-13');
   });
 
-  it('自填的值渲染出来就和化验读出来的不一样 —— 不是「带了个 class」', () => {
-    // `expect(html).toContain('class="reported"')` was the assertion
-    // here, and it stayed green while the only rule for that class was
-    // `dd.reported` — a selector that matches a <dd> carrying the class,
-    // never the <span> inside one. So 分型 rendered in the same weight,
-    // colour and tabular numerals as the D4Z4 repeat count directly
-    // under it, which comes off a lab report. Resolve both through the
-    // page's own stylesheet and compare.
-    const html = page({
-      diagnosis: { ...summary().diagnosis, confirmation: 'self_reported' },
+  it('没有标记时不印那一节 —— 一个写着「无」的标题会教人跳过它', () => {
+    expect(page({})).not.toContain('这些字段不是患者本人填的');
+  });
+
+  it('页脚说这一页的内容从哪来时，把那一节也算进去', () => {
+    const origin = (state: 'admin_entered' | 'unreadable') => ({
+      path: 'foundation.diagnosisYear',
+      labelZh: '确诊年份',
+      state,
+      adminUserId: '11111111-2222-3333-4444-555555555555',
+      at: '2026-08-13T04:11:07.912Z',
+      detail: null,
     });
+    // The footer sentence is what a clinician reads to know what they
+    // are holding; it cannot name fewer places than the page shows.
+    for (const state of ['admin_entered', 'unreadable'] as const) {
+      const html = page({ fieldOrigins: [origin(state)] });
+      const sentence = html.slice(html.indexOf('本页由患者本人主动分享'));
+      expect(sentence.slice(0, sentence.indexOf('未经医疗机构核验'))).toContain(
+        '一节逐条列出的字段',
+      );
+    }
+    const clean = page({});
+    expect(clean).toContain('本页由患者本人主动分享');
+    expect(clean).not.toContain('一节逐条列出的字段');
+  });
+
+  it('运动功能那几行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
+    // 平均肌力, 受累部位 and 肌力报告摘要 are patient self-measurement
+    // wrapped in the same class with no inline text marker, so if the
+    // rule does not bite, they read with the typographic authority of
+    // the MRI summary two sections below.
+    //
+    // 平均肌力 is the row that most needs it: it is a NUMBER, and a
+    // number set in the same register as a lab value is the one thing
+    // on this page a hurried reader will copy into a note as if it had
+    // been measured by somebody with a dynamometer.
+    const html = page();
+    expect(effective(html, valueChain(html, '平均肌力'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, '受累部位'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, '肌力报告摘要'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, 'MRI 摘要'), 'color')).toBe('var(--ink)');
+  });
+
+  it('单倍型非允许型时，横幅说的是结果是什么，不是「没有结果」', () => {
+    // Built through the real summariser rather than from a literal:
+    // this banner is only correct if the state it renders is the state
+    // a 4qB report actually produces.
+    const p = profile({
+      documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qB' })],
+    } as never);
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('genetic_non_permissive');
+
+    const html = rendered(p);
+    expect(html).toContain('4q 单倍型不是允许型');
+    expect(html).toContain('只有 4qA 是允许型');
+    // 既不锚定成已确诊，也不锚定成已排除 —— 这一页的读者两个方向都会
+    // 记住。
+    expect(html).not.toContain('这份摘要里没有从基因报告里读出来的基因结果');
+    expect(html).toContain('这不是排除诊断');
+    expect(html.indexOf('4q 单倍型不是允许型')).toBeLessThan(html.indexOf('D4Z4 重复数'));
+    // 数值照印，括号照印 —— 横幅收走的是结论，不是结果。
+    expect(html).toContain('3（报告读取）');
+  });
+
+  it('什么依据都没有时也有横幅，不是留白', () => {
+    const html = page({ diagnosis: { ...summary().diagnosis, confirmation: 'none' } });
+    expect(html).toContain('这份摘要里没有诊断依据');
+    // And it says so about the page, not about every report the
+    // patient has ever uploaded — this renderer is handed one document's
+    // worth of readings.
+    expect(html).not.toContain('本平台尚无诊断依据记录');
+  });
+});
+
+/* ----------------------------------------------------------------
+ * 诊断这一段，从真的 summariser 走一遍。
+ *
+ * Every test above hands `buildPassportSharePage` a literal summary,
+ * which can say what a value IS but not where it came from — and where
+ * it came from is the whole question. `summary.diagnosis.geneticType`
+ * is `geneticRecord.geneticType || profile.geneticMutation` and
+ * `diagnosisDate` is `patient_profiles.diagnosis_date ||` the report's
+ * own date, so a fixture that fixes the string fixes nothing about its
+ * source. Everything below builds the summary from a profile: the
+ * documents, the columns and the provenance block are the inputs, and
+ * the bracket the page prints is the output.
+ * ---------------------------------------------------------------- */
+
+const profile = (over: Partial<PatientProfileDTO> = {}): PatientProfileDTO =>
+  ({
+    id: 'p1',
+    userId: 'u1',
+    fullName: '张三',
+    preferredName: null,
+    dateOfBirth: '1990-01-01',
+    gender: 'male',
+    patientCode: 'P0001',
+    diagnosisStage: null,
+    diagnosisDate: null,
+    geneticMutation: null,
+    heightCm: null,
+    weightKg: null,
+    bloodType: null,
+    contactPhone: null,
+    contactEmail: null,
+    primaryPhysician: null,
+    regionProvince: null,
+    regionCity: null,
+    regionDistrict: null,
+    baseline: null,
+    notes: null,
+    measurements: [],
+    functionTests: [],
+    symptomScores: [],
+    dailyImpacts: [],
+    followupEvents: [],
+    activityLogs: [],
+    documents: [],
+    medications: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  }) as unknown as PatientProfileDTO;
+
+const geneticReport = (fields: Record<string, string>) => ({
+  id: 'd1',
+  documentType: 'genetic_report',
+  title: null,
+  fileName: 'g.pdf',
+  mimeType: 'application/pdf',
+  fileSizeBytes: 1,
+  storageUri: 'local://g',
+  status: 'parsed',
+  uploadedAt: '2026-02-01T00:00:00.000Z',
+  checksum: null,
+  submissionId: null,
+  // BOTH LABELS, BECAUSE THE PIPELINE STORES BOTH. `classifiedType` is
+  // the parser's; `documentType` inside `fields` is the uploader's own
+  // declaration, stamped there by every OCR provider before any
+  // classification exists and overwritten by nothing — unlike the
+  // column above, which `updateDocumentOcrResult` replaces with the
+  // classification. `isLaboratoryGeneticReport` reads the cell as the
+  // declaration, and it is what separates this fixture from an archived
+  // 门诊病历摘要 the old keyword classifier scored `genetic_report`:
+  // that row carries `documentType: other` in the same blob.
+  //
+  // This briefly carried `geneticTestMethod: southern_blot` for the
+  // same job. That was the wrong witness: a stated 检测方法 is graded —
+  // it moves 结果不全 to 方法对，但结果不全 and drops the WES section
+  // from the test-request document — so it changes the clinical state
+  // a fixture describes, and a real laboratory report very often has
+  // none read off it.
+  ocrPayload: {
+    fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+  },
+});
+
+const rendered = (p: PatientProfileDTO) =>
+  buildPassportSharePage(buildClinicalPassportSummary(p), {
+    expiresAt: '2026-08-12T12:00:00.000Z',
+  });
+
+const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+const ADMIN_AT = new Date('2026-08-13T04:11:07.912Z');
+
+/** What an administrator's edit leaves on disk, written by the real
+ *  helper so a reshape of the provenance block breaks these tests
+ *  instead of passing them. */
+const adminEdited = (previous: Record<string, unknown>, next: Record<string, unknown>) =>
+  applyAdminBaselineWrite(previous, next, { adminUserId: ADMIN_ID, at: ADMIN_AT });
+
+/** A baseline that already carries a back-office marker on the paths
+ *  named, written literally. `applyAdminBaselineWrite` refuses the
+ *  genetic paths, so a marker on one of them is what is on disk rather
+ *  than something a request can produce — and this page still has to
+ *  say who is on it. */
+const storedMarkers = (
+  baseline: Record<string, unknown>,
+  paths: readonly string[],
+): Record<string, unknown> => ({
+  ...baseline,
+  [BASELINE_PROVENANCE_KEY]: Object.fromEntries(
+    paths.map((path) => [
+      path,
+      { source: 'admin_entered', adminUserId: ADMIN_ID, at: ADMIN_AT.toISOString() },
+    ]),
+  ),
+});
+
+describe('诊断这一段：每一行印自己的来源，一行都不靠推断', () => {
+  it('报告里只读到分型时，标「报告读取」，不是「本人填写」', () => {
+    // The report says FSHD1 and nothing else. 分型 is not one of the
+    // items 基因确诊 is graded on, so this profile lands in
+    // `self_reported` — and that branch printed 「（本人填写）」 over a
+    // string nobody typed, under a banner that said the same thing
+    // about the whole block.
+    const p = profile({ documents: [geneticReport({ diagnosisType: 'FSHD1' })] } as never);
+    const html = rendered(p);
+
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('self_reported');
+    expect(rowOf(html, '分型')).toContain('FSHD1（报告读取）');
+    expect(html).not.toContain('本人填写');
+    // The two banner sentences this replaced, verbatim. The second one
+    // is false about this profile in a second way: a genetic report IS
+    // on file, it just did not parse to anything that confirms.
+    expect(html).not.toContain('下面的分型和日期是患者自己在应用里填的');
+    expect(html).not.toContain('本平台尚未收到该患者的基因检测报告');
+  });
+
+  it('基因确诊时分型仍可能是患者打的字 —— 标出来，且不排进化验值那一档', () => {
+    // 确诊 is decided by the D4Z4 repeat count and the 4q haplotype —
+    // by what each cell says, not by 分型. The report
+    // carries no 分型 at all and no document carries one, so the value
+    // on the page is the patient's own free text — under a banner that
+    // used to say the whole diagnosis block had been read off the
+    // report.
+    const p = profile({
+      geneticMutation: '我猜是 FSHD1',
+      documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
+    } as never);
+    const html = rendered(p);
+
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('genetic');
+    // Not 「本人填写」 either: `patient_profiles.genetic_mutation` is
+    // written by the patient's own endpoint AND by the read-time
+    // autofill, and nothing records which — see `resolveValueOrigin`.
+    expect(rowOf(html, '分型')).toContain('我猜是 FSHD1（来源无法确定）');
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('4（报告读取）');
+    expect(html).not.toContain('以下诊断信息来自患者上传的基因检测报告，由系统自动读取');
+  });
+
+  it('只有报告读出来的值排进化验值那一档，其余用另一种字体', () => {
+    // `expect(html).toContain('class="reported"')` was the assertion
+    // here once, and it stayed green while the only rule for the class
+    // was `dd.reported` — a selector that matches a <dd> carrying the
+    // class, never the <span> inside one. Resolve both rows through the
+    // page's own stylesheet instead.
+    const html = rendered(
+      profile({
+        geneticMutation: '我猜是 FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as never),
+    );
     const typed = valueChain(html, '分型');
     const extracted = valueChain(html, 'D4Z4 重复数');
 
@@ -228,25 +510,266 @@ describe('确诊状态必须在数值之前出现', () => {
     expect(effective(html, typed, 'font-variant-numeric')).toBe('normal');
   });
 
-  it('运动功能那两行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
-    // 概况 and 受累部位 are patient self-measurement wrapped in the same
-    // class with no inline text marker, so if the rule does not bite,
-    // they read with the typographic authority of the MRI summary two
-    // sections below.
-    const html = page();
-    expect(effective(html, valueChain(html, '概况'), 'color')).toBe('var(--soft)');
-    expect(effective(html, valueChain(html, 'MRI 摘要'), 'color')).toBe('var(--ink)');
+  it('分型来自报告时，基因证据那一行也回到化验值那一档', () => {
+    // 基因证据 is 分型 + 单倍型 + EcoRI + D4Z4 joined, so it inherits
+    // 分型's uncertainty when 分型 is a text box.
+    const fromReport = rendered(
+      profile({
+        documents: [geneticReport({ diagnosisType: 'FSHD1', d4z4Repeats: '4' })],
+      } as never),
+    );
+    const fromTextBox = rendered(
+      profile({
+        geneticMutation: '我猜是 FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as never),
+    );
+
+    expect(effective(fromReport, valueChain(fromReport, '基因证据'), 'color')).toBe('var(--ink)');
+    expect(effective(fromTextBox, valueChain(fromTextBox, '基因证据'), 'color')).toBe(
+      'var(--soft)',
+    );
   });
 
-  it('基因确诊时不加「本人填写」', () => {
-    const html = page();
-    expect(html).not.toContain('（本人填写）');
+  it('基因确诊的横幅不能说「只有标报告读取的来自那份报告」 —— 基因证据那一行就不是', () => {
+    // 基因确诊 is earned by the report's D4Z4 length and haplotype while
+    // 分型 is the free-text column, so 基因证据 joins values from the
+    // report with one that is not, and the row is marked 来源无法确定. A
+    // banner promising that the report's contribution is confined to
+    // the 报告读取 rows is contradicted by a row on the same page.
+    const html = rendered(
+      profile({
+        geneticMutation: '我猜是FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
+      } as never),
+    );
+
+    // 「未经基因确诊」 carries 「基因确诊」 inside it, so the confirmed
+    // banner has to be asserted by ruling the unconfirmed one out —
+    // otherwise this test stays green on the state it exists to
+    // exclude.
     expect(html).toContain('基因确诊');
+    expect(html).not.toContain('未经基因确诊');
+    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1 · 4qA · 4（来源无法确定）');
+    expect(html).not.toContain('只有标「报告读取」的来自那份报告');
   });
 
-  it('什么依据都没有时也有横幅，不是留白', () => {
-    const html = page({ diagnosis: { ...summary().diagnosis, confirmation: 'none' } });
-    expect(html).toContain('本平台尚无诊断依据记录');
+  /**
+   * 这一页印着一个读数，往下又说这一项没有确定的结果。
+   *
+   * 把两者接上的那句话写在护照的 `reason` 里，而这一页从来不印
+   * `reason` —— 所以一个 18kb 的重复数和一句「这一项还没有确定的结果」
+   * 隔着几行同屏出现，中间什么都没有。医生据此得出的结论是：这个平台
+   * 读不懂自己的报告。
+   */
+  it('印出来又没被判的那个数，行下面就跟着一句话说明', () => {
+    const html = rendered(
+      profile({ documents: [geneticReport({ d4z4Repeats: '18kb', haplotype: '4qA' })] } as never),
+    );
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('18kb（报告读取）');
+    expect(html).toContain('本平台不在 kb 和重复单元数之间做换算');
+    // 在那一行下面、在给医生的那几条建议上面 —— 那几条里就有说这一项
+    // 没有确定结果的那一句。
+    const note = html.indexOf('class="unjudged"');
+    expect(note).toBeGreaterThan(html.indexOf('<dt>D4Z4 重复数</dt>'));
+    expect(note).toBeLessThan(html.indexOf('按指南，这位患者值得确认的事'));
+    // 同一份样式表里真的有一条规则选得中它 —— `dd.reported` 就是这样
+    // 对着一个只出现在 <span> 上的类名发过版。
+    expect(
+      effective(
+        html,
+        [
+          { tag: 'body', classes: [] },
+          { tag: 'div', classes: ['wrap'] },
+          { tag: 'p', classes: ['unjudged'] },
+        ],
+        'color',
+      ),
+    ).toBe('var(--soft)');
+  });
+
+  it('没有这种读数的时候，这一页上没有这一段', () => {
+    const html = rendered(
+      profile({ documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })] } as never),
+    );
+    expect(html).not.toContain('class="unjudged"');
+  });
+
+  it('基因证据只剩分型时，跟分型那一行印同一个来源', () => {
+    // Nothing was read off a report at all, so the joined row IS 分型.
+    // Two different brackets over one string, two lines apart, is the
+    // page disagreeing with itself in front of a clinician.
+    const html = rendered(profile({ geneticMutation: '我猜是FSHD1' } as never));
+
+    expect(rowOf(html, '分型')).toContain('我猜是FSHD1（来源无法确定）');
+    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1（来源无法确定）');
+  });
+
+  it('横幅不替没读过的报告说话', () => {
+    // The page reads ONE genetic document, and `pickGeneticDocument`
+    // picks the one that fills the most of the block rather than the
+    // newest — so the report that loses can still be the only one
+    // carrying a repeat count. That is the residue of reading a single
+    // report instead of merging several, and it is what makes
+    // 「没有从该患者上传的任何报告里读到」 a claim this page cannot make:
+    // it is a claim about every report, and one of them was not opened.
+    const html = rendered(
+      profile({
+        geneticMutation: 'FSHD1',
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4' }),
+            id: 'd-old',
+            uploadedAt: '2019-05-03T00:00:00.000Z',
+          },
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1', diagnosisDate: '2026-01-09' }),
+            id: 'd-new',
+          },
+        ],
+      } as never),
+    );
+
+    expect(html).toContain('未经基因确诊');
+    expect(html).not.toContain('上传的任何报告');
+    expect(html).toContain('这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果');
+    expect(html).toContain('患者手里可能还有本平台没有读过的报告');
+  });
+
+  it('档案里没有诊断日期、报告里有时，标「报告读取」', () => {
+    const html = rendered(
+      profile({ documents: [geneticReport({ diagnosisDate: '2019-05-03' })] } as never),
+    );
+    expect(rowOf(html, '诊断日期')).toContain('2019-05-03（报告读取）');
+    expect(rowOf(html, '诊断日期')).not.toContain('本人填写');
+  });
+
+  it('档案里有日期、任何报告都没带日期时，也还是说不出是谁填的', () => {
+    // 「手上一份报告都没带日期」 rules out today's documents and not the
+    // history: the autofill writes this column at read time and its
+    // source report can be deleted or re-parsed afterwards, which lands
+    // exactly here. This used to be the one road to 「本人填写」.
+    const html = rendered(
+      profile({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as never),
+    );
+    expect(rowOf(html, '诊断日期')).toContain('2019-05-03（来源无法确定）');
+    expect(rowOf(html, '诊断日期')).not.toContain('本人填写');
+  });
+
+  it('两边都有日期时说「来源无法确定」，不猜', () => {
+    // profile.autofill.ts fills an empty `patient_profiles.diagnosis_date`
+    // from a report at read time and leaves nothing behind saying it
+    // did, so a date that a report also carries is equally consistent
+    // with the patient having typed it. Both answers would be a guess.
+    const html = rendered(
+      profile({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ diagnosisDate: '2019-05-03' })],
+      } as never),
+    );
+    expect(rowOf(html, '诊断日期')).toContain('（来源无法确定）');
+    expect(rowOf(html, '诊断日期')).not.toContain('本人填写');
+  });
+
+  it('管理员代填的确诊年份只落在诊断日期那一行，不牵连分型', () => {
+    // §B3's fourth source. `confirmation` is derived from THIS field's
+    // marker alone, and the banner used to write 「以下诊断由本平台工作
+    // 人员代填」 over a block whose 分型 came off an uploaded report.
+    const p = profile({
+      diagnosisDate: '2014-01-01',
+      baseline: adminEdited(
+        { foundation: { fullName: '张三' } },
+        { foundation: { fullName: '张三', diagnosisYear: 2014 } },
+      ),
+      documents: [geneticReport({ diagnosisType: 'FSHD1' })],
+    } as never);
+    const html = rendered(p);
+
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('admin_entered');
+    expect(rowOf(html, '诊断日期')).toContain('（管理员代填）');
+    expect(rowOf(html, '分型')).toContain('FSHD1（报告读取）');
+    expect(rowOf(html, '分型')).not.toContain('管理员代填');
+    // The banner names the field the marker is actually on.
+    expect(html).toContain('档案里的「确诊年份」由本平台工作人员代填');
+    expect(html).not.toContain('以下诊断由本平台工作人员代填');
+  });
+
+  it('来源记录读不出来时，只说不是本人填的，不发明一个管理员', () => {
+    const p = profile({
+      diagnosisDate: '2014-01-01',
+      baseline: {
+        foundation: { diagnosisYear: 2014 },
+        fieldProvenance: { 'foundation.diagnosisYear': { source: 'who knows' } },
+      },
+    } as never);
+    const html = rendered(p);
+
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('admin_entered');
+    expect(rowOf(html, '诊断日期')).toContain('（非本人填写，来源不明）');
+    expect(rowOf(html, '诊断日期')).not.toContain('（管理员代填）');
+    expect(html).toContain('来源记录读不出来');
+    expect(html).not.toContain('根据患者的电话或消息转述录入');
+  });
+
+  it('只解析出甲基化的报告：不能说「既未上传基因报告，也未填写诊断信息」', () => {
+    // 甲基化 is in none of the three tests that earn 基因确诊, and it is
+    // not 分型 or 诊断日期 either, so this profile lands in `none` —
+    // with a value from an uploaded report printed on the page.
+    const p = profile({ documents: [geneticReport({ methylationValue: '32%' })] } as never);
+    const html = rendered(p);
+
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('none');
+    expect(rowOf(html, '甲基化')).toContain('32%（报告读取）');
+    expect(html).not.toContain('该患者既未上传基因报告');
+  });
+
+  it('诊断日期不会因为服务器所在时区而少一天', () => {
+    // `patient_profiles.diagnosis_date` is a calendar date, and
+    // `new Date('2019-05-03')` is UTC midnight — read back through
+    // `getDate()` on any host west of Greenwich it is the 2nd. The
+    // passport printed 2019-05-02 for a diagnosis dated 2019-05-03, on
+    // the page a clinician reads.
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'America/New_York';
+      const html = rendered(profile({ diagnosisDate: '2019-05-03' } as never));
+      expect(rowOf(html, '诊断日期')).toContain('2019-05-03');
+      expect(rowOf(html, '诊断日期')).not.toContain('2019-05-02');
+    } finally {
+      process.env.TZ = original;
+    }
+  });
+
+  it('检查结果那一栏的日期也一样 —— 它已经是日历日，不能再解析一次', () => {
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'America/New_York';
+      const html = rendered(
+        profile({
+          documents: [
+            {
+              ...geneticReport({}),
+              id: 'd2',
+              documentType: 'pulmonary_function',
+              ocrPayload: {
+                fields: {
+                  classifiedType: 'pulmonary_function',
+                  reportTime: '2026-02-10',
+                  fvcPredPct: '78%',
+                },
+              },
+            },
+          ],
+        } as never),
+      );
+      expect(html).toContain('最近日期：2026-02-10');
+    } finally {
+      process.env.TZ = original;
+    }
   });
 });
 
@@ -257,6 +780,207 @@ describe('运动功能不能读起来像查体', () => {
 
   it('页脚再说一次，因为打印出来的第二页可能没有标题', () => {
     expect(page()).toContain('运动功能一栏为患者自测，不是查体所得');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 运动功能：本页说的话，必须和同一份 summary 生成的其他文档一致
+ *
+ * 每一条都从真实 profile 走真实 summariser —— 这一组缺陷的成因就是
+ * 「summary 上有一个字段，渲染器读了另一个」，字面量 fixture 表达不出
+ * 这件事。
+ * ------------------------------------------------------------------ */
+
+/** MMT measurements recorded in the app: the ordinary patient. */
+const mmt = (over: Record<string, unknown> = {}) => ({
+  id: 'm1',
+  muscleGroup: 'deltoid',
+  metricKey: null,
+  bodyRegion: 'shoulder_girdle',
+  side: 'left',
+  strengthScore: 3,
+  method: 'MMT',
+  entryMode: 'self_report',
+  deviceUsed: null,
+  notes: null,
+  recordedAt: '2026-06-01T02:00:00.000Z',
+  createdAt: '2026-06-01T02:05:00.000Z',
+  submissionId: null,
+  ...over,
+});
+
+describe('运动功能：本页和 markdown 导出、PDF 说同一句话', () => {
+  it('没有上传肌力报告时，本页印的是实测平均值，不是「暂无可用的肌力评估摘要」', () => {
+    // The defect: 概况 printed `motor.summary`, which is built ONLY from
+    // an uploaded 肌力评估 report's OCR fields. A patient whose strength
+    // data is in-app MMT has no such report, so the page a clinician
+    // opens from the share link asserted there was no strength
+    // assessment — directly above a 受累部位 row derived from those very
+    // measurements, and while the markdown export and the mobile PDF
+    // built from the same summary object both printed 平均 3.5 级.
+    const p = profile({
+      measurements: [
+        mmt({ id: 'm1', muscleGroup: 'deltoid', side: 'left', strengthScore: 3 }),
+        mmt({ id: 'm2', muscleGroup: 'tibialis', side: 'bilateral', strengthScore: 4 }),
+      ],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.average).toBe('3.5');
+    expect(built.motor.summary).toBe('暂无可用的肌力评估摘要');
+
+    const html = rendered(p);
+    expect(rowOf(html, '平均肌力')).toContain('3.5 级');
+    // The fallback string is a statement about one KIND of source. It
+    // must not appear on a page that is simultaneously listing the
+    // regions those measurements identified.
+    expect(html).not.toContain('暂无可用的肌力评估摘要');
+    expect(html).not.toContain('肌力报告摘要');
+  });
+
+  it('一条也没测时，平均肌力印「—」，不印一个假的 0', () => {
+    const html = rendered(profile());
+    expect(rowOf(html, '平均肌力')).toContain('—');
+    expect(rowOf(html, '平均肌力')).not.toContain('级');
+  });
+});
+
+describe('受累部位：左就是左', () => {
+  it('只测了左三角肌，本页不能把两侧肩带都说成受累', () => {
+    // FSHD is characteristically asymmetric. The same profile's FHIR
+    // export emits 三角肌肌力（左侧）; this page used to say both
+    // shoulders, so two of this app's documents about one patient
+    // disagreed about which arm is weak.
+    const p = profile({
+      measurements: [mmt({ side: 'left', strengthScore: 3 })],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.bodyRegions).toEqual({
+      leftShoulder: { intensity: 2, label: '肩带（左）' },
+    });
+
+    const row = rowOf(rendered(p), '受累部位');
+    expect(row).toContain('肩带（左）');
+    expect(row).not.toContain('（右）');
+  });
+
+  it('双侧记录印不带方位的名字，不伪造成两条', () => {
+    const p = profile({
+      measurements: [mmt({ muscleGroup: 'tibialis', side: 'bilateral', strengthScore: 2 })],
+    } as never);
+    // Both regions are painted — the measurement says both — but the
+    // highlight list names the finding ONCE. Undeduplicated it read
+    // 「小腿前群、小腿前群」, which a reader parses as emphasis or as two
+    // separate findings, and which ate the whole four-item limit on one
+    // muscle group.
+    const built = buildClinicalPassportSummary(p);
+    expect(Object.keys(built.motor.bodyRegions).sort()).toEqual(['leftShin', 'rightShin']);
+    expect(built.motor.highlights).toEqual(['小腿前群']);
+    expect(rowOf(rendered(p), '受累部位')).toContain('小腿前群');
+  });
+
+  it('左右都测了，弱的那一侧不会被强的那一侧覆盖掉', () => {
+    // Keyed by muscle group alone, the later-recorded row won outright:
+    // a left deltoid of 2 beside a right of 5 came out 「平均 5.0 级」
+    // with an EMPTY body map — the reading a clinician would most want,
+    // deleted by the collection meant to summarise it.
+    const p = profile({
+      measurements: [
+        mmt({ id: 'm1', side: 'left', strengthScore: 2, recordedAt: '2026-06-01T02:00:00.000Z' }),
+        mmt({ id: 'm2', side: 'right', strengthScore: 5, recordedAt: '2026-06-02T02:00:00.000Z' }),
+      ],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.average).toBe('3.5');
+    expect(built.motor.highlights).toEqual(['肩带（左）']);
+
+    const row = rowOf(rendered(p), '受累部位');
+    expect(row).toContain('肩带（左）');
+    expect(row).not.toContain('肩带（右）');
+  });
+});
+
+describe('影像：本页不能比 markdown 导出少说一句', () => {
+  it('印出 MRI 重点区域 —— 导出和 PDF 都从同一个数组里印它', () => {
+    const html = page({
+      imaging: {
+        ready: true,
+        latestMriDate: '2025-10-30',
+        latestDocumentId: 'mri-1',
+        freshness: { label: '最新', tone: 'success', date: '2025-10-30', daysSince: 77 },
+        summary: '双侧前锯肌萎缩',
+        highlights: ['小腿前群', '肩带'],
+        bodyRegions: {},
+      },
+    });
+    // The distribution is what makes an MRI say FSHD rather than
+    // something else, and this row was the only place it could have
+    // reached this reader.
+    expect(rowOf(html, 'MRI 重点区域')).toContain('小腿前群、肩带');
+    expect(rowOf(html, '最近 MRI')).toContain('2025-10-30 · 最新');
+  });
+
+  it('没有 MRI 时既不印新鲜度也不假装有分布', () => {
+    const html = page({
+      imaging: {
+        ready: false,
+        latestMriDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        summary: '暂无 MRI 分析数据',
+        highlights: [],
+        bodyRegions: {},
+      },
+    });
+    expect(rowOf(html, '最近 MRI')).not.toContain('缺失');
+    expect(rowOf(html, 'MRI 重点区域')).toContain('—');
+  });
+});
+
+describe('检查结果：日期旁边写清楚它有多旧', () => {
+  it('有日期的那几格印新鲜度，和 markdown 导出用同样的四个词', () => {
+    // The export markdown and the mobile PDF have always printed it.
+    // This page printed the bare date and left a clinician on a phone
+    // to do the arithmetic against today.
+    const html = page({
+      monitoring: {
+        ready: true,
+        items: [
+          {
+            key: 'blood',
+            title: '血检指标',
+            state: 'present',
+            summary: 'CK 1245 U/L',
+            latestDate: '2025-05-09',
+            latestDocumentId: 'd9',
+            freshness: { label: '过期', tone: 'danger', date: '2025-05-09', daysSince: 251 },
+            note: null,
+          },
+        ],
+      },
+    });
+    expect(html).toContain('最近日期：2025-05-09 · 过期');
+  });
+
+  it('没有日期的那一格不印「缺失」—— 那读起来像在评价患者', () => {
+    const html = page({
+      monitoring: {
+        ready: true,
+        items: [
+          {
+            key: 'cardiac',
+            title: '心脏检查',
+            state: 'absent',
+            summary: '暂无可自动读取的心脏检查结果',
+            latestDate: null,
+            latestDocumentId: null,
+            freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+            note: null,
+          },
+        ],
+      },
+    });
+    expect(html).toContain('最近日期：—');
+    expect(html).not.toContain('— · 缺失');
   });
 });
 
@@ -406,6 +1130,123 @@ describe('取件码失败页 —— 一种页面回答所有失败', () => {
 
   it('也不带脚本', () => {
     expect(page).not.toMatch(/<script/i);
+  });
+});
+
+/**
+ * 基线里的基因数值，在医生扫码打开的这一页上。
+ *
+ * 这一页的下半部分就是 §B3 那份 「这些字段不是患者本人填的」 清单，用的
+ * 词是 「D4Z4 重复数」「甲基化」 —— 和上面那两行的标签一模一样。上面印
+ * 「—」、下面点名同一个字段，是同一屏之内自相矛盾。
+ */
+describe('基线里的基因数值印在分享页上', () => {
+  /** 三个基因数值上都压着后台的来源记录的那种档案。 */
+  const genetics = (over: Partial<PatientProfileDTO> = {}) =>
+    profile({
+      diagnosisDate: '2019-01-01',
+      baseline: storedMarkers(
+        {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: {
+            d4z4: '6',
+            haplotype: '4qA',
+            methylation: '25%',
+            diagnosisType: 'FSHD1',
+          },
+        },
+        [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.methylation',
+          'diseaseBackground.diagnosisType',
+        ],
+      ),
+      ...over,
+    });
+
+  it('值和「管理员代填」印在同一行上', () => {
+    const html = rendered(genetics());
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（管理员代填）');
+    expect(rowOf(html, '甲基化')).toContain('25%（管理员代填）');
+    expect(rowOf(html, '分型')).toContain('FSHD1（管理员代填）');
+  });
+
+  it('上面的值和下面那份清单说的是同一批字段', () => {
+    const html = rendered(genetics());
+
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(rowOf(html, 'D4Z4 重复数')).not.toContain('<dd>—</dd>');
+    expect(rowOf(html, '甲基化')).not.toContain('<dd>—</dd>');
+  });
+
+  it('横幅说的是没有报告可读，不是「这页上没有这个数」', () => {
+    const html = rendered(genetics());
+
+    expect(html).toContain('没有从基因报告里读出来的');
+    expect(html).not.toContain('没有可作确诊依据的基因结果（D4Z4 重复数');
+  });
+
+  /**
+   * 代填的数字不是化验值，排版上也不能是 —— 一个排得漂亮的数字本身就在
+   * 说「这是测出来的」。走这一页自己的样式表解析，别看 class 名字：
+   * `class="reported"` 那个断言曾经在选择器根本选不中的时候一直是绿的。
+   */
+  it('代填的数字不排进化验值那一档', () => {
+    const html = rendered(genetics());
+    const typed = valueChain(html, 'D4Z4 重复数');
+
+    expect(effective(html, typed, 'color')).toBe('var(--soft)');
+    expect(effective(html, typed, 'font-variant-numeric')).toBe('normal');
+  });
+
+  it('没有来源记录时，每一行都标「来源无法确定」，一行都不记到患者名下', () => {
+    const html = rendered(
+      profile({
+        diagnosisDate: '2019-01-01',
+        baseline: {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: { d4z4: '6', methylation: '25%', diagnosisType: 'FSHD1' },
+        },
+      } as never),
+    );
+
+    // 「没有来源记录」 是关于本平台记了什么的一句话，不是关于这个值是谁
+    // 敲进去的。医生扫码看到的这一行如果写着「本人填写」，那是本平台替
+    // 患者认下了一件自己查不出来的事。
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（来源无法确定）');
+    expect(rowOf(html, '分型')).toContain('FSHD1（来源无法确定）');
+    expect(rowOf(html, '甲基化')).toContain('25%（来源无法确定）');
+    expect(html).not.toContain('本人填写');
+  });
+
+  /**
+   * 后台只代填了基因数值、没碰确诊年份的时候，`confirmation` 落在
+   * `self_reported`（它只看 确诊年份 那一个标记），而页面上已经有几行
+   * 带着 「管理员代填」。这一档的横幅要是把来源列成一张单子，那张单子就
+   * 漏掉了这一页正印着的那一种。
+   */
+  it('横幅不把来源列成一张漏项的单子', () => {
+    const html = rendered(
+      profile({
+        baseline: storedMarkers({ diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.diagnosisType',
+        ]),
+      }),
+    );
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（管理员代填）');
+    expect(html).not.toContain(
+      '有的是患者自己填的，有的是系统从上传的报告里读出来的，还有的本平台无法确定',
+    );
+  });
+
+  it('报告里有数时印报告那个', () => {
+    const html = rendered(genetics({ documents: [geneticReport({ d4z4Repeats: '4' })] } as never));
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('4（报告读取）');
+    expect(rowOf(html, 'D4Z4 重复数')).not.toContain('6');
   });
 });
 

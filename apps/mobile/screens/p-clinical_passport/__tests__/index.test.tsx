@@ -6,15 +6,15 @@
  *    「避免琥珀胆碱」, the type did not reflow at 200%, and nothing on it
  *    could be copied into WeChat to send a surgical team in advance.
  *
- * 2. The diagnosis cells are typeset according to
- *    `diagnosis.confirmation`. The API has carried that field for a
- *    while and the PDF honours it; this screen did not read it, so a
- *    diagnosis the patient typed into a text box was set in the same
- *    16.5pt/700/tabular-nums metric type as a D4Z4 repeat count off a
- *    genetics report, under a heading that said 证据摘要. This
- *    population lives through a ~10-year diagnostic odyssey with a
- *    majority misdiagnosed on the way; a well-set number is read as a
- *    measurement, and that is the mechanism.
+ * 2. Each diagnosis cell is typeset according to its OWN source, from
+ *    `diagnosis.valueOrigins`. `diagnosis.confirmation` is an evidence
+ *    grade and answers nothing about authorship, so it picks no
+ *    typography here: a 分型 the patient typed into a text box and a
+ *    D4Z4 repeat count off a genetics report can sit in the same block
+ *    under the same grade. This population lives through a ~10-year
+ *    diagnostic odyssey with a majority misdiagnosed on the way; a
+ *    well-set number is read as a measurement, and that is the
+ *    mechanism.
  */
 
 import React from 'react';
@@ -33,6 +33,8 @@ jest.mock('../../../lib/api', () => {
     // whole passport down, so a test that faked it would be asserting
     // against its own fiction.
     readPassportGeneticEvidence: jest.requireActual('../../../lib/api').readPassportGeneticEvidence,
+    readPassportValueOrigin: jest.requireActual('../../../lib/api').readPassportValueOrigin,
+    readPassportValueOrigins: jest.requireActual('../../../lib/api').readPassportValueOrigins,
     ApiError,
     isConsentRequiredError: () => false,
     getClinicalPassportSummary: jest.fn(),
@@ -139,7 +141,29 @@ const asMock = <T,>(fn: T) => fn as unknown as jest.Mock;
 const flat = (style: unknown) =>
   StyleSheet.flatten(style as never) as unknown as Record<string, unknown>;
 
-const SELF_REPORTED_NOTICE = '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证';
+/** One `PassportValueOrigin`, worded the way the API words it. */
+const origin = (kind: string, labelZh: string) => ({
+  kind,
+  labelZh,
+  documentId: null,
+  adminUserId: null,
+  at: null,
+  detail: null,
+});
+
+/**
+ * THE FIXTURE THAT USED TO BE MISLABELLED, AND IS THE POINT.
+ *
+ * A genetics report parsed to nothing but a 分型 puts `confirmation` at
+ * `self_reported` with 分型 read off that report — nobody typed it. The
+ * screen printed 「本人填写的诊断信息」 over exactly this profile.
+ */
+const SELF_REPORTED_ORIGINS = {
+  geneticType: origin('report', '报告读取'),
+  d4z4Repeats: origin('absent', '未填'),
+  methylationValue: origin('absent', '未填'),
+  diagnosisDate: origin('patient', '本人填写'),
+};
 
 const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
   ({
@@ -155,7 +179,13 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
         key: 'diagnosis',
         title: '诊断证据',
         ready: false,
-        summary: SELF_REPORTED_NOTICE,
+        // The server's own wording. The parenthesis used to name the
+        // readings, which was this card carrying a copy of the rule
+        // 基因确诊 is graded by — a copy that went false the moment the
+        // rule became a conjunction, and that the API dropped. A
+        // fixture is where the next reader learns what the wire holds.
+        summary:
+          '未经基因确诊（本护照内没有从基因报告里读出来的、可作确诊依据的基因结果）—— 分型（报告读取）',
         meta: '诊断日期 2023-05-01',
       },
     ],
@@ -169,7 +199,11 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
       d4z4Repeats: '—',
       methylationValue: '—',
       diagnosisDate: '2023-05-01',
+      valueOrigins: SELF_REPORTED_ORIGINS,
       geneEvidence: '暂无可直接展示的基因证据',
+      // 证据摘要 has an origin of its own on the wire, beside the map.
+      // With nothing joined off a report it is the 分型 row's own.
+      geneEvidenceOrigin: origin('report', '报告读取'),
     },
     motor: {
       ready: false,
@@ -218,7 +252,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
     ...over,
   }) as unknown as ClinicalPassportSummary;
 
-const geneticSummary = () =>
+const geneticSummary = (diagnosisOver: Record<string, unknown> = {}) =>
   summary({
     summaryCards: [
       {
@@ -239,7 +273,20 @@ const geneticSummary = () =>
       d4z4Repeats: '4',
       methylationValue: '25%',
       diagnosisDate: '2023-05-01',
+      // 基因确诊 is earned by the repeat count alone, so this profile
+      // is confirmed with a 分型 the patient typed and a date the OCR
+      // autofill may have written. Three different sources, one block.
+      valueOrigins: {
+        geneticType: origin('patient', '本人填写'),
+        d4z4Repeats: origin('report', '报告读取'),
+        methylationValue: origin('report', '报告读取'),
+        diagnosisDate: origin('indeterminate', '来源无法确定'),
+      },
       geneEvidence: 'FSHD1 · 4qA · 18kb · 4',
+      // Joined out of values that do not agree about where they came
+      // from, which is the state the API resolves to `indeterminate`.
+      geneEvidenceOrigin: origin('indeterminate', '来源无法确定'),
+      ...diagnosisOver,
     },
   });
 
@@ -263,6 +310,12 @@ const readText = (node: ReactTestInstance): string => {
 
 const allText = (renderer: TestRenderer.ReactTestRenderer) =>
   renderer.root.findAllByType(Text).map(readText);
+
+/** Every `Text` run as one string, for asserting on a substring of a
+ *  sentence. `allText` stays the exact-match form: 「证据摘要」 is a note
+ *  TITLE, and it is also a word inside the section's own intro copy, so
+ *  asserting its absence has to compare whole runs. */
+const joinedText = (renderer: TestRenderer.ReactTestRenderer) => allText(renderer).join('\n');
 
 const nodeWithText = (renderer: TestRenderer.ReactTestRenderer, text: string) =>
   renderer.root.findAllByType(Text).find((node) => readText(node) === text);
@@ -317,7 +370,10 @@ describe('麻醉卡：同一份内容，两种载体', () => {
     // Both halves of the patient block, including the line item 1 of
     // this lane was about.
     expect(text).toContain('最近肺功能：未做过或未上传');
-    expect(text).toContain('诊断：FSHD —— 本人填报，本平台尚未收到基因报告');
+    // 本人填报 is gone from this line: this fixture's 分型 was read off a
+    // report, so nobody filed it and a genetic report IS on file.
+    expect(text).toContain('诊断：FSHD —— 未经基因确诊');
+    expect(text).toContain('档案里的分型为 FSHD1（报告读取）');
     // A literature summary must not travel without its disclaimer or
     // its sources.
     expect(text).toContain('不替代麻醉医师');
@@ -377,26 +433,91 @@ describe('麻醉卡：同一份内容，两种载体', () => {
   });
 });
 
-describe('三态诊断：自填的不能长得像测出来的', () => {
-  const DIAGNOSIS_VALUES = ['FSHD1', '2023-05-01'];
+describe('逐项来源：每个值按自己的来源排版，而不是按整块的证据等级', () => {
+  const styleOfValue = (renderer: TestRenderer.ReactTestRenderer, value: string) =>
+    StyleSheet.flatten(nodeWithText(renderer, value)!.props.style);
 
-  it('未确诊时四个诊断格降到正文字重，并且不用等宽数字', async () => {
-    const renderer = await render(summary());
-    DIAGNOSIS_VALUES.forEach((value) => {
-      const node = nodeWithText(renderer, value);
-      expect(node).toBeDefined();
-      const style = StyleSheet.flatten(node!.props.style);
-      expect(style.fontVariant).toBeUndefined();
-      expect(style.fontWeight).not.toBe('700');
-    });
+  it('报告读出来的那个值保持 metric，同一块里患者自己填的那个不保持', async () => {
+    // The fixture is genetically confirmed — earned by the repeat count
+    // alone — with a 分型 the patient typed. One block, two registers.
+    const renderer = await render(geneticSummary());
+    const repeats = styleOfValue(renderer, '4');
+    expect(repeats.fontWeight).toBe('700');
+    expect(repeats.fontVariant).toEqual(['tabular-nums']);
+
+    const geneticType = styleOfValue(renderer, 'FSHD1');
+    expect(geneticType.fontWeight).not.toBe('700');
+    expect(geneticType.fontVariant).toBeUndefined();
   });
 
-  it('基因确诊时保持 metric 字体', async () => {
-    const renderer = await render(geneticSummary());
-    const node = nodeWithText(renderer, '4');
-    const style = StyleSheet.flatten(node!.props.style);
+  it('「来源无法确定」不当成报告读取 —— 它可能就是患者的叙述', async () => {
+    const style = styleOfValue(await render(geneticSummary()), '2023-05-01');
+    expect(style.fontWeight).not.toBe('700');
+    expect(style.fontVariant).toBeUndefined();
+  });
+
+  it('报告里只读到分型时，那一格是报告读取，不降级', async () => {
+    // `confirmation` is `self_reported` on this fixture and the 分型
+    // still came off a report.
+    const style = styleOfValue(await render(summary()), 'FSHD1');
     expect(style.fontWeight).toBe('700');
     expect(style.fontVariant).toEqual(['tabular-nums']);
+  });
+
+  it('每个值下面印着它自己的来源', async () => {
+    const text = allText(await render(summary()));
+    expect(text).toContain('报告读取');
+    expect(text).toContain('本人填写');
+  });
+
+  it('没有来源可归的值不印「未填」两个字 —— 「—（未填）」是同一件事说两遍', async () => {
+    expect(joinedText(await render(summary()))).not.toContain('未填');
+  });
+
+  it('服务端没给逐项来源时说没给，不读成「都是报告读出来的」', async () => {
+    const renderer = await render(
+      summary({ diagnosis: { ...summary().diagnosis, valueOrigins: undefined } }),
+    );
+    expect(joinedText(renderer)).toContain('服务端这一版没有把逐项来源发全');
+    // It names the diagnosis values it is about. 临床护照 ID is generated
+    // here and 诊断进度 carries whatever author the server named, so
+    // neither is covered by this sentence.
+    expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值、诊断日期和证据摘要');
+    // And the notice above the grid stops pointing at captions that are
+    // not there.
+    expect(joinedText(renderer)).not.toContain('本平台能说明来源的，来源就写在那个值下面');
+    // And nothing keeps the laboratory register on the strength of a
+    // field that never arrived.
+    expect(styleOfValue(renderer, 'FSHD1').fontVariant).toBeUndefined();
+  });
+
+  it('证据摘要那一行也印着自己的来源 —— 和这个屏幕导出的 PDF 说同一件事', async () => {
+    const renderer = await render(
+      geneticSummary({ geneEvidenceOrigin: origin('indeterminate', '拼出来的，来源不一致') }),
+    );
+    const runs = allText(renderer);
+    const value = runs.indexOf('FSHD1 · 4qA · 18kb · 4', runs.indexOf('证据摘要'));
+    expect(value).toBeGreaterThan(-1);
+    expect(runs[value + 1]).toBe('拼出来的，来源不一致');
+  });
+
+  it('只漏了证据摘要的来源时也说没发全 —— 那张表来了不等于这一节全了', async () => {
+    const renderer = await render(geneticSummary({ geneEvidenceOrigin: null }));
+    expect(joinedText(renderer)).toContain('服务端这一版没有把逐项来源发全');
+  });
+
+  it('证据摘要没有来源可归时不印小字 —— 和上面那些格子一样', async () => {
+    // `absent` is a source the server did send, so the sentence about a
+    // missing payload must not fire on it either.
+    const joined = joinedText(
+      await render(
+        summary({
+          diagnosis: { ...summary().diagnosis, geneEvidenceOrigin: origin('absent', '未填') },
+        }),
+      ),
+    );
+    expect(joined).not.toContain('未填');
+    expect(joined).not.toContain('服务端这一版没有把逐项来源发全');
   });
 
   it('护照 ID 在任何状态下都保持 metric —— 它是系统生成的，不是谁声称的', async () => {
@@ -404,46 +525,105 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
     const style = StyleSheet.flatten(nodeWithText(renderer, 'FSHD-A1B2C3D4E5')!.props.style);
     expect(style.fontVariant).toEqual(['tabular-nums']);
   });
+});
 
-  it('未确诊时标题不再叫「证据摘要」', async () => {
+describe('标题和提示只说证据，不说是谁填的', () => {
+  it('未确诊时标题不再叫「证据摘要」，也不认领一个作者', async () => {
     const renderer = await render(summary());
-    const text = allText(renderer);
-    expect(text).toContain('本人填写的诊断信息');
-    expect(text).not.toContain('证据摘要');
+    expect(allText(renderer)).toContain('诊断信息');
+    expect(allText(renderer)).not.toContain('证据摘要');
+    expect(joinedText(renderer)).not.toContain('本人填写的诊断信息');
   });
 
   it('基因确诊时标题仍然是「证据摘要」，也不出提示', async () => {
     const renderer = await render(geneticSummary());
-    const text = allText(renderer);
-    expect(text).toContain('证据摘要');
+    expect(allText(renderer)).toContain('证据摘要');
+    expect(joinedText(renderer)).not.toContain('未经基因确诊');
+  });
+
+  it('管理员代填时也不说是管理员填的整块 —— 那个标记只关于「确诊年份」一个字段', async () => {
+    // `confirmation` is derived from `foundation.diagnosisYear`'s
+    // provenance entry alone, and this block holds values an
+    // administrator has no way to write, so neither 「管理员代填的诊断
+    // 信息」 nor 「本人填写的诊断信息」 can be said of it.
+    const text = joinedText(
+      await render(
+        summary({ diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' } }),
+      ),
+    );
+    expect(text).not.toContain('管理员代填的诊断信息');
     expect(text).not.toContain('本人填写的诊断信息');
-    expect(text).not.toContain(SELF_REPORTED_NOTICE);
   });
 
-  it('提示原样复用 summaryCards 的那句话，不另写一句', async () => {
-    // Two wordings for the same fact is two things to keep in step, and
-    // the PDF exported from this screen already prints one of them.
-    const renderer = await render(summary());
-    expect(allText(renderer)).toContain(SELF_REPORTED_NOTICE);
+  it('单倍型非允许型时，提示说的是那个结果，而不是「没有读到结果」', async () => {
+    // A 4qB is the laboratory's own reading, printed two rows down with
+    // 报告读取 in its bracket. The sibling notice denies that reading
+    // exists, so this state may not borrow it — and it may not be read
+    // as an exclusion either.
+    const text = joinedText(
+      await render(
+        summary({
+          diagnosis: {
+            ...summary().diagnosis,
+            confirmation: 'genetic_non_permissive',
+            d4z4Repeats: '3',
+            geneEvidence: '4qB · 3',
+          },
+        }),
+      ),
+    );
+    expect(text).toContain('未构成基因确诊');
+    expect(text).toContain('不是允许型 4qA');
+    expect(text).toContain('这不是排除诊断');
+    expect(text).not.toContain('没有从基因报告里读出来的基因结果');
   });
 
-  it('confirmation 为 none 时同样降级', async () => {
-    const none = summary({
-      summaryCards: [
-        {
-          key: 'diagnosis',
-          title: '诊断证据',
-          ready: false,
-          summary: '缺少可直接展示的基因或诊断证据',
-          meta: '诊断日期 —',
-        },
-      ],
-      diagnosis: { ...summary().diagnosis, confirmation: 'none' },
-    });
-    const renderer = await render(none);
-    const text = allText(renderer);
-    expect(text).toContain('缺少可直接展示的基因或诊断证据');
-    expect(text).not.toContain('证据摘要');
+  it('提示说的是没有可作确诊依据的结果，不是「本平台尚未收到基因报告」', async () => {
+    const text = joinedText(await render(summary()));
+    expect(text).toContain('未经基因确诊');
+    expect(text).toContain('没有从基因报告里读出来的、可作确诊依据的基因结果');
+    expect(text).not.toContain('尚未收到');
+    // 不再逐条点名读数：确诊要报告同时写明长度和允许型单倍型，只写了
+    // 其中一项的报告会带着那一项走到这条提示下面。
+    expect(text).not.toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+  });
+
+  it('只解析出甲基化值时，不说「没有可展示的证据」而下面正印着那个值', async () => {
+    // 甲基化 is in none of the three confirmation tests, so a genetics
+    // report that parsed to a methylation value and nothing else yields
+    // `confirmation: 'none'`. The notice may not say there is nothing
+    // to show while that report's own 甲基化值 is printed below it.
+    const text = joinedText(
+      await render(
+        summary({
+          summaryCards: [
+            {
+              key: 'diagnosis',
+              title: '诊断证据',
+              ready: false,
+              summary: '缺少可直接展示的基因或诊断证据',
+              meta: '诊断日期 —',
+            },
+          ],
+          diagnosis: {
+            ...summary().diagnosis,
+            confirmation: 'none',
+            geneticType: '—',
+            diagnosisDate: '—',
+            methylationValue: '35%',
+            valueOrigins: {
+              geneticType: origin('absent', '未填'),
+              d4z4Repeats: origin('absent', '未填'),
+              methylationValue: origin('report', '报告读取'),
+              diagnosisDate: origin('absent', '未填'),
+            },
+          },
+        }),
+      ),
+    );
+    expect(text).toContain('35%');
+    expect(text).toContain('报告读取');
+    expect(text).not.toContain('缺少可直接展示的基因或诊断证据');
   });
 
   it('提示不是第四块琥珀色 —— 那个颜色在这个产品里只说一件事', async () => {
@@ -475,6 +655,108 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
  * server against the version the patient answered, and the screen has
  * no fallback wording of its own to reach for.
  */
+describe('§B3：这一页要说出哪些字段不是患者自己填的', () => {
+  const ADMIN_ORIGIN = {
+    path: 'diseaseBackground.d4z4',
+    labelZh: 'D4Z4 重复数',
+    state: 'admin_entered' as const,
+    adminUserId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    at: '2026-08-13T04:11:07.912Z',
+    detail: null,
+  };
+
+  it('诊断进度那一格说的是服务端给的那个来源，不是写死的「本人填写」', async () => {
+    const renderer = await render(
+      summary({
+        diagnosis: {
+          ...summary().diagnosis,
+          ladder: 'confirmed',
+          ladderLabel: '已确诊',
+          ladderOriginZh: '管理员代填',
+        },
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain('管理员代填的诊断进度');
+    expect(text).not.toContain('本人填写的诊断进度');
+  });
+
+  // A cached bundle can reach an API build that sends the rung without
+  // the origin. The rung still prints; the author does not, because the
+  // same render says 「无法确认上面这些值是不是都由你本人填写」 a few
+  // blocks down and this cell cannot know better than that sentence.
+  it('服务端没给来源时，那一格不替患者认领这个答案', async () => {
+    const renderer = await render(
+      summary({
+        diagnosis: { ...summary().diagnosis, ladder: 'confirmed', ladderLabel: '已确诊' },
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain('诊断进度');
+    expect(text).toContain('已确诊');
+    expect(text).not.toContain('本人填写的诊断进度');
+    expect(text).toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
+  });
+
+  it('逐条列出被代填的字段，带上什么时候 —— PDF 和分享页早就列了', async () => {
+    // §10（四）of the privacy policy names 「App 里」 by name. Until this
+    // block the screen showed only the aggregate sentence, so the one
+    // surface where a patient learns WHICH of their fields was typed
+    // for them was a PDF they had to export first.
+    //
+    // WHAT THIS BLOCK DOES NOT PRINT IS 是谁. The DTO carries
+    // `adminUserId` and the markdown export prints it; this screen and
+    // the PDF print the date alone. The assertion below is the whole of
+    // what the patient reads, and a title promising more than it is the
+    // reason profile.passport.ts once pointed here for a name.
+    const renderer = await render(summary({ fieldOrigins: [ADMIN_ORIGIN] }));
+    const text = allText(renderer);
+    expect(text).toContain('这些字段不是你本人填的');
+    expect(text).toContain('D4Z4 重复数：「肌愈通」管理员于 2026-08-13 代为录入，不是你本人填写。');
+  });
+
+  it('读不出来的标记说自己读不出来，不借用患者的名义', async () => {
+    const renderer = await render(
+      summary({
+        fieldOrigins: [
+          {
+            ...ADMIN_ORIGIN,
+            state: 'unreadable',
+            adminUserId: null,
+            at: null,
+            detail: 'adminUserId is not a user id',
+          },
+        ],
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain(
+      'D4Z4 重复数：来源记录读不出来（adminUserId is not a user id），只能确定不是你本人填写。',
+    );
+  });
+
+  it('一条标记都没有时整块不出现 —— 一个写着「无」的标题只会教人跳过它', async () => {
+    const renderer = await render(summary({ fieldOrigins: [] }));
+    const text = allText(renderer);
+    expect(text).not.toContain('这些字段不是你本人填的');
+    expect(text).not.toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
+  });
+
+  it('服务端这一版没给这个字段时说没给，不读成「都是本人填的」', async () => {
+    // A cached WeChat bundle talking to an API build that predates the
+    // field gets `undefined`, and reading that as an empty list is
+    // exactly the false sentence this block exists to prevent.
+    const renderer = await render(summary());
+    expect(allText(renderer)).toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
+  });
+});
+
 describe('功能分级：一个数字必须带着它的那句话', () => {
   const BROOKE_KEY = 'brooke_upper_extremity';
   const BROOKE_L3 = '手举不到头顶上方，但能把一杯约 240 毫升（8 盎司）的水端到嘴边。';
@@ -833,12 +1115,13 @@ describe('服务端没给这一段的时候', () => {
   });
 });
 
-describe('本人填写的诊断进度', () => {
+describe('诊断进度那一格', () => {
   it('答过的那一级按 API 的措辞出现，且不用 metric 字体', async () => {
     // 「what did you tell us」 and 「what does the evidence show」 are
-    // different questions. This cell is a self-report by construction,
-    // so it never takes the 16.5pt/700/tabular-nums treatment even on a
-    // genetically confirmed passport.
+    // different questions. This cell answers the first one and is not
+    // evidence whatever the uploaded reports say, so it never takes the
+    // 16.5pt/700/tabular-nums treatment even on a genetically confirmed
+    // passport.
     const base = geneticSummary();
     const renderer = await render(
       summary({
@@ -859,6 +1142,131 @@ describe('本人填写的诊断进度', () => {
 
   it('没答过的时候整格不出现，而不是印一个「—」', async () => {
     const renderer = await render(summary());
-    expect(allText(renderer)).not.toContain('本人填写的诊断进度');
+    expect(allText(renderer)).not.toContain('诊断进度');
+  });
+});
+
+/**
+ * The hero grid, against the `metrics` array the API actually builds.
+ *
+ * Both fixtures below are `buildClinicalPassportSummary`'s own output,
+ * copied off a run of it: one profile with three (muscle group, side)
+ * strength readings and one with none. Everything else on this file's
+ * `summary()` fixture carried `metrics: []`, which is why a filter that
+ * had stopped matching anything, and an insert at a hard-coded index,
+ * survived a rename with 50 passing tests.
+ *
+ * The join these assert is invisible to the compiler: `PassportMetricDTO`
+ * is three `string`s and no discriminant. metric-labels.parity.test.ts
+ * is the other half — it checks the spellings against the API source;
+ * these check what the patient sees once the screen has used them.
+ */
+describe('hero 指标格：顺序和取舍', () => {
+  /** 服务端真发的那四格（有肌力的档案）。 */
+  const API_METRICS_WITH_STRENGTH = [
+    { label: '完整度', value: '1/4', hint: '仍有模块待补齐' },
+    { label: '报告数', value: '2', hint: '已纳入护照' },
+    { label: '肌力项数', value: '3', hint: '平均 3.7 级' },
+    { label: '最近更新', value: '08-01', hint: '用于判断新鲜度' },
+  ];
+  /** 同一段代码，没有任何肌力记录的档案。 */
+  const API_METRICS_NO_STRENGTH = [
+    { label: '完整度', value: '0/4', hint: '仍有模块待补齐' },
+    { label: '报告数', value: '0', hint: '尚无报告来源' },
+    { label: '肌力项数', value: '0', hint: '尚无结构化肌力' },
+    { label: '最近更新', value: '08-01', hint: '用于判断新鲜度' },
+  ];
+
+  /** Each metric tile as `[value, label, hint]`, in rendered order. */
+  const tiles = (renderer: TestRenderer.ReactTestRenderer) =>
+    renderer.root
+      .findAll((node) => node.props.style === styles.metricCard, { deep: false })
+      .map((card) => card.findAllByType(Text).map(readText));
+
+  const labelsOf = (renderer: TestRenderer.ReactTestRenderer) =>
+    tiles(renderer).map(([, label]) => label);
+
+  it('有肌力记录时：四格，肌力项数不在里面，最近记录紧跟着报告数', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_WITH_STRENGTH }));
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新']);
+  });
+
+  it('没有肌力记录时：同样四格，同样的顺序', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_NO_STRENGTH }));
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新']);
+  });
+
+  it('肌力那一格连值带提示都不在屏幕上 —— 它归下面的肌力那一节', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_WITH_STRENGTH }));
+    expect(tiles(renderer).flat()).not.toContain('肌力项数');
+    expect(joinedText(renderer)).not.toContain('平均 3.7 级');
+  });
+
+  it('最近记录那一格读的是 motor 的时间，不是服务端某一格', async () => {
+    const renderer = await render(
+      summary({
+        metrics: API_METRICS_WITH_STRENGTH,
+        motor: {
+          ready: true,
+          average: '3.7',
+          latestMeasurementAt: '2026-07-20T00:00:00.000Z',
+          latestActivityAt: null,
+          summary: '—',
+          highlights: [],
+          bodyRegions: {},
+          activitySummary: '上周开始上楼要扶栏杆',
+        },
+      }),
+    );
+    const record = tiles(renderer).find(([, label]) => label === '最近记录');
+    expect(record).toEqual(['07-20', '最近记录', '上周开始上楼要扶栏杆']);
+  });
+
+  it('服务端多发一格没见过的指标时，那一格照常出现在末尾，而不是被吃掉', async () => {
+    // 这个屏幕只对「肌力项数」做取舍，其余的原样透出。新指标静默消失
+    // 比多出一格更难被发现。
+    const renderer = await render(
+      summary({
+        metrics: [...API_METRICS_WITH_STRENGTH, { label: '随访次数', value: '5', hint: '含线上' }],
+      }),
+    );
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新', '随访次数']);
+  });
+
+  it('服务端没发报告数那一格时，最近记录落到末尾，不硬塞进第三位', async () => {
+    const renderer = await render(
+      summary({
+        metrics: API_METRICS_WITH_STRENGTH.filter((item) => item.label !== '报告数'),
+      }),
+    );
+    expect(labelsOf(renderer)).toEqual(['完整度', '最近更新', '最近记录']);
+  });
+});
+
+describe('「N 份来源报告」那一行：零是一个说法，不是一个占位符', () => {
+  const chipText = (renderer: TestRenderer.ReactTestRenderer) =>
+    allText(renderer).find((text) => text.includes('份来源报告') || text === '报告数 —');
+
+  it('服务端说 0 的时候就印 0', async () => {
+    const renderer = await render(
+      summary({ metrics: [{ label: '报告数', value: '0', hint: '尚无报告来源' }] }),
+    );
+    expect(chipText(renderer)).toBe('0 份来源报告');
+  });
+
+  it('服务端说 7 的时候就印 7', async () => {
+    const renderer = await render(
+      summary({ metrics: [{ label: '报告数', value: '7', hint: '已纳入护照' }] }),
+    );
+    expect(chipText(renderer)).toBe('7 份来源报告');
+  });
+
+  it('服务端没发这一格时印破折号 —— 不替患者宣布他一份报告都没有', async () => {
+    // 一次改名就是这个状态。旧代码在这里写着 `?? '0'`，于是一个上传了
+    // 七份报告的患者，会把一张写着「0 份来源报告」的护照递给医生。
+    const renderer = await render(
+      summary({ metrics: [{ label: '完整度', value: '1/4', hint: '仍有模块待补齐' }] }),
+    );
+    expect(chipText(renderer)).toBe('报告数 —');
   });
 });

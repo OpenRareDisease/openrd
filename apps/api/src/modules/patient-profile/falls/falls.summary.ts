@@ -48,6 +48,21 @@
  *    feature exist. It is not a claim that the earlier period was
  *    fall-free.
  *
+ *    THE OLDEST FALL IS ONLY HALF OF THAT TEST. The other half is the
+ *    QUERY WINDOW, and this module used not to be told it. The
+ *    retriever's window is chosen by the model through
+ *    `get_my_records` and may be any value from 1 to 730 days, while
+ *    the bucket width here is a fixed 90 — so whenever the window is
+ *    not a multiple of 90 the oldest emitted bucket spanned 90 days of
+ *    which only a fraction was ever fetched, and it was printed as a
+ *    full quarter next to the others. At `windowDays: 100` a patient
+ *    with two falls last month and one at day 95 got 「2 次、1 次」,
+ *    and the model read a DOUBLING — against a comparison quarter that
+ *    had been observed for 11 of its 90 days. Buckets now stop at the
+ *    last one FULLY inside the window as well as at the oldest fall,
+ *    whichever comes first, and any falls left outside them are
+ *    counted and said out loud rather than dropped or folded in.
+ *
  * 3. Compare across a truncated list.
  *
  *    The caller reads the most recent N falls. If it hit that ceiling,
@@ -56,6 +71,15 @@
  *    entirely rather than shading it — the same call MAX_ROWS_PER_SERIES
  *    forced on the measurement series, where under-reporting `count`
  *    was allowed but claiming a total was not.
+ *
+ *    AND IT SUPPRESSED IT IN SILENCE, WHICH IS ONLY HALF THE REFUSAL.
+ *    Every denominator refusal (1) is so careful to state —
+ *    「已记录是否受伤的 3 次中，2 次受伤」,「其余 5 次只有日期」— is
+ *    counted over the truncated list, so at the cap they are floors
+ *    printed in the grammar of totals, and the one clause that would
+ *    have hinted the list was cut is exactly the clause `atCap`
+ *    removes. A reader was left with more confident numbers than
+ *    before, not fewer. `composeFallCapClauseZh` says it instead.
  *
  * The sentence this file builds lands in the retriever's `eventSummary`
  * field, which is on the prompt allowlist in BOTH strict and precise
@@ -139,12 +163,44 @@ export interface FallsSummary {
   latestDaysAgo: number | null;
   oldestDaysAgo: number | null;
   /**
-   * Most recent first, and truncated at the bucket holding the oldest
-   * recorded fall. Empty when there are no falls. See refusal (2).
+   * Most recent first, and truncated at whichever comes first: the
+   * bucket holding the oldest recorded fall, or the last bucket the
+   * query window covers in full. Empty when there are no falls, and
+   * ALSO empty when the window is shorter than one bucket — which is
+   * why `quartersCoverDays` exists rather than leaving a consumer to
+   * multiply. See refusal (2).
    */
   quarters: FallQuarterCount[];
+  /** Days the emitted buckets account for: `quarters.length * 90`, and
+   *  0 when there are none. Never larger than the query window. */
+  quartersCoverDays: number;
+  /** The window the caller said it queried, echoed back, or null when
+   *  it did not say. Null is what makes the coverage sentence below
+   *  disappear: a module that was not told the window cannot claim the
+   *  buckets were observed end to end, only that they run back to the
+   *  oldest fall. */
+  windowDays: number | null;
+  /** Falls inside the window but older than the last emitted bucket.
+   *  They are in `total` and in every detail tally; they are simply not
+   *  in a quarter, because the quarter they fall in was not observed
+   *  end to end. */
+  unbucketedOlder: number;
   location: { answered: number; indoor: number; outdoor: number; unknown: number };
-  activity: { answered: number; top: { key: FallActivity; count: number } | null };
+  activity: {
+    answered: number;
+    top: { key: FallActivity; count: number } | null;
+    /**
+     * Every answered situation with its count, most frequent first and
+     * ties broken by the order in `profile.constants.ts`.
+     *
+     * `top` alone cannot tell 「最多的是走路时 3 次」 from a two-way tie
+     * at one apiece, and the clause built from it said 「最多的是」 for
+     * both — a superlative asserted over a single answered row. The
+     * caller needs the shape of the distribution to know whether there
+     * is a most-common one at all.
+     */
+    counts: Array<{ key: FallActivity; count: number }>;
+  };
   handsFull: FallAnswerTally;
   /** `yes` counts falls the patient could NOT get up from unaided —
    *  the clinically load-bearing direction, and the opposite of the
@@ -205,6 +261,18 @@ export interface BuildFallsSummaryOptions {
   atCap: boolean;
   /** Epoch millis, for the timestamp fallback in `fallDayAge`. */
   now?: number;
+  /**
+   * How many days back the caller's query actually looked.
+   *
+   * Optional only because omitting it has to mean something safe for a
+   * caller that has not been updated: `undefined` disables the
+   * window truncation and leaves refusal (2) resting on the oldest
+   * fall alone, which is where it was before. EVERY caller that runs a
+   * bounded query should pass this — a 90-day bucket built from a
+   * window that covered 11 of its days is the defect described in
+   * refusal (2), and this module cannot detect it on its own.
+   */
+  windowDays?: number;
 }
 
 export const buildFallsSummary = (
@@ -212,6 +280,10 @@ export const buildFallsSummary = (
   options: BuildFallsSummaryOptions,
 ): FallsSummary => {
   const now = options.now ?? Date.now();
+  const knownWindowDays =
+    typeof options.windowDays === 'number' && Number.isFinite(options.windowDays)
+      ? options.windowDays
+      : null;
   // A row whose date cannot be read is dropped rather than bucketed at
   // zero. Bucketing it at zero would move an unreadable fall into the
   // most recent quarter, which is the one the「更频繁了」comparison
@@ -229,8 +301,11 @@ export const buildFallsSummary = (
     latestDaysAgo: null,
     oldestDaysAgo: null,
     quarters: [],
+    quartersCoverDays: 0,
+    windowDays: knownWindowDays,
+    unbucketedOlder: 0,
     location: { answered: 0, indoor: 0, outdoor: 0, unknown: 0 },
-    activity: { answered: 0, top: null },
+    activity: { answered: 0, top: null, counts: [] },
     handsFull: { answered: 0, yes: 0 },
     neededHelpUp: { answered: 0, yes: 0 },
     injured: { answered: 0, yes: 0 },
@@ -243,7 +318,20 @@ export const buildFallsSummary = (
 
   // Buckets run to the one holding the oldest recorded fall and stop.
   // Anything beyond it is unobserved, not quiet — refusal (2).
-  const lastIndex = Math.floor(oldestDaysAgo / FALL_QUARTER_DAYS);
+  const oldestFallIndex = Math.floor(oldestDaysAgo / FALL_QUARTER_DAYS);
+  // ...and no further than the window actually reached. Bucket `i`
+  // covers ages i*90 through (i+1)*90-1, so it is fully inside a
+  // window of W days only when (i+1)*90 <= W. W=90 leaves one bucket
+  // (nothing to compare, so refusal (2) suppresses the clause below);
+  // W=100 still leaves one, because the 90–179 bucket was observed for
+  // 11 of its 90 days and a partial quarter printed beside a full one
+  // is read as a rate. A caller that passes no window keeps the old
+  // behaviour and is bounded by the oldest fall alone.
+  const lastWindowIndex =
+    knownWindowDays === null
+      ? oldestFallIndex
+      : Math.floor(knownWindowDays / FALL_QUARTER_DAYS) - 1;
+  const lastIndex = Math.min(oldestFallIndex, lastWindowIndex);
   const quarters: FallQuarterCount[] = [];
   for (let index = 0; index <= lastIndex; index += 1) {
     quarters.push({
@@ -253,10 +341,19 @@ export const buildFallsSummary = (
       count: 0,
     });
   }
+  let unbucketedOlder = 0;
   for (const age of ages) {
-    // Safe without a clamp: lastIndex is derived from the largest age,
-    // so no row can land past the last bucket.
-    quarters[Math.floor(age / FALL_QUARTER_DAYS)].count += 1;
+    const index = Math.floor(age / FALL_QUARTER_DAYS);
+    // The clamp the oldest-fall bound alone did not need. A fall can
+    // now sit inside the window and outside the last FULL bucket, and
+    // it must not be folded into the last bucket (that would inflate
+    // the comparison quarter) nor dropped (that would lose it from a
+    // total this module promises is every fall it was handed).
+    if (index > lastIndex) {
+      unbucketedOlder += 1;
+      continue;
+    }
+    quarters[index].count += 1;
   }
 
   const location = { answered: 0, indoor: 0, outdoor: 0, unknown: 0 };
@@ -278,6 +375,13 @@ export const buildFallsSummary = (
     // order the way a >= would.
     if (top === null || count > top.count) top = { key, count };
   }
+  // Stable for the same reason `top` is: the Map was filled in row
+  // order, so a plain descending sort on count would leave ties to the
+  // rows' arrival order. Sorting only on count, on an array built from
+  // the Map, keeps ties in insertion order.
+  const activityCountsSorted = [...activityCounts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count);
   const activityAnswered = [...activityCounts.values()].reduce((sum, n) => sum + n, 0);
 
   return {
@@ -287,8 +391,11 @@ export const buildFallsSummary = (
     latestDaysAgo,
     oldestDaysAgo,
     quarters,
+    quartersCoverDays: quarters.length * FALL_QUARTER_DAYS,
+    windowDays: knownWindowDays,
+    unbucketedOlder,
     location,
-    activity: { answered: activityAnswered, top },
+    activity: { answered: activityAnswered, top, counts: activityCountsSorted },
     handsFull: tallyBoolean(
       usable,
       (row) => row.fall_hands_full,
@@ -312,20 +419,64 @@ export const buildFallsSummary = (
 /**
  * The quarterly clause, or null when there is no honest one to write.
  *
- * Suppressed when the list was truncated (refusal 3) or when there is
- * only one bucket — a patient whose whole fall history sits inside the
- * last 90 days has nothing to be compared against, and 「最近 90 天
- * 2 次」 alone invites the model to supply the missing half.
+ * Suppressed when the list was truncated (refusal 3) or when fewer than
+ * two buckets survive — a patient whose whole fall history sits inside
+ * the last 90 days has nothing to be compared against, and 「最近 90 天
+ * 2 次」 alone invites the model to supply the missing half. That same
+ * test now also catches the short-window case from refusal (2): a
+ * 100-day query leaves exactly one full bucket, so it produces no
+ * comparison at all instead of a doubling measured against 11 observed
+ * days.
  */
 export const composeFallQuarterClauseZh = (summary: FallsSummary): string | null => {
   if (summary.atCap) return null;
   if (summary.quarters.length < 2) return null;
 
   const counts = summary.quarters.map((quarter) => `${quarter.count} 次`).join('、');
+  // Said out loud, because `oldestDaysAgo` can now sit OUTSIDE the last
+  // bucket: the window reached that fall but did not cover its quarter
+  // end to end. Without this the reader would take the bucket list as
+  // running all the way back to the oldest record, and read the last
+  // bucket as a quarter that contained one fall when it contained one
+  // of several.
+  const outside =
+    summary.unbucketedOlder > 0
+      ? `；更早还有 ${summary.unbucketedOlder} 次跌倒，落在查询窗口没有完整覆盖的时段里，没有计入上面的分段`
+      : '';
+  // Only claimed when the caller named its window. Without one this
+  // module knows the buckets reach back to the oldest fall and nothing
+  // about whether the days in between were ever queried, so it says
+  // the smaller thing.
+  const coverage =
+    summary.windowDays === null ? '' : `，只统计被完整覆盖的最近 ${summary.quartersCoverDays} 天`;
   return (
-    `跌倒频率（每 ${FALL_QUARTER_DAYS} 天一段，由近及远）：${counts}；` +
+    `跌倒频率（每 ${FALL_QUARTER_DAYS} 天一段，由近及远${coverage}）：${counts}${outside}；` +
     `最早一次跌倒记录在 ${summary.oldestDaysAgo} 天前，` +
     `更早的时段没有记录，不能当作没有跌倒`
+  );
+};
+
+/**
+ * The truncation clause, or null when nothing was truncated.
+ *
+ * Refusal (3) used to be discharged entirely by DELETING the quarterly
+ * clause, which leaves a reader with `total`, a set of denominators and
+ * no reason to doubt any of them. This is the sentence that says the
+ * list is a floor. It goes FIRST among the clauses, before the numbers
+ * it qualifies.
+ *
+ * `total` is named rather than the caller's row limit because this
+ * module is not told what that limit was, and because the falls are
+ * only part of what filled it — the retriever's ceiling counts every
+ * event type. What is true either way is that these are the most
+ * recent N and there are older ones nobody read.
+ */
+export const composeFallCapClauseZh = (summary: FallsSummary): string | null => {
+  if (!summary.atCap) return null;
+  const detailNote = summary.detailed > 0 ? '下面的跌倒详情只统计这部分，分母不是全部跌倒；' : '';
+  return (
+    `跌倒记录未读全：查询已达条数上限，只读取到最近 ${summary.total} 次跌倒，更早的没有读到；` +
+    `${detailNote}因此不做每 ${FALL_QUARTER_DAYS} 天的频率比较`
   );
 };
 
@@ -353,11 +504,39 @@ export const composeFallDetailClauseZh = (summary: FallsSummary): string | null 
   }
 
   if (summary.activity.answered > 0 && summary.activity.top) {
-    const label = FALL_ACTIVITY_LABELS_ZH[summary.activity.top.key];
-    parts.push(
-      `已记录当时情形的 ${summary.activity.answered} 次中，` +
-        `最多的是「${label}」${summary.activity.top.count} 次`,
-    );
+    /**
+     * 「最多的是」 IS A COMPARISON, AND IT WAS BEING MADE AGAINST
+     * NOTHING.
+     *
+     * The clause used to read the top entry and print 「最多的是」
+     * unconditionally. With one answered row that is a superlative over
+     * a set of one — a patient who filled in the situation for a single
+     * fall was told 「已记录当时情形的 1 次中，最多的是「走路时」1 次」,
+     * which invites a fall-prevention answer aimed at the one activity
+     * that happens to have been written down. With a two-way tie it is
+     * worse: 「走路时」1 次 and 「上下楼梯时」1 次 came out as 走路时
+     * being the most common, decided by which row arrived first.
+     *
+     * So the superlative is earned, not assumed: it needs a strict
+     * winner over at least one rival. Everything else states the counts
+     * and lets the reader see there is no mode.
+     */
+    const [first, second] = summary.activity.counts;
+    const listed = summary.activity.counts
+      .map(({ key, count }) => `「${FALL_ACTIVITY_LABELS_ZH[key]}」${count} 次`)
+      .join('、');
+    const head = `已记录当时情形的 ${summary.activity.answered} 次中，`;
+    if (second === undefined) {
+      // One situation covering every answered row. Worth saying as
+      // such — it is the strongest thing this tally ever supports —
+      // and the count is dropped because the denominator in `head`
+      // already is it.
+      parts.push(`${head}全部都是「${FALL_ACTIVITY_LABELS_ZH[first.key]}」`);
+    } else if (first.count > second.count) {
+      parts.push(`${head}最多的是「${FALL_ACTIVITY_LABELS_ZH[first.key]}」${first.count} 次`);
+    } else {
+      parts.push(`${head}${listed}，次数相同，没有更常见的一种`);
+    }
   }
 
   if (summary.handsFull.answered > 0) {
@@ -397,7 +576,10 @@ export const composeFallDetailClauseZh = (summary: FallsSummary): string | null 
  */
 export const composeFallClausesZh = (summary: FallsSummary): string[] => {
   if (summary.total === 0) return [];
-  return [composeFallDetailClauseZh(summary), composeFallQuarterClauseZh(summary)].filter(
-    (clause): clause is string => clause !== null,
-  );
+  return [
+    // First, because it is the caveat on everything after it.
+    composeFallCapClauseZh(summary),
+    composeFallDetailClauseZh(summary),
+    composeFallQuarterClauseZh(summary),
+  ].filter((clause): clause is string => clause !== null);
 };

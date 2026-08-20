@@ -4,9 +4,16 @@ import { Readable } from 'node:stream';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  applyAdminBaselineWrite,
+  listBaselineFieldOrigins,
+  readBaselineFieldOrigin,
+} from './baseline-provenance.js';
 import { EXPORT_FIXTURE_PROFILE } from './export/__fixtures__/profile.fixture.js';
 import { DOCUMENT_TYPES } from './profile.constants.js';
 import {
+  EXPORT_MAX_FALL_ROWS,
+  EXPORT_MAX_INSTRUMENT_ROWS,
   PatientProfileController,
   _canonicalizeDocumentType,
   _buildContentDisposition,
@@ -33,9 +40,11 @@ import { AppError } from '../../utils/app-error.js';
  * its TYPE only, which TypeScript erases.
  */
 const routeGetProfileByUserId = vi.fn();
+const routeGetDocumentOcrForUser = vi.fn();
 vi.mock('./profile.service.js', () => ({
   PatientProfileService: class {
     getProfileByUserId = (...args: unknown[]) => routeGetProfileByUserId(...args);
+    getDocumentOcrForUser = (...args: unknown[]) => routeGetDocumentOcrForUser(...args);
     // Both are called once at router construction by the OCR sweep and
     // the deletion purge. They must resolve, or the router logs an
     // unhandled rejection over the assertions below.
@@ -1198,16 +1207,188 @@ describe('PatientProfileController.reparseDocument', () => {
     expect(res.status).toHaveBeenCalledWith(202);
   });
 
-  it('parsed with fields → 409 (nothing to recover, source file unchanged)', async () => {
+  /**
+   * THE CASE THIS ENDPOINT USED TO REFUSE, AND THE ONLY ONE A PARSER
+   * FIX CAN ACTUALLY REACH.
+   *
+   * A `parsed` row holding fields was excluded on the reasoning that
+   * the source file has not changed. The file has not; the parser has.
+   * Measured against this deployment's archive when the gate was
+   * rewritten: seven documents carry an LDH the laboratory never
+   * printed, and four of them are `parsed` with fields, belonging to
+   * four different patients — so the endpoint could not be pointed at
+   * the majority of the damage it exists to repair.
+   */
+  it('parsed WITH fields is eligible — a parser fix is what makes it stale', async () => {
     const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), {
-      fields: { fieldCount: '8', classifiedType: 'stool_test' },
+      fields: { fieldCount: '4', classifiedType: 'muscle_enzyme', ck: '693', ldh: '693' },
+    });
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect(storage.load).toHaveBeenCalled();
+    // And the patient is told, in the 202 itself, that pressing it
+    // cannot cost them what they already have.
+    expect((res.json as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      status: 'processing',
+      previousResultRestoredIfWorse: true,
+    });
+  });
+
+  it('needs_review is eligible too — the reviewer flag is not a reason to refuse a repair', async () => {
+    const { service, storage, ocr } = buildReparseDeps('needs_review', new Date(), {
+      fields: { fieldCount: '3', ck: '693' },
+    });
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+  });
+
+  /**
+   * The one refusal that survives the widening. `patchDocumentOcrFields`
+   * records THAT the patient corrected the record, never WHICH cells —
+   * so a re-parse cannot carry the corrections across and cannot be
+   * told afterwards which value came from a person. A parse is
+   * reproducible; a patient reading their own paper report is not.
+   */
+  it('a hand-corrected payload → 409, with the alternative named', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), {
+      fields: { fieldCount: '4', ck: '693', manuallyEditedAt: '2026-01-02T03:04:05.000Z' },
     });
     const controller = new PatientProfileController(service, storage, ocr);
 
     await expect(controller.reparseDocument(reparseReq(), fakeRes())).rejects.toMatchObject({
       statusCode: 409,
+      message: expect.stringContaining('手动修正'),
     });
     expect(storage.load).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The protection that replaced「refuse to press the button」. Refusing
+   * to START was never what kept the reading safe — refusing to
+   * OVERWRITE is, and it is the only version that also lets the repair
+   * through.
+   */
+  it('a re-run that comes back empty does not replace a payload that had readings', async () => {
+    const previous = { provider: 'embedded', fields: { fieldCount: '4', ck: '693', ldh: '693' } };
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), previous);
+    (ocr.parse as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider: 'embedded',
+      fields: { analysisStatus: 'completed', fieldCount: '0' },
+    });
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await controller.reparseDocument(reparseReq(), fakeRes());
+    await controller.inFlightOcrJobs.get('doc-1');
+
+    const landed = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[1][2];
+    // The row goes back to exactly what it was, under the status it
+    // wore — not to `parsed`-holding-nothing, which is what the fresh
+    // result would have made of it.
+    expect(landed.status).toBe('parsed');
+    expect((landed.ocrPayload as { fields: Record<string, string> }).fields.ck).toBe('693');
+    expect((landed.ocrPayload as { reparse: { outcome: string } }).reparse.outcome).toBe(
+      'kept_previous',
+    );
+    // A restored payload must not adopt the abandoned parse's
+    // classification either.
+    expect(landed.documentType).toBeUndefined();
+  });
+
+  it('a parse that raises does not cost the patient the payload they had', async () => {
+    const previous = { provider: 'embedded', fields: { fieldCount: '4', ck: '693' } };
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), previous);
+    (ocr.parse as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('parser exploded'));
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await controller.reparseDocument(reparseReq(), fakeRes());
+    await controller.inFlightOcrJobs.get('doc-1');
+
+    const landed = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[1][2];
+    expect(landed.status).toBe('parsed');
+    expect((landed.ocrPayload as { fields: Record<string, string> }).fields.ck).toBe('693');
+  });
+
+  /**
+   * DELIBERATELY NOT REFUSED. The bugs this endpoint repairs are
+   * duplication bugs — CK, CK-MB, 肌酐 and LDH all carrying the CK
+   * number — so an honest re-parse of those files lands FEWER readings
+   * than the archive holds. A 「count must not drop」 rule would refuse
+   * every repair it exists to enable. What the patient is owed is not a
+   * veto but a sentence saying what went.
+   */
+  it('a re-run that lands fewer readings IS adopted, and names what it dropped', async () => {
+    const previous = {
+      provider: 'embedded',
+      fields: { fieldCount: '4', ck: '693', ldh: '693', ckmb: '693', creatinine: '693' },
+    };
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), previous);
+    (ocr.parse as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider: 'embedded',
+      fields: { analysisStatus: 'completed', fieldCount: '1', ck: '693' },
+    });
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await controller.reparseDocument(reparseReq(), fakeRes());
+    await controller.inFlightOcrJobs.get('doc-1');
+
+    const landed = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[1][2];
+    expect(landed.status).toBe('parsed');
+    const payload = landed.ocrPayload as {
+      fields: Record<string, string>;
+      reparse: { outcome: string; removedReadings: string[]; notice: string };
+    };
+    expect(payload.fields.ldh).toBeUndefined();
+    expect(payload.reparse.outcome).toBe('replaced');
+    expect(payload.reparse.removedReadings).toEqual(['ckmb', 'creatinine', 'ldh']);
+    expect(payload.reparse.notice).toContain('移除');
+  });
+
+  it('pressing it twice is safe: the second press lands the same result', async () => {
+    const previous = { provider: 'embedded', fields: { fieldCount: '2', ck: '693', ldh: '693' } };
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), previous);
+    const repaired = {
+      provider: 'embedded',
+      fields: { analysisStatus: 'completed', fieldCount: '1', ck: '693' },
+    };
+    (ocr.parse as ReturnType<typeof vi.fn>).mockResolvedValue(repaired);
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await controller.reparseDocument(reparseReq(), fakeRes());
+    await controller.inFlightOcrJobs.get('doc-1');
+    const first = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[1][2];
+
+    // Second press, against the row as it now stands.
+    (service.getDocumentForUser as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'doc-1',
+      document_type: 'muscle_enzyme',
+      status: first.status,
+      title: '生化',
+      storage_uri: 'local://uploads/x/scan.pdf',
+      file_name: 'scan.pdf',
+      mime_type: 'application/pdf',
+      ocr_payload: first.ocrPayload,
+      uploaded_at: new Date(),
+    });
+    await controller.reparseDocument(reparseReq(), fakeRes());
+    await controller.inFlightOcrJobs.get('doc-1');
+    const second = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[3][2];
+
+    expect(second.status).toBe('parsed');
+    const payload = second.ocrPayload as {
+      fields: Record<string, string>;
+      reparse: { outcome: string; removedReadings?: string[] };
+    };
+    expect(payload.fields.ck).toBe('693');
+    expect(payload.reparse.outcome).toBe('replaced');
+    // Nothing left to lose the second time — the repair is settled.
+    expect(payload.reparse.removedReadings).toBeUndefined();
   });
 
   // `parsed` with nothing extracted is a failure wearing a success
@@ -1270,6 +1451,12 @@ describe('PatientProfileController.exportMyData — full data export', () => {
     profile?: unknown;
     auditPages?: unknown[][];
     submissionBatches?: Array<{ items: unknown[]; total: number }>;
+    /** The four categories v1 dropped. Defaulted to empty-but-present
+     *  so every existing case still exercises the assembly. */
+    fallDiary?: { falls: unknown[]; truncated: boolean };
+    instruments?: { administrations: unknown[]; truncated: boolean };
+    legalAcceptances?: { acceptances: unknown[]; truncated: boolean };
+    passportShares?: { shares: unknown[]; truncated: boolean };
   }) => {
     const submissionBatches = overrides.submissionBatches ?? [{ items: [], total: 0 }];
     let submissionCall = 0;
@@ -1283,6 +1470,18 @@ describe('PatientProfileController.exportMyData — full data export', () => {
         submissionCall += 1;
         return Promise.resolve({ page: submissionCall, pageSize: 100, ...batch });
       }),
+      listFallDiaryForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.fallDiary ?? { falls: [], truncated: false }),
+      listInstrumentAdministrationsForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.instruments ?? { administrations: [], truncated: false }),
+      listLegalAcceptancesForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.legalAcceptances ?? { acceptances: [], truncated: false }),
+      listPassportSharesForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.passportShares ?? { shares: [], truncated: false }),
     } as unknown as PatientProfileService;
 
     const auditPages = overrides.auditPages ?? [[]];
@@ -1326,7 +1525,7 @@ describe('PatientProfileController.exportMyData — full data export', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(payload.formatVersion).toBe(1);
+    expect(payload.formatVersion).toBe(2);
     expect(payload.profile).toEqual({ id: 'p1', documents: [] });
     expect(payload.consent).toEqual({ personal: true });
     expect(payload.consentHistory).toHaveLength(1);
@@ -1337,8 +1536,145 @@ describe('PatientProfileController.exportMyData — full data export', () => {
       submissions: false,
       aiAuditTrail: false,
       consentHistory: false,
+      falls: false,
+      instrumentAdministrations: false,
+      legalAcceptances: false,
+      passportShares: false,
     });
     expect(auditReader.listByUser).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE DEFECT THIS SECTION EXISTS FOR.
+   *
+   * v1 answered the portability right with a file that had no
+   * `patient_falls` and no `instrument_administrations` in it and said
+   * nothing about either — so a patient who had recorded twelve falls
+   * and taken Brooke four times downloaded 「全部…记录」 and got
+   * neither. Asserting the keys is not enough: an empty array in the
+   * right place is exactly what the bug looked like from outside, so
+   * these assert the ROWS reach the body.
+   */
+  it('carries the falls diary and every instrument administration', async () => {
+    const fall = {
+      id: 'fall-1',
+      occurredOn: '2024-03-02',
+      daysAgo: 500,
+      activity: 'walking',
+      location: 'home_indoor',
+      handsFull: false,
+      gotUpUnaided: false,
+      injured: true,
+      createdAt: '2024-03-02T04:00:00.000Z',
+    };
+    const administration = {
+      id: 'adm-1',
+      instrumentKey: 'brooke_upper_extremity',
+      instrumentVersion: '1.0.0',
+      scoredValue: 3,
+      supersedesId: null,
+      supersededById: 'adm-2',
+      responses: [{ itemCode: 'brooke_1', responseValue: 3 }],
+    };
+    const { controller, service } = buildExportController({
+      profile: { id: 'p1' },
+      fallDiary: { falls: [fall], truncated: false },
+      instruments: { administrations: [administration], truncated: false },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.falls).toEqual([fall]);
+    expect(payload.instrumentAdministrations).toEqual([administration]);
+    // Bounds are the controller's to own, and they are the ones the
+    // docstring names.
+    expect(service.listFallDiaryForExport).toHaveBeenCalledWith('user-1', EXPORT_MAX_FALL_ROWS);
+    expect(service.listInstrumentAdministrationsForExport).toHaveBeenCalledWith(
+      'user-1',
+      EXPORT_MAX_INSTRUMENT_ROWS,
+    );
+  });
+
+  it('carries the agreement-acceptance history and every passport share', async () => {
+    const acceptance = {
+      document: 'privacy_policy',
+      version: '2026-08-02',
+      acceptedAt: '2026-08-02T01:00:00.000Z',
+      withdrawnAt: '2026-08-10T02:00:00.000Z',
+    };
+    const share = {
+      id: 'share-1',
+      label: '门诊',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      expiresAt: '2026-08-08T00:00:00.000Z',
+      revokedAt: null,
+      openedCount: 2,
+      lastOpenedAt: '2026-08-03T00:00:00.000Z',
+      pickup: null,
+    };
+    const { controller } = buildExportController({
+      profile: { id: 'p1' },
+      legalAcceptances: { acceptances: [acceptance], truncated: false },
+      passportShares: { shares: [share], truncated: false },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.legalAcceptances).toEqual([acceptance]);
+    expect(payload.passportShares).toEqual([share]);
+    // A withdrawn acceptance is part of 授权历史, not a row to hide.
+    expect(payload.legalAcceptances[0].withdrawnAt).toBe('2026-08-10T02:00:00.000Z');
+    // No share token or pickup code may ride along in the file.
+    expect(JSON.stringify(payload.passportShares)).not.toContain('token');
+    expect(JSON.stringify(payload.passportShares)).not.toContain('"code"');
+  });
+
+  it('reports a truncated section as truncated instead of as a whole one', async () => {
+    const { controller } = buildExportController({
+      profile: { id: 'p1' },
+      fallDiary: { falls: [{ id: 'fall-1' }], truncated: true },
+      instruments: { administrations: [], truncated: true },
+      legalAcceptances: { acceptances: [], truncated: true },
+      passportShares: { shares: [], truncated: true },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.truncation).toMatchObject({
+      falls: true,
+      instrumentAdministrations: true,
+      legalAcceptances: true,
+      passportShares: true,
+    });
+  });
+
+  /**
+   * The corollary envelope.ts states for the portable formats and this
+   * body had no way to state at all: a document that lists what it left
+   * out is claiming those are the only things it left out. So the list
+   * has to be present, non-empty, reasoned, and findable by a reader
+   * who does not already know it exists.
+   */
+  it('declares what it does not carry, in the document', async () => {
+    const { controller } = buildExportController({ profile: { id: 'p1' } });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(Array.isArray(payload.omissions)).toBe(true);
+    expect(payload.omissions.length).toBeGreaterThan(0);
+    for (const omission of payload.omissions as Array<{ category: string; reasonZh: string }>) {
+      expect(omission.category.length).toBeGreaterThan(0);
+      // A category with no reason is a shrug, not a declaration.
+      expect(omission.reasonZh.length).toBeGreaterThan(10);
+    }
+    const categories = (payload.omissions as Array<{ category: string }>).map((o) => o.category);
+    expect(categories).toContain('报告原件');
+    expect(categories).toContain('安全审计日志');
+    expect(payload.notes.omissions).toContain('omissions');
   });
 
   it('pages through the audit trail until a short batch', async () => {
@@ -1586,5 +1922,205 @@ describe('GET /me/data-export?format= — the local-only gate, over HTTP', () =>
 
     expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
     expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
+  });
+});
+
+describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** What is actually on disk after an administrator filled two fields
+   *  in: the values plus the provenance block.
+   *
+   *  One of the two is 起病部位 rather than a genetic value. That is not
+   *  cosmetic: `applyAdminBaselineWrite` refuses every genetic path now,
+   *  so a fixture built on one would be asserting reclaim over a marker
+   *  the system can no longer produce. Reclaim is the same code for
+   *  every marked path, and this pair is reachable. */
+  const storedWithTwoMarkers = () =>
+    applyAdminBaselineWrite(
+      { foundation: { fullName: '张三' }, currentChallenges: { pain: 2 } },
+      {
+        foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+        diseaseBackground: { onsetRegion: '面部' },
+        currentChallenges: { pain: 2 },
+      },
+      { adminUserId: ADMIN_ID, at: AT },
+    );
+
+  const buildController = (stored: Record<string, unknown>) => {
+    const upsertBaseline = vi.fn().mockResolvedValue({ baseline: {} });
+    const service = {
+      getStoredBaselinePayload: vi.fn().mockResolvedValue({ payload: stored }),
+      upsertBaseline,
+    } as unknown as PatientProfileService;
+    const controller = new PatientProfileController(
+      service,
+      { save: vi.fn() } as unknown as StorageProvider,
+      { parse: vi.fn() } as unknown as OcrProvider,
+    );
+    return { controller, upsertBaseline };
+  };
+
+  const reqWith = (body: unknown) =>
+    ({ user: { id: 'user-1' }, body }) as unknown as AuthenticatedRequest;
+
+  it('refuses a save whose every key the schema strips, instead of erasing the baseline', async () => {
+    // Found by running the API, not by reading it. `baselineProfileSchema`
+    // is a plain Zod object, so a key it does not know is dropped; a
+    // body of only such keys arrives as {}, and `upsertBaseline`
+    // REPLACES the column. Reproduced live: PUT {lifestyle:{…}} over a
+    // stored baseline answered 200 and left it as {}.
+    //
+    // Not exotic. This app ships as a web export and WeChat caches it
+    // for days, so a bundle older than the current schema is the
+    // ordinary case — the patient taps 保存 on the form they were
+    // given and their answers are gone.
+    const { controller, upsertBaseline } = buildController({
+      foundation: { fullName: '张三' },
+    });
+
+    await expect(
+      controller.updateMyBaseline(reqWith({ lifestyle: { smoking: 'never' } }), fakeRes()),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining('认得的字段'),
+    });
+    expect(upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('refuses a known section whose every field name the schema strips', async () => {
+    // The leak the first version of this guard had: it counted
+    // top-level keys, and {「foundation」:{「full_name」:…}} parses to
+    // {foundation:{}} — one key, no answers. That is the shape a
+    // version-skewed bundle actually sends (a renamed field, a
+    // snake_case ops script); the all-unknown-sections shape is the
+    // hand-crafted one. Counting leaves catches both.
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+
+    await expect(
+      controller.updateMyBaseline(
+        reqWith({ foundation: { full_name: '张三' }, lifestyle: { smoking: 'never' } }),
+        fakeRes(),
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('still lets the patient clear one field, which is a key the schema knows', async () => {
+    // The guard is about a body the server could not read at all, not
+    // about erasure — otherwise it would take away 清空 and the refusal
+    // would be worse than the bug.
+    const { controller, upsertBaseline } = buildController({
+      foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+    });
+
+    await controller.updateMyBaseline(
+      reqWith({ foundation: { fullName: '张三', regionLabel: null } }),
+      fakeRes(),
+    );
+
+    expect(upsertBaseline).toHaveBeenCalled();
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect((written.foundation as Record<string, unknown>).regionLabel).toBeNull();
+  });
+
+  it('keeps every marker when the patient saves a field they did not touch', async () => {
+    // The form posts the WHOLE baseline on every save, so this is the
+    // ordinary case. Before this controller merged, it wiped both
+    // markers and the passport then said 「本人填写」 over two values an
+    // administrator typed.
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+    await controller.updateMyBaseline(
+      reqWith({
+        foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+        diseaseBackground: { onsetRegion: '面部' },
+        currentChallenges: { pain: 4 },
+      }),
+      fakeRes(),
+    );
+
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect(listBaselineFieldOrigins(written).map((row) => row.path)).toEqual([
+      'diseaseBackground.onsetRegion',
+      'foundation.regionLabel',
+    ]);
+  });
+
+  it('gives back ONLY the field the patient re-edited', async () => {
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+    await controller.updateMyBaseline(
+      reqWith({
+        foundation: { fullName: '张三', regionLabel: '广东 佛山' },
+        diseaseBackground: { onsetRegion: '面部' },
+        currentChallenges: { pain: 2 },
+      }),
+      fakeRes(),
+    );
+
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect(readBaselineFieldOrigin(written, 'foundation.regionLabel')).toEqual({
+      state: 'patient',
+    });
+    expect(readBaselineFieldOrigin(written, 'diseaseBackground.onsetRegion')).toMatchObject({
+      state: 'admin_entered',
+      adminUserId: ADMIN_ID,
+    });
+  });
+});
+
+/**
+ * GET /me/documents/:id/ocr, over the real router.
+ *
+ * The endpoint the report screen polls, and — until the guard moved
+ * onto it — the one door into `fields` the projection did not cover.
+ * Driven through Express rather than against a hand-made `req` because
+ * what is being pinned is which SERVICE CALL the route makes: the raw
+ * `getDocumentForUser` and the guarded `getDocumentOcrForUser` return
+ * the same shape, so a revert to the raw one type-checks, passes every
+ * hand-built controller test in this file, and quietly puts a withheld
+ * reading back on the wire.
+ */
+describe('GET /me/documents/:id/ocr — the guard reaches the wire', () => {
+  beforeEach(() => {
+    routeGetDocumentOcrForUser.mockReset();
+  });
+
+  const getOcr = (userId = nextExportUser()) =>
+    request(makeExportApp())
+      .get('/api/patients/me/documents/doc-1/ocr')
+      .set('Authorization', `Bearer ${exportTokenFor(userId)}`);
+
+  it('serves what the guard left, not what the row holds', async () => {
+    routeGetDocumentOcrForUser.mockResolvedValue({
+      status: 'parsed',
+      ocrPayload: {
+        provider: 'embedded',
+        fields: { documentType: 'blood_panel', fieldCount: '2' },
+        unsafeReadings: [
+          { analyte: 'ck', keys: ['ck'], disposition: 'withheld', reason: 'duplicate_reading' },
+          { analyte: 'ldh', keys: ['ldh'], disposition: 'withheld', reason: 'duplicate_reading' },
+        ],
+        unsafeReadingsNotice: '这份报告里有数值没有通过核对',
+      },
+    });
+
+    const response = await getOcr().expect(200);
+
+    expect(response.body.status).toBe('parsed');
+    expect(response.body.ocrPayload.fields.ck).toBeUndefined();
+    expect(response.body.ocrPayload.fields.ldh).toBeUndefined();
+    expect(response.body.ocrPayload.unsafeReadings).toHaveLength(2);
+    expect(response.body.ocrPayload.unsafeReadingsNotice).toContain('核对');
+  });
+
+  it('still distinguishes a running parse from one that never happened', async () => {
+    routeGetDocumentOcrForUser.mockResolvedValue({ status: 'processing', ocrPayload: null });
+    const response = await getOcr().expect(200);
+    expect(response.body).toMatchObject({
+      documentId: 'doc-1',
+      status: 'processing',
+      ocrPayload: null,
+    });
   });
 });

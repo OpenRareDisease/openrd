@@ -11,10 +11,11 @@ import { dismissStoryHook, resolveStoryHook, type ResolvedStoryHook } from './st
 /**
  * A peer story offered beside something the patient just recorded.
  *
- * NOT MOUNTED ANYWHERE YET. The three trigger points live in
- * screens/p-data_entry, which this lane does not own, so the component
- * and its preference are finished and tested but nothing renders them
- * in the app today. Wiring is one line at each site:
+ * NOT MOUNTED ANYWHERE YET. The component and its preference are
+ * finished and tested; nothing in the app renders them. The three
+ * trigger points belong in screens/p-data_entry, which already records
+ * 跌倒, the timed stair climb and 开始使用 AFO. Wiring is one line at
+ * each site:
  *
  *   <ContextualStoryHook hookId="fall-logged" />
  *   <ContextualStoryHook hookId="stair-test-cannot" />

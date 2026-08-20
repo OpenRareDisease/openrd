@@ -1,5 +1,11 @@
-import type { PatientProfile, ProgressionSummary } from './api';
+import type { PatientFunctionTest, PatientProfile, ProgressionSummary } from './api';
 import { ambulationLabel } from './profile-baseline-options';
+import {
+  decodeProtocolField,
+  findTimedTest,
+  gradeOption,
+  shouldExcludeFromTrend,
+} from './timed-test-protocols';
 
 export type DomainTrendKey = 'upper_limb' | 'lower_limb' | 'face' | 'breathing' | 'symptoms';
 
@@ -72,12 +78,147 @@ const lowerLimbKeys = new Set([
 
 const faceKeys = new Set(['eye_closure', 'lip_pursing']);
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Asia/Shanghai, the value `PRODUCT_TIME_ZONE` in ./clinical-visuals
+ * declares, as the fixed offset that file's comment explains it has to
+ * be: this runs on Hermes, where a full ICU timezone database is not
+ * something to depend on, and China has been one UTC+8 zone with no
+ * daylight saving since 1991. The test file pins the two together so
+ * this constant cannot drift away from the declaration.
+ */
+const PRODUCT_UTC_OFFSET_MINUTES = 8 * 60;
+
+/**
+ * THE CALENDAR DAY AN INSTANT FALLS ON, ON THE PRODUCT'S CALENDAR.
+ *
+ * Every bucket in this file is keyed by this function, and every chart
+ * built on those buckets labels its x axis with `formatDateLabel`
+ * (./clinical-visuals), which resolves the same instant on
+ * Asia/Shanghai. Slicing `toISOString()` here cut the day at 08:00
+ * Beijing instead, so the axis and the bucketing disagreed for every
+ * record filed between midnight and breakfast.
+ *
+ * WHAT THAT DID TO THE CARDS. Two submissions on ONE Beijing morning —
+ * 00:30 and 09:00, the practice attempt and the real one — landed in
+ * two different buckets. `pushLatestValue` never got to collapse them,
+ * so 上楼计时 printed 「比上次更快」 and 睡眠质量 printed 「比上次更差」
+ * out of a pair of readings two hours apart, which is the exact
+ * rendering `pushLatestValue` exists to prevent; and 跌倒次数 called
+ * that single day 「连续 2 天有日常记录」.
+ *
+ * A BARE 「YYYY-MM-DD」 IS NOT SHIFTED. A calendar date has no zone to
+ * convert between — the digits are the answer, the same rule
+ * ./clinical-visuals states for `DATE_ONLY`. `followup_events`
+ * `occurredAt` arrives as a bare date from the daily form, and this
+ * branch keeps the offset out of it whatever the offset later becomes.
+ */
 const toIsoDate = (value: string) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value.slice(0, 10);
+  const trimmed = value.trim();
+  if (DATE_ONLY.test(trimmed)) {
+    return trimmed;
   }
-  return date.toISOString().slice(0, 10);
+
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    return trimmed.slice(0, 10);
+  }
+  // Shift onto the product calendar, then read it back with the UTC
+  // accessors — the only ones on `Date` that do not consult whatever
+  // zone this handset happens to be set to.
+  return new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000).toISOString().slice(0, 10);
+};
+
+/**
+ * THE CALENDAR DAY BEFORE `date`, ON THE PRODUCT'S CALENDAR.
+ *
+ * The only question this answers is 「are these two buckets adjacent
+ * days」, and it is asked of keys `toIsoDate` produced — bare
+ * 「YYYY-MM-DD」 already resolved on Asia/Shanghai. A bare calendar date
+ * has no zone left to convert between, so the arithmetic is done at UTC
+ * midnight purely because `Date.UTC` and `toISOString` are the pair of
+ * accessors that never consult the handset's zone. Nothing here shifts
+ * a day; subtracting 86 400 000 ms from a UTC midnight lands on the
+ * previous UTC midnight in every month and across every leap day,
+ * because UTC has no daylight saving to skip.
+ *
+ * An unparseable or impossible key (「2026-02-30」) returns null, which
+ * every caller reads as 「not adjacent」 — the answer that shortens a
+ * streak rather than lengthening one.
+ */
+const previousProductDay = (date: string): string | null => {
+  if (!DATE_ONLY.test(date)) {
+    return null;
+  }
+  const at = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+  );
+  if (!Number.isFinite(at)) {
+    return null;
+  }
+  // Rejects 2026-02-30, which `Date.UTC` rolls forward into March
+  // instead of refusing.
+  if (new Date(at).toISOString().slice(0, 10) !== date) {
+    return null;
+  }
+  return new Date(at - 86_400_000).toISOString().slice(0, 10);
+};
+
+/**
+ * THE RUN AT THE END OF A DAY SERIES, MEASURED IN THE TWO UNITS THIS
+ * FILE IS ALLOWED TO PRINT — because they are different numbers and
+ * 天 is only one of them.
+ *
+ * Every series here is keyed by calendar day, so a bucket is a day; but
+ * buckets exist only on days the patient recorded. Counting buckets and
+ * printing 「连续 N 天」 asserted N CONSECUTIVE CALENDAR DAYS out of a
+ * number that never carried that claim: three daily records filed in
+ * December, March and July came out as 「最近连续 3 天有日常记录，都没
+ * 有跌倒」, and on 上楼计时 — the card whose whole subject is the 能做 →
+ * 做不了 transition — two 做不了 readings seven months apart read as
+ * 「最近连续 2 天的记录都是「上不了 10 级台阶」」, an acute loss over a
+ * weekend that never happened.
+ */
+interface TrailingRun {
+  /** Day buckets in the run. Each is a distinct calendar day the
+   *  patient recorded on; they need not be adjacent. */
+  recordedDays: number;
+  /** How many of those, counting back from the newest, sit on
+   *  CONSECUTIVE calendar days. Never more than `recordedDays`, and 1
+   *  as soon as the two newest days in the run have a gap between them.
+   *  This is the only number a 「连续 N 天」 sentence may be built on. */
+  calendarDays: number;
+}
+
+const trailingRun = <T extends { date: string }>(
+  days: T[],
+  matches: (item: T) => boolean,
+): TrailingRun => {
+  let recordedDays = 0;
+  let calendarDays = 0;
+  let contiguous = true;
+
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const day = days[index];
+    if (!matches(day)) {
+      break;
+    }
+    recordedDays += 1;
+    if (recordedDays === 1) {
+      calendarDays = 1;
+      continue;
+    }
+    if (contiguous && previousProductDay(days[index + 1].date) === day.date) {
+      calendarDays += 1;
+    } else {
+      contiguous = false;
+    }
+  }
+
+  return { recordedDays, calendarDays };
 };
 
 const roundOne = (value: number) => Number(value.toFixed(1));
@@ -108,9 +249,72 @@ const pushBucketValue = (
   buckets.set(key, { timestamp, values: [value] });
 };
 
+/**
+ * A DAY BUCKET THAT KEEPS THE DAY'S LATEST READING, AND NOT AN AVERAGE
+ * OF THE DAY'S READINGS.
+ *
+ * WHAT THIS REPLACED, AND WHY IT HAD TO BE REPLACED. 睡眠质量 and 上楼
+ * 计时 went through `pushBucketValue` above and came back out of
+ * `finalizeTrendPoints` as a per-day MEAN, and then `getSleepSummary`
+ * and `getStairSummary` put 「最近一次」 in front of it. Two submissions
+ * on one day is not an edge case here: 上楼计时 is routinely done twice
+ * in a sitting, a practice attempt and then the real one — the pattern
+ * the AI retriever's own note (patient-followups.ts) describes, and
+ * refuses to read as a trend for exactly this reason. A 30 秒 practice
+ * run and a 12 秒 real one came out as 「最近一次 10 级台阶用时 21.0
+ * 秒」, a number the patient never recorded, on the tracked functional
+ * metric; sleep scores of 8 and 2 came out as 「最近一次睡眠评分一般」
+ * when the reading that actually happened last was a 2. 我的随访计划
+ * reads the same rows straight off `symptomScores` and told the same
+ * patient 「你最近一次睡眠评分是 2/10」 in the same session.
+ *
+ * 最近一次 HAS TO BE A READING THAT HAPPENED, so the bucket keeps the
+ * latest one instead of averaging. The chart still shows one point per
+ * day — its x labels are formatted days and two points on one day
+ * collide — but every point on it is now a number someone wrote down.
+ *
+ * ON AN EXACT TIMESTAMP TIE the first row seen wins, and no ordering of
+ * the two is defensible: the retriever's note records that the tiebreak
+ * between same-instant rows lives inside an ORDER BY and is arbitrary.
+ * First-seen at least keeps this function's answer stable for one
+ * payload instead of depending on which arm of a sort ran.
+ *
+ * GENERIC IN THE VALUE because the stair series' reading is not a
+ * number: 「今天做不了」 is a reading too, and it has to be able to win
+ * the day against an earlier climb that does carry seconds. See
+ * `StairReading`.
+ *
+ * NOT FOR THE DOMAIN TREND CARDS — see `finalizeTrendPoints` below.
+ */
+const pushLatestValue = <T>(
+  buckets: Map<string, { timestamp: string; value: T }>,
+  timestamp: string,
+  value: T,
+) => {
+  const key = toIsoDate(timestamp);
+  const current = buckets.get(key);
+  if (current && new Date(timestamp).getTime() <= new Date(current.timestamp).getTime()) {
+    return;
+  }
+
+  buckets.set(key, { timestamp, value });
+};
+
 /** How many points a trend chart shows. */
 const CHART_POINT_LIMIT = 6;
 
+/**
+ * The averaging finalizer, and it still averages ON PURPOSE.
+ *
+ * Its only callers are the domain trend cards, where one day's bucket
+ * holds several DIFFERENT metrics — deltoid, biceps and triceps all
+ * land in 上肢 — and the mean across them is the composite the card is
+ * about. Nothing built on it claims to be one observation:
+ * `formatTrendSummary` says 「上肢目前影响较明显」, a level, never
+ * 「最近一次」. The patient visualization cards used to share this
+ * function and did make that claim; they use `pushLatestValue` /
+ * `finalizeScalarPoints` now.
+ */
 const finalizeTrendPoints = (
   buckets: Map<string, { timestamp: string; values: number[] }>,
   limit = CHART_POINT_LIMIT,
@@ -124,7 +328,21 @@ const finalizeTrendPoints = (
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     .slice(-limit);
 
-const finalizeSummedPoints = (
+/**
+ * The finalizer for a bucket that already holds ONE number per day —
+ * the day's total for 跌倒次数, the day's latest reading for 睡眠质量.
+ * Nothing here reduces anything; the reduction happened on the way in,
+ * where the caller could still say what it meant.
+ *
+ * 上楼计时 no longer comes through here: its day value can be 「no
+ * seconds, and that is the reading」, which is not a number. See
+ * `StairReading`.
+ *
+ * One function rather than a per-card copy: the twin of this that this
+ * file used to keep (`finalizeSummedPoints`, byte for byte the same
+ * body) is the shape a later change gets applied to only one of.
+ */
+const finalizeScalarPoints = (
   buckets: Map<string, { timestamp: string; value: number }>,
   limit = CHART_POINT_LIMIT,
 ): DomainTrendPoint[] =>
@@ -215,6 +433,13 @@ const resolveComparisonTrend = (
   return currentValue < previousValue ? 'better' : 'worse';
 };
 
+/**
+ * 「最近一次」 IS A PROMISE ABOUT WHAT `currentValue` IS, and the two
+ * summaries below are the only place this file makes it. It holds only
+ * because the caller now hands them the day's latest reading rather
+ * than the day's mean — see `pushLatestValue`. A future caller that
+ * goes back to averaging has to change this wording with it.
+ */
 const getSleepSummary = (
   currentValue: number | null,
   previousValue: number | null,
@@ -253,51 +478,420 @@ const getSleepSummary = (
   };
 };
 
+/** The `protocol` string the daily record's stair row carries, written
+ *  by p-data_entry `handleFollowupSubmit` and by nothing else, on every
+ *  submission since that form existed. */
+const DAILY_RECORD_STAIR_PROTOCOL = '连续上 10 级台阶';
+
+/** The one timed-test protocol that also files under `stair_climb`. */
+const TIMED_STAIR_TEST_ID = 'stair_four_step';
+
+/**
+ * 「今天做不了」 — attempted and could not be completed.
+ *
+ * Three different things arrive on a stair row and only two of them
+ * used to be distinguishable here: a completed climb (seconds), an
+ * attempt that could not be completed (this), and no record at all
+ * (no row). `not_applicable` is the typed carrier for the middle one
+ * (migration 017; before it the meaning lived in `notes`, which the AI
+ * retriever deliberately never reads), and the server sends it as
+ * `notApplicable` on every function test it serialises.
+ *
+ * READ STRUCTURALLY because `PatientFunctionTest` in ./api does not
+ * declare the field yet — see the note in the lane report; the field
+ * belongs on that interface and this cast should go when it lands.
+ *
+ * A NULL MEASUREMENT IS NOT USED AS THE SIGNAL. A row with no value and
+ * no flag is a row that carries no reading, for whatever reason its
+ * writer had; rendering that as 「上不了 10 级台阶」 would put a
+ * clinical claim on the patient's screen that nobody entered.
+ */
+const isUnableRecord = (item: PatientFunctionTest): boolean =>
+  (item as PatientFunctionTest & { notApplicable?: boolean | null }).notApplicable === true;
+
+/**
+ * One day's stair reading.
+ *
+ * `seconds: null` is NOT missing data — it is the record the patient
+ * made when they marked 今天做不了, and the screen that writes it tells
+ * them 「这是一条数据，不是空白——趋势里看得到」. A day the patient did
+ * not record has no `StairReading` at all.
+ */
+interface StairReading {
+  date: string;
+  timestamp: string;
+  seconds: number | null;
+}
+
+/**
+ * The one stair measurement this card is currently showing.
+ *
+ * TWO DIFFERENT MEASUREMENTS FILE UNDER `testType: 'stair_climb'`, and
+ * this card used to plot both on one line: the daily record's 连续上
+ * 10 级台阶, and the timed-test card's 四级台阶上下, which is four
+ * steps UP AND BACK DOWN. Subtracting one from the other is the
+ * furniture-moved-not-the-disease error lib/timed-test-protocols was
+ * written to stop. Run over a patient with one 12 秒 ten-step record
+ * and two four-step runs, the merged line printed 「最近一次 10 级台阶
+ * 用时25.0 秒，整体偏慢，比上次更慢」 — the 25 秒 being a 自由记录
+ * four-step attempt, and 「比上次」 being that attempt against a per
+ * protocol one.
+ *
+ * So the series names its measurement and carries only that one.
+ * 连续上 10 级台阶 wins whenever the patient has any of it, because it
+ * is the one the daily record asks for at every followup and the one
+ * the card's helper text names. The 四级台阶 series is the fallback for
+ * a patient who only ever uses the timed-test card — without it, a
+ * patient who ran that test per protocol would see no trend line at
+ * all, while the grade picker had just told them 「只有这一档会画进趋
+ * 势线」.
+ */
+interface StairSeries {
+  /** What the seconds measure, in the words the capturing screen uses. */
+  measurementZh: string;
+  /** How the patient's own screen words 做不了 for this measurement. */
+  unableZh: string;
+  /**
+   * Whether the 较轻松 / 尚可 / 偏慢 / 较慢 wording below may be applied.
+   * Those cut-offs were written for ten steps up. Four steps up and
+   * back down is a different distance, and grading it against them
+   * would be a made-up threshold — the one thing
+   * lib/timed-test-protocols says this repo must never ship.
+   */
+  gradedAgainstTenStep: boolean;
+  /** One reading per day, oldest first, over the whole history. */
+  readings: StairReading[];
+  /** The patient has 四级台阶 records that are deliberately not on this
+   *  line, so the helper text can say where they went. */
+  hasSeparateTimedStairRecords: boolean;
+}
+
+const collectStairReadings = (tests: PatientFunctionTest[]): StairReading[] => {
+  const buckets = new Map<string, { timestamp: string; value: number | null }>();
+
+  tests.forEach((item) => {
+    if (isUnableRecord(item)) {
+      pushLatestValue(buckets, item.performedAt, null);
+      return;
+    }
+    const value = Number(item.measuredValue);
+    if (
+      item.measuredValue === null ||
+      item.measuredValue === undefined ||
+      !Number.isFinite(value)
+    ) {
+      // No reading of either kind on this row. Not a day.
+      return;
+    }
+    pushLatestValue(buckets, item.performedAt, value);
+  });
+
+  return Array.from(buckets.entries())
+    .map(([date, item]) => ({
+      date,
+      timestamp: item.timestamp,
+      seconds: item.value === null ? null : roundOne(item.value),
+    }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+};
+
+const buildStairSeries = (profile: PatientProfile | null): StairSeries => {
+  const stairTests = profile?.functionTests.filter((item) => item.testType === 'stair_climb') ?? [];
+  const dailyTests = stairTests.filter((item) => item.protocol === DAILY_RECORD_STAIR_PROTOCOL);
+  const timedTests = stairTests.filter(
+    (item) => decodeProtocolField(item.protocol)?.testId === TIMED_STAIR_TEST_ID,
+  );
+  // The grade gate, and its only production caller. The patient is told
+  // on the grade picker that 按方案完成 is the one grade that gets
+  // plotted, and that 条件不完整 / 自由记录 「会存下来，也会显示，但不会
+  // 和别的次数放在一条趋势线上比」 — 显示 being the progression
+  // timeline `buildProgressionTimeline` builds further down this file
+  // (the 时间轴 tab), which titles such a record by its protocol and
+  // prints the grade that is keeping it off this line.
+  const timedOnTrend = timedTests.filter((item) => !shouldExcludeFromTrend(item.protocol));
+  const dailyReadings = collectStairReadings(dailyTests);
+  const timedReadings = dailyReadings.length > 0 ? [] : collectStairReadings(timedOnTrend);
+
+  if (timedReadings.length === 0) {
+    return {
+      measurementZh: '连续上 10 级台阶',
+      unableZh: '上不了 10 级台阶',
+      gradedAgainstTenStep: true,
+      readings: dailyReadings,
+      hasSeparateTimedStairRecords: timedTests.length > 0,
+    };
+  }
+
+  const timedName = findTimedTest(TIMED_STAIR_TEST_ID)?.nameZh ?? '四级台阶上下';
+  return {
+    measurementZh: timedName,
+    unableZh: `做不了${timedName}`,
+    gradedAgainstTenStep: false,
+    readings: timedReadings,
+    hasSeparateTimedStairRecords: false,
+  };
+};
+
+/** The most recent readings, and what came before them. */
+interface StairState {
+  current: StairReading | null;
+  previous: StairReading | null;
+  /** The trailing run of 做不了 days, over the full history — both
+   *  units, because this card printed 天 off the bucket count and
+   *  meant records. See `TrailingRun`. */
+  unableRun: TrailingRun;
+  /** The newest reading that actually carries seconds, if any. */
+  lastMeasuredSeconds: number | null;
+}
+
+const resolveStairState = (readings: StairReading[]): StairState => {
+  const current = readings.length ? readings[readings.length - 1] : null;
+  const previous = readings.length > 1 ? readings[readings.length - 2] : null;
+
+  const unableRun = trailingRun(readings, (reading) => reading.seconds === null);
+
+  let lastMeasuredSeconds: number | null = null;
+  for (let index = readings.length - 1; index >= 0; index -= 1) {
+    const seconds = readings[index].seconds;
+    if (seconds !== null) {
+      lastMeasuredSeconds = seconds;
+      break;
+    }
+  }
+
+  return { current, previous, unableRun, lastMeasuredSeconds };
+};
+
+/**
+ * 能做 → 做不了 is the largest change this card can carry and the only
+ * one with no numeric delta to threshold — the same judgement the
+ * daily form makes when it decides a submission 有变化. It cannot go
+ * through `resolveComparisonTrend`, which reads a null current value as
+ * 「no data」 and answers 平稳.
+ */
+const resolveStairTrend = (state: StairState): PatientVisualizationCard['trend'] => {
+  if (!state.current) {
+    return 'stable';
+  }
+  if (!state.previous) {
+    return 'new';
+  }
+  if (state.current.seconds === null) {
+    return state.previous.seconds === null ? 'stable' : 'worse';
+  }
+  if (state.previous.seconds === null) {
+    return 'better';
+  }
+  return resolveComparisonTrend(state.current.seconds, state.previous.seconds, 'lower_better');
+};
+
+const stairHelperText = (series: StairSeries) => {
+  if (!series.gradedAgainstTenStep) {
+    return `只有标记为“按方案完成”的「${series.measurementZh}」会画进这条线；台阶高度各家不同，这个秒数只和你自己同一段楼梯比。`;
+  }
+  const base = '统一按“连续上 10 级台阶”填写用时，越短通常表示完成越轻松。';
+  return series.hasSeparateTimedStairRecords
+    ? `${base}你记录的「四级台阶上下」是另一项测试，秒数不能和这条线放在一起比，它在“时间轴”里。`
+    : base;
+};
+
+/**
+ * THE 上楼计时 CARD'S WORDS, AND WHAT EACH OF THEM PROMISES.
+ *
+ * 「最近一次」 — the newest reading that happened, never a mean; see
+ * `pushLatestValue`.
+ *
+ * 「上不了 10 级台阶」 — a 今天做不了 record, which this card used to
+ * drop on the floor. The stair series filtered on `measuredValue !==
+ * null`, so a patient who could climb in 12 秒 three weeks ago and has
+ * recorded 做不了 three times since was shown 「最近一次 10 级台阶用时
+ * 12.0 秒，整体尚可，已建立第一条上楼计时。」 with a 新增 badge — a
+ * three-week-old number presented as the latest one, and presented as
+ * the ONLY one, on the screen that had promised them 「这是一条数据，
+ * 不是空白——趋势里看得到」.
+ *
+ * 整体较轻松 / 尚可 / 偏慢 / 较慢 — a level for TEN STEPS UP, and only
+ * ever printed for that measurement. See `StairSeries`.
+ */
 const getStairSummary = (
-  currentValue: number | null,
-  previousValue: number | null,
+  series: StairSeries,
+  state: StairState,
   hasLegacyImpact: boolean,
 ): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
-  if (currentValue === null) {
+  const helperText = stairHelperText(series);
+
+  // Always the 连续上 10 级台阶 series here, which is why this branch may
+  // name it: `buildStairSeries` only returns the 四级台阶 fallback when
+  // that fallback has readings, so an empty series is the ten-step one.
+  if (!state.current) {
     return {
       latestDisplay: hasLegacyImpact ? '待量化' : '未记录',
       summary: hasLegacyImpact
         ? '已记录上楼变化，但还没有“连续上 10 级台阶”的标准化秒数。'
         : '最近还没有新的标准化上楼计时。',
-      helperText: '统一按“连续上 10 级台阶”填写用时，越短通常表示完成越轻松。',
+      helperText,
     };
   }
 
-  const level =
-    currentValue <= 10
-      ? '较轻松'
+  if (state.current.seconds === null) {
+    // 连续 N 天 ONLY WHEN THE DAYS REALLY ARE CONSECUTIVE. This card's
+    // subject is the 能做 → 做不了 transition, so the difference between
+    // 「两天连着做不了」 and 「七个月里有两次记录都是做不了」 is the
+    // difference between an acute loss and a slow one, and the second
+    // sentence is the one this run answers when the days have gaps.
+    // Neither number is dropped: the days are still days, and the count
+    // of them is still printed — it just stops being called 连续.
+    const head =
+      state.unableRun.calendarDays > 1
+        ? `最近连续 ${state.unableRun.calendarDays} 天的记录都是「${series.unableZh}」。`
+        : state.unableRun.recordedDays > 1
+          ? `最近有记录的 ${state.unableRun.recordedDays} 天都是「${series.unableZh}」 —— 这几天不是连着的。`
+          : `最近一次记录是「${series.unableZh}」，这是一条记录，不是空白。`;
+    const tail =
+      state.lastMeasuredSeconds === null
+        ? '目前还没有过带秒数的记录。'
+        : `在这之前，最近一次有秒数的记录是 ${state.lastMeasuredSeconds.toFixed(1)} 秒。`;
+
+    return { latestDisplay: '无法完成', summary: `${head}${tail}`, helperText };
+  }
+
+  const currentValue = state.current.seconds;
+  const previousSeconds = state.previous?.seconds ?? null;
+  const level = series.gradedAgainstTenStep
+    ? currentValue <= 10
+      ? '整体较轻松，'
       : currentValue <= 20
-        ? '尚可'
+        ? '整体尚可，'
         : currentValue <= 30
-          ? '偏慢'
-          : '较慢';
-  const comparison =
-    previousValue === null
-      ? '已建立第一条上楼计时。'
-      : currentValue === previousValue
+          ? '整体偏慢，'
+          : '整体较慢，'
+    : '';
+  const comparison = !state.previous
+    ? `已建立第一条${series.measurementZh}记录。`
+    : previousSeconds === null
+      ? `上一个有记录的日子是「${series.unableZh}」，这次做到了。`
+      : currentValue === previousSeconds
         ? '和上次差不多。'
-        : currentValue < previousValue
+        : currentValue < previousSeconds
           ? '比上次更快。'
           : '比上次更慢。';
 
   return {
     latestDisplay: `${currentValue.toFixed(1)} 秒`,
-    summary: `最近一次 10 级台阶用时${currentValue.toFixed(1)} 秒，整体${level}，${comparison}`,
-    helperText: '统一按“连续上 10 级台阶”填写用时，越短通常表示完成越轻松。',
+    summary: `最近一次${series.measurementZh}用时 ${currentValue.toFixed(1)} 秒，${level}${comparison}`,
+    helperText,
   };
 };
 
-const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。';
+/**
+ * WHAT THIS CARD READS, SAID ON THE CARD, because the two forms that
+ * write a `fall` row answer different questions and the number would
+ * otherwise look like it read both.
+ *
+ * The second sentence is the patient-facing half of
+ * `readRecordedFallCount`: a 事件 record counts as one fall, and a
+ * count typed into 「发生了什么」 is not read. Without it a patient who
+ * wrote 「这周摔了 3 次」 into the 事件 form and saw 1 次 here would have
+ * no way to tell whether the app had misread them or lost the record.
+ */
+const FALL_HELPER_TEXT =
+  '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。单独记一条「跌倒」事件的，这里按 1 次算 —— 你在描述里写的数字不会被读成次数，要记次数请填在日常记录里。';
 
+/**
+ * THE ONE DESCRIPTION SHAPE THAT CARRIES A FALL COUNT.
+ *
+ * `最近跌倒 N 次` is a TEMPLATE THIS APP COMPOSES, not a sentence a
+ * patient writes: p-data_entry `handleFollowupSubmit` builds it out of
+ * the 最近跌倒次数 stepper and posts nothing else in that field. So the
+ * whole trimmed description has to BE the template — anchored at both
+ * ends, no `\b` anywhere near the digits — and everything else is
+ * prose that this file does not read a number out of.
+ *
+ * WHAT IT USED TO DO. It took the FIRST NUMBER ANYWHERE in the
+ * description, with a `severity` fallback of 3 / 2 / 1 when there was
+ * none. The standalone 事件 form posts whatever the patient typed into
+ * 「发生了什么」 and 跌倒 is one of its event types, so the number it
+ * found was routinely not a count at all. Run over real phrasings:
+ *
+ *   「早上 7 点在浴室滑倒」        → 跌倒 7 次
+ *   「2026年5月3日在楼梯上摔了」   → 跌倒 2026 次
+ *   「下楼时第 3 级台阶踩空」      → 跌倒 3 次
+ *   「摔了一下，膝盖擦伤 1 处」    → 跌倒 1 次
+ *   「0 点多起夜的时候摔了」       → 跌倒 0 次
+ *   「这周没有摔，只是差点」       → 跌倒 2 次   (the severity fallback)
+ *
+ * A clock time, a date, a step number, an injury count — and the last
+ * two are the ones that compound: a 0 read off 「0 点多」 makes a day
+ * the patient reported falling on join the zero run below, so the card
+ * told them 「最近连续 N 天有日常记录，都没有跌倒」 about a fall they
+ * had just filed. And `severity` is not a count either — it is how bad
+ * the fall was — so 「这周没有摔」 came out as two falls.
+ *
+ * WHEN THERE IS NO TEMPLATE the reading is the record itself: the 事件
+ * form files one row per event, so one row is one fall. That is a count
+ * of what was recorded rather than a guess at what the prose says, and
+ * `FALL_HELPER_TEXT` tells the patient it is the rule.
+ */
+const DAILY_RECORD_FALL_COUNT = /^最近跌倒\s*(\d+(?:\.\d+)?)\s*次$/;
+
+const readRecordedFallCount = (description: string | null | undefined): number | null => {
+  const match = DAILY_RECORD_FALL_COUNT.exec((description ?? '').trim());
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+};
+
+/**
+ * THIS CARD COUNTS DAYS, AND IT USED TO SAY IT COUNTED RECORDS.
+ *
+ * `fallBuckets` is keyed by calendar day on purpose — the seeded zero
+ * and the `fall` events that land on top of it have to meet somewhere,
+ * and the event's `occurred_at` is written as a bare date by the daily
+ * form, so a day is the only key the two share. That is not the defect.
+ * The defect was the wording built on it: a day total was printed as
+ * 「最近一次记录跌倒 N 次」 and a run of days as 「已经连续 N 次日常
+ * 记录没有跌倒」.
+ *
+ * Both are false the moment a patient files twice in one day, which the
+ * form invites — it pre-fills 跌倒次数 from the previous event, so the
+ * second submission of an afternoon re-sends the same answer. Two
+ * records each reporting 「最近跌倒 2 次」 rendered as 「最近一次记录
+ * 跌倒 4 次」: a count no record holds, attributed to one record. Three
+ * daily records over two days rendered as 「连续 2 次日常记录」 when
+ * there were three.
+ *
+ * So the sentences say day, because a day is what the number is. The
+ * sleep and stair cards took the other road offered — they kept their
+ * 「最近一次」 wording and take the day's actual latest reading instead
+ * (see `pushLatestValue`) — and that road is closed here: the seeded
+ * zero carries the daily record's real timestamp while the fall event
+ * carries a bare date, so 「latest wins」 would keep every zero and
+ * throw away every fall reported on the same day.
+ *
+ * 连续 IS A SECOND CLAIM ON TOP OF 天, AND IT USED TO BE UNCHECKED.
+ * The run below was a count of BUCKETS, and a bucket exists only on a
+ * day the patient recorded — so three daily records filed in December,
+ * March and July rendered as 「最近连续 3 天有日常记录，都没有跌倒」,
+ * byte for byte what a patient who really recorded three days running
+ * is shown. Adjacency is now checked against the product calendar
+ * (`trailingRun`), and a run whose days have gaps says so instead of
+ * dropping the count.
+ *
+ * WHICH DAY a fall lands on is decided by the submission it was filed
+ * with rather than by that bare date, which the write side stamps in
+ * the device's UTC — see the comment at the `fallBuckets` event loop.
+ *
+ * WHAT IS STILL WRONG AND IS NOT THIS FILE'S TO FIX: 「最近跌倒 N 次」
+ * is a standing answer about a period, not an increment, and summing
+ * two of them in a day double-counts. Deciding that belongs with the
+ * write side that composes the description.
+ */
 const getFallSummary = (
   currentValue: number | null,
   previousValue: number | null,
-  zeroRecordStreak: number,
+  zeroRun: TrailingRun,
 ): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
   // Only "no daily record has ever been made" lands here. A record
   // that answered 0 is a result, and is handled below.
@@ -313,12 +907,20 @@ const getFallSummary = (
     return {
       latestDisplay: '0 次',
       summary:
-        zeroRecordStreak > 1
-          ? `已经连续 ${zeroRecordStreak} 次日常记录没有跌倒。`
-          : previousValue === null
-            ? '最近一次日常记录没有跌倒。'
-            : // A streak of 1 means the record before it wasn't zero.
-              '最近一次日常记录没有跌倒，比上次更少。',
+        zeroRun.calendarDays > 1
+          ? `最近连续 ${zeroRun.calendarDays} 天有日常记录，都没有跌倒。`
+          : zeroRun.recordedDays > 1
+            ? `最近有日常记录的 ${zeroRun.recordedDays} 天都没有跌倒 —— 这几天不是连着的。`
+            : // The run is one day. `previousValue` is read directly
+              // rather than inferred from the run's length: a run of 1
+              // used to mean 「the day before it wasn't zero」, and it
+              // stopped meaning that the moment the run started
+              // requiring adjacency — two zero days with a gap between
+              // them now end the run too, and 「比上一个有记录的日子更
+              // 少」 would be 0 called fewer than 0.
+              previousValue === null || previousValue === 0
+              ? '最近一天的日常记录没有跌倒。'
+              : '最近一天的日常记录没有跌倒，比上一个有记录的日子更少。',
       helperText: FALL_HELPER_TEXT,
     };
   }
@@ -327,78 +929,87 @@ const getFallSummary = (
     previousValue === null
       ? '已建立第一条跌倒记录。'
       : currentValue === previousValue
-        ? '和上次相比次数接近。'
+        ? '和上一个有记录的日子相比次数接近。'
         : currentValue < previousValue
-          ? '比上次更少。'
-          : '比上次更多。';
+          ? '比上一个有记录的日子更少。'
+          : '比上一个有记录的日子更多。';
 
   return {
     latestDisplay: `${Math.round(currentValue)} 次`,
-    summary: `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
+    summary: `最近一天的记录里一共跌倒 ${Math.round(currentValue)} 次，${comparison}`,
     helperText: FALL_HELPER_TEXT,
   };
 };
 
+interface FollowupRecordDays {
+  /** Calendar day → the latest daily-record timestamp on it. */
+  days: Map<string, string>;
+  /** Submission id → the calendar day its daily record belongs to. */
+  daysBySubmission: Map<string, string>;
+}
+
 /**
  * Days on which the patient completed a daily record.
  *
- * A daily record writes a sleep score and a stair-climb test under one
- * submission (p-data_entry `handleFollowupSubmit`), and that form has
- * always asked 跌倒次数. The pair is therefore our evidence that the
- * patient was *asked* about falls that day. A stair test on its own is
- * not — it can arrive from a clinic-side entry that never asked, and
- * counting it would invent a "0 falls" answer nobody gave.
+ * WHAT COUNTS AS EVIDENCE. The daily form (p-data_entry
+ * `handleFollowupSubmit`) always asks 跌倒次数, and it always writes one
+ * stair-climb row stamped `protocol: '连续上 10 级台阶'` — including
+ * when the patient marks 今天做不了, which posts the row with a null
+ * measurement precisely so the day is not blank. That row is the mark
+ * of 「this submission asked about falls」, and it is what this function
+ * looks for.
+ *
+ * WHAT IT USED TO LOOK FOR, AND WHY THAT STOPPED BEING TRUE. It
+ * required a sleep_quality row AND a stair row under one submission,
+ * and its comment asserted that a daily record writes both. That was a
+ * true description of the form once. It is not now: a patient who marks
+ * 睡眠：本次未评价 gets NO sleep row at all — the 0-10 scale has no
+ * 「未评价」 value, so the form writes nothing rather than the default 6
+ * nobody chose. Such a patient filed a record, answered 跌倒次数 0, and
+ * their day was missing from this map, so the fall card told them
+ * 「还没有可以统计跌倒次数的日常记录」 on a day they had just made one.
+ *
+ * A STAIR ROW ON ITS OWN IS STILL NOT ENOUGH, which is what the
+ * protocol match is for — it is the same distinction the old sleep
+ * pairing was reaching for, made against the thing that actually
+ * identifies the form. The timed-test card writes 四级台阶上下 under the
+ * same `stair_climb` testType and never asks about falls; its rows
+ * carry an encoded 「tt1|…」 protocol. Reading one of those as a daily
+ * record would invent a 「0 falls」 answer nobody gave.
  */
-const collectFollowupRecordDays = (profile: PatientProfile | null): Map<string, string> => {
-  const bySubmission = new Map<string, { sleep?: string; stair?: string }>();
-
-  profile?.symptomScores.forEach((item) => {
-    if (item.symptomKey !== 'sleep_quality' || !item.submissionId) {
-      return;
-    }
-    const entry = bySubmission.get(item.submissionId) ?? {};
-    entry.sleep = item.recordedAt;
-    bySubmission.set(item.submissionId, entry);
-  });
+const collectFollowupRecordDays = (profile: PatientProfile | null): FollowupRecordDays => {
+  const days = new Map<string, string>();
+  const daysBySubmission = new Map<string, string>();
 
   profile?.functionTests.forEach((item) => {
-    if (item.testType !== 'stair_climb' || !item.submissionId) {
+    if (item.testType !== 'stair_climb' || item.protocol !== DAILY_RECORD_STAIR_PROTOCOL) {
       return;
     }
-    const entry = bySubmission.get(item.submissionId) ?? {};
-    entry.stair = item.performedAt;
-    bySubmission.set(item.submissionId, entry);
-  });
 
-  const days = new Map<string, string>();
-  bySubmission.forEach(({ sleep, stair }) => {
-    if (!sleep || !stair) {
-      return;
-    }
-    const timestamp = new Date(sleep).getTime() >= new Date(stair).getTime() ? sleep : stair;
-    const key = toIsoDate(timestamp);
+    const key = toIsoDate(item.performedAt);
     const current = days.get(key);
-    if (!current || new Date(timestamp).getTime() > new Date(current).getTime()) {
-      days.set(key, timestamp);
+    if (!current || new Date(item.performedAt).getTime() > new Date(current).getTime()) {
+      days.set(key, item.performedAt);
+    }
+    if (item.submissionId) {
+      daysBySubmission.set(item.submissionId, key);
     }
   });
 
-  return days;
+  return { days, daysBySubmission };
 };
 
-/** How many of the most recent records in a row came back zero. Counted
- *  over the full history, not the charted window, so a patient who has
- *  gone twenty records without a fall gets told twenty. */
-const countTrailingZeroRecords = (points: DomainTrendPoint[]): number => {
-  let streak = 0;
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (points[index].value !== 0) {
-      break;
-    }
-    streak += 1;
-  }
-  return streak;
-};
+/** The trailing run of zero-fall days, over the full history rather
+ *  than the charted window, so a patient who has gone twenty days
+ *  without a fall gets told twenty.
+ *
+ *  A point is a day: two daily records filed the same afternoon are one
+ *  bucket. What a point is NOT is proof of the day before it, which is
+ *  why this returns both units — `calendarDays` is the only one a
+ *  「连续 N 天」 sentence may be built on. See `TrailingRun` and
+ *  `getFallSummary`. */
+const trailingZeroDayRun = (points: DomainTrendPoint[]): TrailingRun =>
+  trailingRun(points, (point) => point.value === 0);
 
 export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTrendCard[] => {
   const empty = [
@@ -481,21 +1092,25 @@ export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTre
 export const buildPatientVisualizationCards = (
   profile: PatientProfile | null,
 ): PatientVisualizationCard[] => {
-  const sleepBuckets = new Map<string, { timestamp: string; values: number[] }>();
-  const stairBuckets = new Map<string, { timestamp: string; values: number[] }>();
+  // 睡眠质量: `pushLatestValue`, not `pushBucketValue` — this card
+  // presents its newest point as 「最近一次」, so a day that carries two
+  // submissions has to resolve to one of them and not to their mean.
+  // (跌倒次数 below sums instead, and says 天 rather than 最近一次
+  // because of it; see `getFallSummary`.)
+  const sleepBuckets = new Map<string, { timestamp: string; value: number }>();
   const fallBuckets = new Map<string, { timestamp: string; value: number }>();
 
   profile?.symptomScores.forEach((item) => {
     if (item.symptomKey === 'sleep_quality') {
-      pushBucketValue(sleepBuckets, item.recordedAt, Number(item.score));
+      pushLatestValue(sleepBuckets, item.recordedAt, Number(item.score));
     }
   });
 
-  profile?.functionTests.forEach((item) => {
-    if (item.testType === 'stair_climb' && item.measuredValue !== null) {
-      pushBucketValue(stairBuckets, item.performedAt, Number(item.measuredValue));
-    }
-  });
+  // The stair card cannot be built from a plain number bucket: 今天做不了
+  // is a reading with no number, and which measurement a `stair_climb`
+  // row belongs to depends on its `protocol`. See `buildStairSeries`.
+  const stairSeries = buildStairSeries(profile);
+  const stairState = resolveStairState(stairSeries.readings);
 
   // "Had a followup, logged no fall" means zero falls — not missing
   // data. The write side only posts a `fall` event when the count is
@@ -505,7 +1120,8 @@ export const buildPatientVisualizationCards = (
   // omission on his part. Seed every day that carries a daily record
   // with 0 and let the events below add on top. A day with neither
   // stays absent, and *that* is what never-recorded looks like.
-  collectFollowupRecordDays(profile).forEach((timestamp, date) => {
+  const recordDays = collectFollowupRecordDays(profile);
+  recordDays.days.forEach((timestamp, date) => {
     fallBuckets.set(date, { timestamp, value: 0 });
   });
 
@@ -514,17 +1130,24 @@ export const buildPatientVisualizationCards = (
       return;
     }
 
-    const countMatch = item.description?.match(/(\d+(?:\.\d+)?)/);
-    const count =
-      countMatch?.[1] !== undefined
-        ? Number(countMatch[1])
-        : item.severity === 'severe'
-          ? 3
-          : item.severity === 'moderate'
-            ? 2
-            : 1;
+    // The written count when the record carries one, and otherwise the
+    // record itself: one filed `fall` event is one fall. Nothing here
+    // reads a number out of prose, and `severity` — how bad the fall
+    // was — is no longer read as how many. See `readRecordedFallCount`.
+    const count = readRecordedFallCount(item.description) ?? 1;
 
-    const key = toIsoDate(item.occurredAt);
+    // THE DAY OF THE RECORD IT WAS FILED WITH, when it came from one.
+    // The daily form stamps `occurredAt` with the DEVICE's UTC date
+    // (`new Date().toISOString().slice(0, 10)`), which is yesterday for
+    // anything filed before 08:00 Beijing — the same window `toIsoDate`
+    // is about, and it would land this fall on a day the seeded zero is
+    // not on: a phantom fall day beside a record day still reading 0.
+    // The submission it belongs to is exact and needs no date string at
+    // all. Events filed from the standalone 事件 form carry a date the
+    // patient picked and no daily record, and keep that date.
+    const key =
+      (item.submissionId ? recordDays.daysBySubmission.get(item.submissionId) : undefined) ??
+      toIsoDate(item.occurredAt);
     const current = fallBuckets.get(key);
     if (current) {
       current.value += count;
@@ -540,24 +1163,57 @@ export const buildPatientVisualizationCards = (
     });
   });
 
-  const sleepPoints = finalizeTrendPoints(sleepBuckets);
-  const stairPoints = finalizeTrendPoints(stairBuckets);
+  const sleepPoints = finalizeScalarPoints(sleepBuckets);
+  // The plotted line is the days that produced SECONDS. A 今天做不了 day
+  // has no number to plot and no honest stand-in for one — 0 秒 on a
+  // lower-is-better axis would draw the patient's worst day as their
+  // best — so it is carried by `latestDisplay` / `summary` / `trend`
+  // instead, which is where `stairState` comes in.
+  const stairPoints = stairSeries.readings
+    .filter((reading): reading is StairReading & { seconds: number } => reading.seconds !== null)
+    .map((reading) => ({
+      date: reading.date,
+      timestamp: reading.timestamp,
+      value: reading.seconds,
+    }))
+    .slice(-CHART_POINT_LIMIT);
   // The streak sentence reads the full history; the chart still shows
   // the same window as every other card.
-  const fallHistory = finalizeSummedPoints(fallBuckets, fallBuckets.size);
+  const fallHistory = finalizeScalarPoints(fallBuckets, fallBuckets.size);
   const fallPoints = fallHistory.slice(-CHART_POINT_LIMIT);
-  const latestLegacyStairs = profile?.dailyImpacts.find((item) => item.adlKey === 'stairs') ?? null;
+  // 待量化 — 「this platform already holds that stairs are hard for you,
+  // it just has no seconds」 — and it used to be reachable from one
+  // column only.
+  //
+  // `dailyImpacts` is written by the daily form. The baseline
+  // questionnaire writes the same fact into
+  // `baseline.currentChallenges.stairs` instead, on the API's 0–5
+  // difficulty scale (profile.schema.ts `difficultyScoreSchema`), and
+  // this file PRINTS that number two functions down — 「上下楼 4/5」 in
+  // `buildDiseaseBackgroundFacts`. So a patient who had answered the
+  // baseline question and never filed a daily impact read 「最近还没有
+  // 新的标准化上楼计时」 under 未记录, on the same screen that was showing
+  // their own 上下楼 4/5.
+  //
+  // A ZERO IS NOT 「已记录上楼变化」 on either column. 0 on both scales is
+  // 「no difficulty」, and 待量化 says this platform is holding a change
+  // that has not been timed yet — which is not what a 0 records. This
+  // used to accept any `stairs` row whatever its `difficultyLevel`.
+  const hasUntimedStairDifficulty =
+    (profile?.dailyImpacts.some(
+      (item) => item.adlKey === 'stairs' && Number(item.difficultyLevel) > 0,
+    ) ??
+      false) ||
+    Number(profile?.baseline?.currentChallenges?.stairs ?? 0) > 0;
 
   const sleepCurrent = sleepPoints.length ? sleepPoints[sleepPoints.length - 1].value : null;
   const sleepPrevious = sleepPoints.length > 1 ? sleepPoints[sleepPoints.length - 2].value : null;
-  const stairCurrent = stairPoints.length ? stairPoints[stairPoints.length - 1].value : null;
-  const stairPrevious = stairPoints.length > 1 ? stairPoints[stairPoints.length - 2].value : null;
   const fallCurrent = fallPoints.length ? fallPoints[fallPoints.length - 1].value : null;
   const fallPrevious = fallPoints.length > 1 ? fallPoints[fallPoints.length - 2].value : null;
 
   const sleepText = getSleepSummary(sleepCurrent, sleepPrevious);
-  const stairText = getStairSummary(stairCurrent, stairPrevious, Boolean(latestLegacyStairs));
-  const fallText = getFallSummary(fallCurrent, fallPrevious, countTrailingZeroRecords(fallHistory));
+  const stairText = getStairSummary(stairSeries, stairState, hasUntimedStairDifficulty);
+  const fallText = getFallSummary(fallCurrent, fallPrevious, trailingZeroDayRun(fallHistory));
 
   return [
     {
@@ -574,9 +1230,12 @@ export const buildPatientVisualizationCards = (
     {
       key: 'stair_climb',
       label: '上楼计时',
-      latestValue: stairCurrent,
-      previousValue: stairPrevious,
-      trend: resolveComparisonTrend(stairCurrent, stairPrevious, 'lower_better'),
+      // null here is 「no seconds」, which is either 今天做不了 or no
+      // record at all; `latestDisplay` and `summary` are what tell the
+      // two apart, and `trend` distinguishes them too.
+      latestValue: stairState.current?.seconds ?? null,
+      previousValue: stairState.previous?.seconds ?? null,
+      trend: resolveStairTrend(stairState),
       points: stairPoints,
       unit: '秒',
       chartColor: '#C98A33',
@@ -743,14 +1402,29 @@ export const buildProgressionTimeline = (
       six_minute_walk: '六分钟步行',
       custom: '功能测试',
     };
-    const valueText =
-      item.measuredValue !== null && item.measuredValue !== undefined
+    // A `testType` is not a test. Several protocols share each one —
+    // 四级台阶上下 and 连续上 10 级台阶 are both `stair_climb`, and the
+    // timeline used to title both 「上楼测试」 and print a bare number
+    // under it, so two incomparable seconds sat one above the other
+    // looking like the same measurement getting worse.
+    const decoded = decodeProtocolField(item.protocol);
+    const timedTest = decoded ? findTimedTest(decoded.testId) : null;
+    // The grade the patient chose, on the records it excludes from the
+    // trend line — this is the 「会存下来，也会显示」 half of what the
+    // grade picker promises them.
+    const gradeNote =
+      decoded && !gradeOption(decoded.grade).trendEligible
+        ? `（${gradeOption(decoded.grade).labelZh}，不进趋势线）`
+        : '';
+    const valueText = isUnableRecord(item)
+      ? '本次记录为「做不了」'
+      : item.measuredValue !== null && item.measuredValue !== undefined
         ? `${item.measuredValue}${item.unit ? ` ${item.unit}` : ''}`
         : '已记录';
     items.push({
       id: item.id,
-      title: labels[item.testType] ?? item.testType,
-      description: valueText,
+      title: timedTest?.nameZh ?? labels[item.testType] ?? item.testType,
+      description: `${valueText}${gradeNote}`,
       timestamp: item.performedAt,
       tag: '功能测试',
     });

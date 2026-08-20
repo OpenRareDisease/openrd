@@ -1,6 +1,6 @@
 {
   "name": "openrd",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
   "workspaces": [
     "apps/*"
@@ -29,7 +29,10 @@
     "kb:doctor": "node --env-file-if-exists=.env scripts/kb-doctor.mjs",
     "github:app-token": "node --env-file-if-exists=.env scripts/github-app-token.mjs",
     "github:app-pr-review": "node --env-file-if-exists=.env scripts/github-app-pr-review.mjs",
-    "dev:grant-consent": "node --env-file-if-exists=.env scripts/dev-grant-consent.mjs"
+    "dev:grant-consent": "node --env-file-if-exists=.env scripts/dev-grant-consent.mjs",
+    "trials:refresh": "node --env-file-if-exists=.env node_modules/.bin/tsx apps/api/src/modules/trials/refresh.cli.ts",
+    "admin:grant": "node --env-file-if-exists=.env scripts/admin-role.mjs grant",
+    "admin:revoke": "node --env-file-if-exists=.env scripts/admin-role.mjs revoke"
   },
   "engines": {
     "node": ">=20.12"

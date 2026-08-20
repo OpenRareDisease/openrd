@@ -638,15 +638,32 @@ export interface PassportFreshness {
   daysSince: number | null;
 }
 
-/** The four grades plus 未知 — the API's `GeneticEvidenceGrade`. It
- *  grades the EVIDENCE, never the person. */
-/** The five the API can send. Kept as a value so the reader below can
- *  actually check against it — a type alone validates nothing at
- *  runtime, which is how the bare `as` got in. */
+/**
+ * The API's `GeneticEvidenceGrade`, mirrored member for member. It
+ * grades the EVIDENCE, never the person.
+ *
+ * Kept as a value so the reader below can actually check against it — a
+ * type alone validates nothing at runtime, which is how the bare `as`
+ * got in.
+ *
+ * MIRRORED MEANS ALL OF THEM, AND THE FALL-THROUGH IS NOT A PLACE TO
+ * PUT A GRADE WE KNOW ABOUT. An unlisted member lands on 未知 down in
+ * `readPassportGeneticEvidence`, and 未知 is the grade whose own copy
+ * opens 「还没有上传过基因报告」 — false of `transcribed_only`, which is
+ * reached with a transcribed reading printed on the same screen, and
+ * false of `non_permissive_haplotype`, which is reached with a
+ * laboratory's own 4qB on the page. Nothing branches on `grade` today,
+ * so the drift was invisible; the next reader to write
+ * `grade === 'trial_ready'` is who it would have cost.
+ * lib/__tests__/genetic-evidence-grade-parity.test.ts holds this list
+ * to the server's union.
+ */
 export const GENETIC_EVIDENCE_GRADES = [
   'not_tested',
   'method_not_applicable',
   'method_right_incomplete',
+  'transcribed_only',
+  'non_permissive_haplotype',
   'trial_ready',
   'unknown',
 ] as const;
@@ -674,6 +691,22 @@ export interface PassportGeneticEvidence {
   headline: string;
   reason: string;
   action: string;
+  /**
+   * WHY A READING SHOWN ON THIS PAGE CHANGED NOTHING — a length the
+   * report gave in kb, a count cell reading 0 — or null when the report
+   * states neither.
+   *
+   * FOR THE SURFACE THAT PRINTS THE READING WITHOUT `reason`. The
+   * passport screen renders `reason`, which ends with these same
+   * sentences; the printed passport renders neither, and set 「D4Z4
+   * 重复数 18kb（报告读取）」 under 「本节里没有从基因报告里读出来的、可作
+   * 确诊依据的基因结果」 with nothing between them — a number and a
+   * denial of it, on the one page that leaves the app.
+   *
+   * Mirrors `readingsNotJudged` on the API's
+   * PassportGeneticEvidenceDTO, where the sentence is written.
+   */
+  readingsNotJudged: string | null;
   /** Non-null only when the repeat count is in the 8–10 gray zone. */
   greyZoneNote: string | null;
   /** Null once the report already carries size AND haplotype — at that
@@ -751,12 +784,15 @@ export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEviden
   return {
     // Validated, not asserted. Every sibling field in this reader is
     // checked; `grade` was the one bare `as`, so any string the server
-    // sent would have typed as one of five enum members. It happens to
-    // be unread today (the screen renders `gradeLabel`), which is
-    // exactly why it was worth fixing now: the next person to branch on
+    // sent would have typed as a member of the enum. It happens to be
+    // unread today (the screen renders `gradeLabel`), which is exactly
+    // why it was worth fixing now: the next person to branch on
     // `grade === 'not_tested'` would reasonably assume it had been
     // checked. Unrecognised falls to 'unknown', which is a real member
-    // and the one that promises nothing.
+    // and the one that promises nothing — so a grade this bundle
+    // simply has not been told about is indistinguishable from a
+    // garbage string, and that is why GENETIC_EVIDENCE_GRADES is held
+    // to the server's union by a test rather than by a comment.
     grade: GENETIC_EVIDENCE_GRADES.includes(record.grade as GeneticEvidenceGrade)
       ? (record.grade as GeneticEvidenceGrade)
       : 'unknown',
@@ -764,10 +800,140 @@ export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEviden
     headline: record.headline,
     reason: record.reason,
     action: record.action,
+    // Null-tolerant rather than required, like `greyZoneNote` beside
+    // it: the server sends null for a report that states neither
+    // reading, and an API build predating the field sends nothing at
+    // all. Neither is a reason to drop the whole block — the grade,
+    // the headline and the next step are still what they were.
+    readingsNotJudged:
+      typeof record.readingsNotJudged === 'string' ? record.readingsNotJudged : null,
     greyZoneNote: typeof record.greyZoneNote === 'string' ? record.greyZoneNote : null,
     testRequest: asTestRequest(record.testRequest),
     sources: asStringArray(record.sources),
   };
+};
+
+/**
+ * WHERE ONE PRINTED DIAGNOSIS VALUE CAME FROM — the API's
+ * `PassportValueOriginKind`, mirrored member for member.
+ *
+ * `confirmation` is an evidence grade and answers nothing about
+ * authorship: 分型 can be OCR off an uploaded report while
+ * `confirmation` is `self_reported`, and can be the patient's own free
+ * text while it is `genetic`, because the measurement that earns
+ * `genetic` is a different field. Every renderer that read authorship
+ * off that enum printed 「本人填写」 over values nobody typed.
+ *
+ * `indeterminate` is a real answer, not a shrug — the API resolves it
+ * where the patient's own typing and the read-time OCR autofill are
+ * indistinguishable — so it must never be collapsed into 「本人填写」.
+ *
+ * Kept as a value, not a type alone, so the reader below can check it
+ * at runtime.
+ */
+export const PASSPORT_VALUE_ORIGIN_KINDS = [
+  'report',
+  'patient',
+  'admin_entered',
+  'admin_unreadable',
+  'indeterminate',
+  'absent',
+] as const;
+
+export type PassportValueOriginKind = (typeof PASSPORT_VALUE_ORIGIN_KINDS)[number];
+
+export interface PassportValueOrigin {
+  kind: PassportValueOriginKind;
+  /** One phrase for a printed page, worded by the API so this app, the
+   *  share page and the referral pack cannot disagree about a value's
+   *  source in front of a clinician. */
+  labelZh: string;
+  documentId: string | null;
+  adminUserId: string | null;
+  at: string | null;
+  detail: string | null;
+}
+
+/** The diagnosis values the passport prints as their own rows, and
+ *  therefore the ones that need an origin beside them. */
+export const PASSPORT_DIAGNOSIS_VALUE_KEYS = [
+  'geneticType',
+  'd4z4Repeats',
+  'methylationValue',
+  'diagnosisDate',
+] as const;
+
+export type PassportDiagnosisValueKey = (typeof PASSPORT_DIAGNOSIS_VALUE_KEYS)[number];
+
+export type PassportValueOrigins = Record<PassportDiagnosisValueKey, PassportValueOrigin>;
+
+/**
+ * ONE origin, unwrapped and shape-checked.
+ *
+ * Exported because not every printed origin arrives inside
+ * `valueOrigins`: 证据摘要 is those values joined, so the API resolves
+ * its origin beside them and sends it as `diagnosis.geneEvidenceOrigin`.
+ * A renderer that prints that line has to check the bytes the same way,
+ * and a second copy of this parser would be free to drift from the map's.
+ *
+ * Null means nothing printable came back — including a `labelZh` that is
+ * missing or blank, since `labelZh` is the phrase that gets printed and
+ * a caption cannot be invented here. An unrecognised `kind` is NOT null;
+ * see `readPassportValueOrigins` for why it falls to `indeterminate`.
+ */
+export const readPassportValueOrigin = (raw: unknown): PassportValueOrigin | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const origin = raw as Record<string, unknown>;
+  if (typeof origin.labelZh !== 'string' || origin.labelZh.trim().length === 0) return null;
+  return {
+    kind: PASSPORT_VALUE_ORIGIN_KINDS.includes(origin.kind as PassportValueOriginKind)
+      ? (origin.kind as PassportValueOriginKind)
+      : 'indeterminate',
+    labelZh: origin.labelZh,
+    documentId: typeof origin.documentId === 'string' ? origin.documentId : null,
+    adminUserId: typeof origin.adminUserId === 'string' ? origin.adminUserId : null,
+    at: typeof origin.at === 'string' ? origin.at : null,
+    detail: typeof origin.detail === 'string' ? origin.detail : null,
+  };
+};
+
+/**
+ * `diagnosis.valueOrigins`, unwrapped and shape-checked.
+ *
+ * Same reason as `readPassportGeneticEvidence` above:
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call, and that type
+ * parameter is an unchecked assertion over whatever the server sent.
+ * This block is new on the wire and this app ships as a web export that
+ * WeChat's in-app browser caches for days, so a handset can be running
+ * today's bundle against an API build that has no `valueOrigins` at all.
+ *
+ * All four keys or null, never a partial map. A caller handed three
+ * origins would print a source under three values and nothing under the
+ * fourth, and a reader who has learned that the caption marks a source
+ * reads the missing caption as 「read off a report」 — the one direction
+ * this record exists to prevent. Null makes the callers say the server
+ * did not send it.
+ *
+ * A kind this bundle has never heard of does NOT null the map. The
+ * cache cuts both ways: a NEWER API adding a seventh kind would make
+ * every renderer print 「the server did not send it」 over origins it
+ * did send, which is its own false sentence. It falls to
+ * `indeterminate` instead — a real member, and the one that promises
+ * nothing — carrying the server's own `labelZh` with it, so an
+ * unrecognised state can never lift a value into the register kept for
+ * a laboratory result.
+ */
+export const readPassportValueOrigins = (raw: unknown): PassportValueOrigins | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const origins = {} as PassportValueOrigins;
+  for (const key of PASSPORT_DIAGNOSIS_VALUE_KEYS) {
+    const origin = readPassportValueOrigin(record[key]);
+    // The whole map fails rather than one row going silent.
+    if (!origin) return null;
+    origins[key] = origin;
+  }
+  return origins;
 };
 
 export interface ClinicalPassportSummary {
@@ -792,17 +958,42 @@ export interface ClinicalPassportSummary {
     summary: string;
     meta: string;
   }>;
+  /**
+   * 基线里不是患者本人填的那些字段（契约 §B3）。没有标记就是空数组——
+   * 「没有条目」本身是一个结论，不是「不知道」：只有管理员写入才会留下
+   * 条目，患者自己改回同一个字段条目就被删掉。
+   */
+  fieldOrigins?: Array<{
+    path: string;
+    labelZh: string;
+    state: 'admin_entered' | 'unreadable';
+    adminUserId: string | null;
+    at: string | null;
+    detail: string | null;
+  }>;
   diagnosis: {
     ready: boolean;
-    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的。
+    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的；
+     *  'admin_entered' 是本平台管理员在后台代填的——那既不是证据，也不是
+     *  患者自己的说法，患者本人可能根本没见过那段文字。
      *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
-     *  医生手里，患者的自述不能和基因结果长得一样。 */
-    confirmation: 'genetic' | 'self_reported' | 'none';
+     *  医生手里，患者的自述不能和基因结果长得一样，我们自己敲进去的字
+     *  更不能写成患者的自述。
+     *
+     *  'genetic_non_permissive' 是实验室报告读到了 4q 单倍型、而它是
+     *  4qB：FSHD1 是 D4Z4 在允许型 4qA 等位基因上的缩短，所以这不是
+     *  「证据少一点」，是一条不支持这条机制的结果。它和上面三种「没有
+     *  读到报告结果」不是一回事——报告在，读过了，说的就是这个——所以
+     *  凡是写「没有从基因报告里读出来的基因结果」的句子，都不能落到它
+     *  头上。服务端 PassportDiagnosisConfirmation 上有完整说明。 */
+    confirmation: 'genetic' | 'genetic_non_permissive' | 'self_reported' | 'admin_entered' | 'none';
     /** 患者自己在建档表上答的那一级，没答过就是 null。和 `confirmation`
      *  回答的不是同一个问题（「你怎么说」 vs 「报告怎么写」），护照两个
      *  都显示，不做调和。 */
     ladder?: DiagnosisLadderState | null;
     ladderLabel?: string | null;
+    /** 那一级是谁填的：本人填写 / 管理员代填 / 来源不明。 */
+    ladderOriginZh?: string | null;
     latestSourceDate: string | null;
     latestDocumentId: string | null;
     freshness: PassportFreshness;
@@ -810,7 +1001,41 @@ export interface ClinicalPassportSummary {
     d4z4Repeats: string;
     methylationValue: string;
     diagnosisDate: string;
+    /**
+     * 实验室报告自己写明的那个 D4Z4 重复数，报告怎么印就怎么给；不是上面
+     * 那一行 `d4z4Repeats`（那一行档案里的值也会印，报告那一格写的是区间
+     * 或 kb 时也照印）。服务端 PassportDiagnosisDTO 上有完整说明。
+     *
+     * Optional and `unknown`-adjacent for the reason `valueOrigins` is:
+     * the type parameter on `getClinicalPassportSummary` is an unchecked
+     * assertion, and this app ships as a web export WeChat caches for
+     * days, so a handset can be running today's bundle against an API
+     * build that predates the field. A reader must check the type before
+     * printing it.
+     */
+    laboratoryRepeatCount?: string | null;
+    /**
+     * 上面四个值各自的来源。
+     *
+     * Typed as `unknown` for the same reason as `geneticEvidence`
+     * below: the type parameter on `getClinicalPassportSummary` proves
+     * nothing about what a cached bundle's API build actually sends.
+     * `unknown` makes the compiler refuse `.geneticType.kind` until it
+     * has gone through `readPassportValueOrigins`, which is the only
+     * thing that has looked at the bytes.
+     */
+    valueOrigins?: unknown;
     geneEvidence: string;
+    /**
+     * 证据摘要那一行的来源。
+     *
+     * 不在 `valueOrigins` 那张表里：证据摘要是上面几个值拼出来的，服务端
+     * 挨着分量单独定它的来源，再作为 `geneEvidenceOrigin` 发过来。
+     *
+     * Typed as `unknown` for the same reason as `valueOrigins` above, and
+     * read with `readPassportValueOrigin`.
+     */
+    geneEvidenceOrigin?: unknown;
     /**
      * 对基因证据的分级读法，外加可以递给医生的《检查申请说明》。
      *

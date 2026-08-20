@@ -37,6 +37,7 @@ import {
   runStream as runOrchestratorStream,
 } from '../modules/ai-agents/orchestrator/index.js';
 import {
+  ClinicalTrialsRetriever,
   MedicalKbRetriever,
   PatientFollowupRetriever,
   PatientProfileRetriever,
@@ -55,6 +56,7 @@ import {
   GetMyProfileTool,
   GetMyRecordsTool,
   GetMyReportsTool,
+  ListClinicalTrialsTool,
   SearchMedicalKbTool,
   ToolRegistry,
 } from '../modules/ai-agents/tools/index.js';
@@ -323,11 +325,13 @@ const buildOrchestrator = (llm: ILLMProvider, context: RouteContext, pool: Pool)
   const profile = new PatientProfileRetriever(pool);
   const reports = new PatientReportsRetriever(pool);
   const followups = new PatientFollowupRetriever(pool);
+  const trials = new ClinicalTrialsRetriever(pool);
   const registry = new ToolRegistry()
     .register(new SearchMedicalKbTool(medicalKb))
     .register(new GetMyProfileTool(profile))
     .register(new GetMyReportsTool(reports))
-    .register(new GetMyRecordsTool(followups));
+    .register(new GetMyRecordsTool(followups))
+    .register(new ListClinicalTrialsTool(trials));
   return new Orchestrator(llm, registry, context.logger, {
     maxToolRounds: context.env.AI_MAX_TOOL_ROUNDS,
   });

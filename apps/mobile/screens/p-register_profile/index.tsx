@@ -105,6 +105,38 @@ const RegisterProfileScreen: React.FC = () => {
   // stays on this form to fix the field the message names.
   const [feedback, setFeedback] = useState<{ type: 'error'; message: string } | null>(null);
   const [existingBaseline, setExistingBaseline] = useState<BaselineProfilePayload | null>(null);
+  /**
+   * The profile columns the two picker groups were LOADED with, kept
+   * so the save can tell 「the patient moved this picker」 from 「the
+   * patient never opened it」.
+   *
+   * 出生年份 and 所在地区 are the only two admin-writable baseline
+   * fields whose control on this form is not filled from the baseline:
+   * 出生日期 comes from the profile's own `dateOfBirth` and 省市区 from
+   * its three region columns. An administrator writing
+   * `foundation.birthYear` or `foundation.regionLabel` leaves all four
+   * of those columns as they were, so the two can hold different
+   * answers — and rebuilding the baseline field from the columns on
+   * every save posts a value the patient never looked at.
+   * `applyPatientBaselineWrite` reads any changed leaf path as the
+   * patient taking that field back, so that post drops the
+   * 「管理员代填」 marker off a field they did not open, on a save about
+   * something else entirely. The re-consent note promises the release
+   * is per field (lib/legal-updates.ts); this snapshot is what makes
+   * that true of the two fields where the control and the stored value
+   * have separate sources.
+   *
+   * Compared against the CURRENT form values rather than tracked with
+   * a touched flag, so a restored draft — the patient's own earlier
+   * edit on this same form — counts as moved, and moving a picker back
+   * to where it started counts as not moved.
+   */
+  const [loadedPickerIdentity, setLoadedPickerIdentity] = useState({
+    dateOfBirth: '',
+    regionProvince: '',
+    regionCity: '',
+    regionDistrict: '',
+  });
   const [isDraftHydrated, setIsDraftHydrated] = useState(false);
   const [form, setForm] = useState({
     fullName: '',
@@ -228,6 +260,15 @@ const RegisterProfileScreen: React.FC = () => {
             typeof draft?.dateOfBirth === 'string' ? draft.dateOfBirth : serverForm.dateOfBirth,
           ),
         );
+        // The server values, NOT the draft-on-top ones: a draft is an
+        // edit the patient made here and left unsaved, and it has to
+        // read as moved when they come back and press 保存.
+        setLoadedPickerIdentity({
+          dateOfBirth: serverForm.dateOfBirth,
+          regionProvince: serverForm.regionProvince,
+          regionCity: serverForm.regionCity,
+          regionDistrict: serverForm.regionDistrict,
+        });
       } catch (error) {
         const is404 = error instanceof ApiError && error.status === 404;
         const message = error instanceof ApiError ? error.message : '加载档案失败';
@@ -335,6 +376,19 @@ const RegisterProfileScreen: React.FC = () => {
       }
     }
 
+    // Did the patient move the two picker groups this save derives a
+    // baseline field from? See `loadedPickerIdentity`: while they sit
+    // where they were loaded, the stored 出生年份 and 所在地区 are
+    // carried forward untouched, so no marker on them is released by a
+    // save about a different field. Region is compared on all three
+    // columns because `RegionPickers` writes all three at once.
+    const storedFoundation = existingBaseline?.foundation;
+    const birthDateMoved = form.dateOfBirth.trim() !== loadedPickerIdentity.dateOfBirth.trim();
+    const regionMoved =
+      form.regionProvince.trim() !== loadedPickerIdentity.regionProvince.trim() ||
+      form.regionCity.trim() !== loadedPickerIdentity.regionCity.trim() ||
+      form.regionDistrict.trim() !== loadedPickerIdentity.regionDistrict.trim();
+
     // The baseline is assembled here rather than at the call site so
     // the Art. 29 question below can be asked about what we are
     // actually about to store.
@@ -342,15 +396,26 @@ const RegisterProfileScreen: React.FC = () => {
       ...(existingBaseline ?? {}),
       foundation: {
         ...(existingBaseline?.foundation ?? {}),
+        // Straight off the 姓名 box, and it needs no snapshot: the box
+        // is filled from the profile's `full_name` column, and
+        // `upsertBaseline` mirrors `foundation.fullName` into that
+        // column on every write of the field — so the two cannot drift
+        // the way 出生年份 and 所在地区 can, and posting the box
+        // unedited posts the stored value back unchanged.
         fullName: form.fullName.trim(),
-        birthYear: Number(form.dateOfBirth.slice(0, 4)),
+        birthYear:
+          !birthDateMoved && storedFoundation?.birthYear != null
+            ? storedFoundation.birthYear
+            : Number(form.dateOfBirth.slice(0, 4)),
         diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
         regionLabel:
-          buildRegionLabel({
-            regionProvince: form.regionProvince.trim(),
-            regionCity: form.regionCity.trim(),
-            regionDistrict: form.regionDistrict.trim(),
-          }) || null,
+          !regionMoved && storedFoundation?.regionLabel != null
+            ? storedFoundation.regionLabel
+            : buildRegionLabel({
+                regionProvince: form.regionProvince.trim(),
+                regionCity: form.regionCity.trim(),
+                regionDistrict: form.regionDistrict.trim(),
+              }) || null,
       },
       diseaseBackground: {
         ...(existingBaseline?.diseaseBackground ?? {}),

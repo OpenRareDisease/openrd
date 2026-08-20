@@ -4,8 +4,8 @@
 # Split out because the image was single-stage: `npm ci` ran ten lines before
 # `ENV NODE_ENV=production`, so typescript, vitest, supertest, eslint and tsx
 # were installed, never pruned, and sat executable at runtime inside the
-# container that holds patient records — alongside the full src tree and 46
-# compiled test modules. None of that reaches the runtime stage now.
+# container that holds patient records — alongside the full src tree and every
+# compiled test module. None of that reaches the runtime stage now.
 # ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim AS builder
 
@@ -20,12 +20,12 @@ COPY apps/api ./apps/api
 
 RUN npm run build --workspace @openrd/api
 
-# apps/api/tsconfig.json is `include: ["src"]` with no test exclusion, so every
-# *.test.ts compiles into dist next to the served code. Those modules import
-# vitest and supertest, which the runtime stage deliberately does not install,
-# so shipping them would mean 46 permanently-unloadable files in the PHI
-# container. Deleting them here keeps the runtime image clean regardless of
-# whether tsconfig ever grows the `exclude` entry.
+# A backstop, and expected to delete nothing: apps/api/tsconfig.json now
+# excludes `src/**/*.test.ts`, so the build no longer emits them. It stays
+# because the failure it guards against is silent — test modules import vitest
+# and supertest, which the runtime stage deliberately does not install, so a
+# widened `include` or a dropped `exclude` would put permanently-unloadable
+# files in the container that holds patient records and nothing would say so.
 RUN find apps/api/dist -name '*.test.js' -delete \
     && find apps/api/dist -name '*.test.js.map' -delete \
     && find apps/api/dist -name '*.test.d.ts' -delete
@@ -34,10 +34,7 @@ RUN find apps/api/dist -name '*.test.js' -delete \
 # Runtime stage.
 #
 # Node runtime + the Python/Tesseract toolchain the embedded OCR parser shells
-# out to, production dependencies only, and just the three trees the process
-# actually reads: apps/api/dist (the build output), apps/report-manager (the
-# parser resolved from routes/index.ts as ../report-manager/embedded_parser.py)
-# and db (migrate.ts resolves ../../db/migrations from the /app/apps/api cwd).
+# out to, and production dependencies only.
 # ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim
 
@@ -90,12 +87,55 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip3 install --break-system-packages --no-cache-dir \
       -i ${PIP_INDEX_URL} -r ./apps/api/requirements-embedded-report.txt
 
+# The build output — this is what CMD runs.
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
+# The OCR parser. routes/index.ts resolves it as
+# ../report-manager/embedded_parser.py from the /app/apps/api cwd.
 COPY apps/report-manager ./apps/report-manager
+# The migrations. migrate.ts resolves ../../db/migrations from the same cwd,
+# and the first half of CMD runs it.
 COPY db ./db
+
+# One script, not scripts/. Granting the first administrator has to
+# happen on a running production stack, and the alternative to shipping
+# this file is a runbook telling the operator to UPDATE app_users in
+# psql — which skips the audit_logs row admin-role.mjs writes in the
+# same transaction as the role change. In a back office whose whole
+# design is that reads are audited, the one unaudited action would be
+# the one that creates the reader.
+#
+# It grants no privilege that exec access does not already carry: a
+# shell in this container can reach the same database with the same
+# credentials. Its dependency (`pg`) is already here from npm ci.
+#
+# Deliberately not `COPY scripts ./scripts`: that directory also holds
+# the KB ingest tooling and the GitHub App helper that reads a private
+# key off the maintainer's disk. Neither belongs in an image that runs
+# on a host serving patients.
+COPY scripts/admin-role.mjs ./scripts/admin-role.mjs
 
 WORKDIR /app/apps/api
 ENV NODE_ENV=production
+# BELT AND BRACES ONLY. node:20-bookworm-slim has no TZ set and runs UTC,
+# and the patients this serves are at UTC+8 — so every date this image
+# rendered was eight hours away from the date the handset rendered for
+# the same instant, and the passport, the share page and the referral
+# pack disagreed with the mobile PDF by a full day for any report filed
+# between 16:00 and 24:00 UTC.
+#
+# Setting this line was NOT the fix, and nothing may be allowed to
+# depend on it. It makes exactly this deployment agree, and the next one
+# — another region, a maintainer's laptop, a CI box, a patient's phone
+# set to another zone — goes back to disagreeing with no error anywhere.
+# The calendar is declared in the code, as PRODUCT_TIME_ZONE in
+# src/modules/patient-profile/profile.passport.ts and again, with the
+# same value and the same arithmetic, in
+# apps/mobile/lib/clinical-visuals.ts. Both sides compute the product
+# day from an absolute instant and never read the ambient zone, which is
+# what profile.passport.dates.test.ts pins by rendering all four
+# documents under mismatched zones. Deleting this line must not change
+# a single printed date; if it ever does, the code regressed.
+ENV TZ=Asia/Shanghai
 ENV OCR_PYTHON_BIN=python3
 # Production OCR is Tesseract-only, and that is a decision rather than an
 # accident: paddleocr is in neither requirements file this image installs, so

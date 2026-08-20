@@ -1,7 +1,7 @@
 /**
  * Tests for the followup-records tool.
  *
- * Two of these are regression fences rather than ordinary coverage:
+ * Several of these are regression fences rather than ordinary coverage:
  *
  *  - **The advertised keys must be keys the retriever can match.** An
  *    earlier revision advertised `grip_strength` / `arm_raise` /
@@ -9,6 +9,12 @@
  *    asking「我抬臂是不是变弱了」was told they had never recorded it.
  *    Nothing failed at the time because the tool's JSON Schema and the
  *    retriever's `METRIC_LABELS` were only related by convention.
+ *  - **Every key the write path accepts must be a key this tool
+ *    accepts.** The other direction of the same rule, and the one that
+ *    the enum imported below is what makes askable: a group appended to
+ *    `MUSCLE_GROUPS` after these lists were written was recordable and
+ *    then unaskable, and the tool answered a question about it with a
+ *    validation failure.
  *  - **An unknown key must throw, not filter to nothing.** The
  *    orchestrator runs a fixed two rounds with no retry, so a silently
  *    empty retrieval is terminal — the model confidently reports "you
@@ -21,6 +27,24 @@ import type { ToolContext } from './base.js';
 import { ToolValidationError, meetsConsent } from './base.js';
 import { GetMyRecordsTool } from './get-my-records.js';
 import { ToolRegistry } from './registry.js';
+/**
+ * The keys the record can actually contain — the enums the write path
+ * validates against, imported, NOT a copy of the retriever's table.
+ *
+ * The copy is what failed. This list was typed out to catch a rename on
+ * the retriever side, and what it could never catch is the rename that
+ * happened: `face` and `abdominal` were appended to `MUSCLE_GROUPS`,
+ * the retriever's table stopped one short of each, and so did the copy
+ * here — so the assertion agreed with the bug and the tool went on
+ * rejecting a curve the database can hold. Imported, the assertion asks
+ * the question it was written to ask: is every key the write path
+ * accepts a key this tool accepts?
+ */
+import {
+  FUNCTION_TEST_TYPES as FUNCTION_TEST_KEYS,
+  MUSCLE_GROUPS,
+  SYMPTOM_KEYS,
+} from '../../patient-profile/profile.constants.js';
 import type { RetrieveContext, RetrieveResult } from '../retrievers/base.js';
 import type { PatientFollowupRetriever } from '../retrievers/patient-followups.js';
 
@@ -65,32 +89,6 @@ const chunks = (count: number): RetrieveResult => ({
   citations: [],
   metadata: {},
 });
-
-/**
- * The keys the record can actually contain, mirrored from
- * `METRIC_LABELS` in patient-followups.ts. Hard-coded rather than
- * imported so that renaming a key on the retriever side surfaces here
- * as a failure instead of silently re-deriving the same (wrong) list on
- * both sides of the assertion.
- */
-const FUNCTION_TEST_KEYS = [
-  'stair_climb',
-  'ten_meter_walk',
-  'sit_to_stand',
-  'six_minute_walk',
-  'timed_up_and_go',
-  'custom',
-];
-const SYMPTOM_KEYS = ['fatigue', 'pain', 'dyspnea', 'sleep_quality', 'anxiety_about_progression'];
-const MUSCLE_GROUPS = [
-  'deltoid',
-  'biceps',
-  'triceps',
-  'tibialis',
-  'quadriceps',
-  'hamstrings',
-  'gluteus',
-];
 
 describe('GetMyRecordsTool — contract', () => {
   const tool = new GetMyRecordsTool(stubRetriever());

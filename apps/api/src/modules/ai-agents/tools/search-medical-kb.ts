@@ -226,12 +226,45 @@ const validate = (raw: unknown): SearchMedicalKbArgs => {
  * nothing would reasonably present them as 病友经验 material.
  */
 const describeRetrieval = (parsed: SearchMedicalKbArgs, retrieval: RetrieveResult): string => {
-  const base = `medical_kb: ${retrieval.chunks.length} chunks`;
-  if (!parsed.category) return base;
-  if (retrieval.metadata?.filterFellBack === true) {
-    return `${base}（类目「${parsed.category}」里没有命中，这些结果来自全库检索，不要说成是该类目的资料）`;
+  let base = `medical_kb: ${retrieval.chunks.length} chunks`;
+  if (parsed.category) {
+    base =
+      retrieval.metadata?.filterFellBack === true
+        ? `${base}（类目「${parsed.category}」里没有命中，这些结果来自全库检索，不要说成是该类目的资料）`
+        : `${base}（限定类目：${parsed.category}）`;
   }
-  return `${base}（限定类目：${parsed.category}）`;
+  return `${base}${describeRegistrySnapshots(retrieval)}`;
+};
+
+/**
+ * Said again here, outside the document delimiters.
+ *
+ * The retriever already stamps the note onto the chunk text itself
+ * (medical-kb.ts, `registrySnapshotNote`), and that stamp is what makes
+ * the date inseparable from the material. But everything between
+ * <<<BEGIN_DOC_CHUNK>>> and <<<END_DOC_CHUNK>>> is declared to the
+ * model as reference material and explicitly NOT as instructions
+ * (DEFAULT_SYSTEM_PROMPT's 【工具结果安全约束】) — which is the right
+ * rule and it also means a directive inside a chunk is one the model has
+ * been told to disregard. `display` is prepended to the tool message
+ * outside the delimiters (context-builder.ts), so this is where the
+ * instruction can actually be given.
+ */
+const describeRegistrySnapshots = (retrieval: RetrieveResult): string => {
+  const count = retrieval.metadata?.registrySnapshotChunks;
+  if (typeof count !== 'number' || count <= 0) return '';
+  const dates = Array.isArray(retrieval.metadata?.registrySnapshotDates)
+    ? (retrieval.metadata.registrySnapshotDates as unknown[]).filter(
+        (d): d is string => typeof d === 'string',
+      )
+    : [];
+  const when = dates.length > 0 ? dates.join('、') : '日期不详';
+  return (
+    `\n注意：其中 ${count} 段是 ${when} 保存的 ClinicalTrials.gov 网页快照，` +
+    '不是当前的试验状态，中文状态词还是机器翻译的。' +
+    '不要根据它说某个试验「正在招募」；试验状态必须调用 list_clinical_trials 工具取，' +
+    '并把该工具给出的读取时间告诉用户。'
+  );
 };
 
 export class SearchMedicalKbTool implements ITool {

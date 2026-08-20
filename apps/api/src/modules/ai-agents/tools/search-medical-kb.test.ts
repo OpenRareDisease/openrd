@@ -223,3 +223,51 @@ describe('SearchMedicalKbTool.execute', () => {
     expect(result.display).toBe('medical_kb: 3 chunks');
   });
 });
+
+/**
+ * §A6 — the tool message has to say it too.
+ *
+ * The retriever stamps the note onto the chunk text, and that stamp is
+ * what makes the date inseparable from the material. But everything
+ * between <<<BEGIN_DOC_CHUNK>>> and <<<END_DOC_CHUNK>>> is declared to
+ * the model as reference material and explicitly NOT as instructions
+ * (DEFAULT_SYSTEM_PROMPT's 【工具结果安全约束】), so a directive inside a
+ * chunk is one the model has been told to disregard. `display` is
+ * prepended outside the delimiters.
+ */
+describe('SearchMedicalKbTool — registry snapshot notice', () => {
+  const retrieverReturning = (metadata: Record<string, unknown>) =>
+    ({
+      search: vi.fn().mockResolvedValue({
+        retrieverId: 'medical_kb',
+        chunks: [{ id: 'c1', source: 'medical_kb', content: 'x', metadata: {}, distance: 0.2 }],
+        citations: [],
+        metadata,
+      }),
+    }) as unknown as ConstructorParameters<typeof SearchMedicalKbTool>[0];
+
+  it('names the scrape date and points at the live tool', async () => {
+    const tool = new SearchMedicalKbTool(
+      retrieverReturning({ registrySnapshotChunks: 2, registrySnapshotDates: ['2025-03-31'] }),
+    );
+    const { display } = await tool.execute({ query: '哪些试验在招募' }, ctx);
+
+    expect(display).toContain('其中 2 段是 2025-03-31 保存的 ClinicalTrials.gov 网页快照');
+    expect(display).toContain('list_clinical_trials');
+    expect(display).toContain('不是当前的试验状态');
+  });
+
+  it('says 日期不详 rather than omitting the caveat', async () => {
+    const tool = new SearchMedicalKbTool(
+      retrieverReturning({ registrySnapshotChunks: 1, registrySnapshotDates: [] }),
+    );
+    const { display } = await tool.execute({ query: '哪些试验在招募' }, ctx);
+    expect(display).toContain('日期不详');
+  });
+
+  it('adds nothing when no snapshot chunk came back', async () => {
+    const tool = new SearchMedicalKbTool(retrieverReturning({ registrySnapshotChunks: 0 }));
+    const { display } = await tool.execute({ query: 'FSHD 是什么' }, ctx);
+    expect(display).toBe('medical_kb: 1 chunks');
+  });
+});

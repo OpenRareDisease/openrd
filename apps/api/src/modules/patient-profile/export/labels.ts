@@ -98,3 +98,130 @@ export const AMBULATION_LABELS: Readonly<Record<string, string>> = {
 
 export const labelFor = (table: Readonly<Record<string, string>>, key: string): string =>
   table[key] ?? key;
+
+/**
+ * THE MOVEMENT A `patient_measurements` ROW RECORDS, when the row does
+ * not name a muscle group.
+ *
+ * WHY A ROW CAN HAVE NO MUSCLE GROUP. `measurementSchema` accepts one —
+ * 「metricKey or muscleGroup is required」, not both — and the SHIPPED
+ * 用力闭眼 self-test takes that branch on every single submission:
+ * `SELF_TEST_ACTIONS[0]` in apps/mobile carries no `muscleGroup` (「Face
+ * has no cohort group」) and `buildSelfTestPayload` omits the key
+ * entirely. `addMeasurement` then writes the NOT NULL column as
+ * `COALESCE($3, 'custom')`.
+ *
+ * WHAT THE EXPORTS DID WITH IT. `labelFor` falls back to the raw key, so
+ * the FHIR Observation went out with `code.text` = 「custom肌力（不分左右）」
+ * and the TREAT-NMD item with `muscleGroupLabelZh` = 「custom」 — an MRC
+ * grade of 4, correctly dated, attached to a muscle named 「custom」, with
+ * `metricKey` (the only thing on the row that says WHAT was tested)
+ * carried by neither. And 用力闭眼 is facial strength: the 「facio」 in
+ * facioscapulohumeral, usually the first region involved, and the one
+ * measurement in this product whose muscle a neurologist most wants
+ * named. `labelFor`'s raw-key fallback is doing exactly what its own
+ * comment promises — surfacing an unmapped key as a visible bug rather
+ * than a plausible wrong answer — and this table is the mapping it was
+ * waiting for.
+ *
+ * The labels are the ones the PATIENT TAPPED (`SELF_TEST_ACTIONS[].label`
+ * in apps/mobile/screens/p-data_entry/muscle-self-test.ts), not a
+ * re-translation: the exported record should name the action the patient
+ * was asked to perform.
+ */
+export const MEASUREMENT_METRIC_LABELS: Readonly<Record<string, string>> = {
+  eye_closure: '用力闭眼',
+  lip_pursing: '噘嘴 / 鼓腮',
+  arm_raise_over_head: '举手过头',
+  elbow_flexion: '屈肘抬物',
+  knee_extension: '坐位伸膝',
+  ankle_dorsiflexion: '勾脚背',
+  shoulder_abduction: '肩外展',
+  shoulder_abduction_mrc: '肩外展',
+};
+
+/**
+ * WHAT A STRENGTH MEASUREMENT MEASURED, for a document that has one
+ * text slot to say it in.
+ *
+ * Three states, and the third one is why this is a function rather than
+ * a lookup:
+ *
+ *   1. A mapped muscle group — 「三角肌肌力」. Unchanged.
+ *   2. No mapped group but a mapped movement — 「用力闭眼肌力」. This is
+ *      the 用力闭眼 case and it is the common one.
+ *   3. Neither maps. `null`, and the callers must then say 「本平台没能
+ *      命名这一条测的是哪块肌肉」 rather than print an enum value. A
+ *      receiver reading 「custom肌力」 either discards the row or ingests
+ *      「custom」 as a body site; both are worse than being told the
+ *      platform cannot name it, which is the true statement.
+ *
+ * The raw keys are NOT swallowed in state 3 — every caller puts them in
+ * a note. What is refused is putting them where the muscle goes.
+ */
+export const measurementSubjectZh = (
+  muscleGroup: string | null | undefined,
+  metricKey: string | null | undefined,
+): string | null => {
+  const mapped =
+    muscleGroup === null || muscleGroup === undefined
+      ? undefined
+      : MUSCLE_GROUP_LABELS[muscleGroup];
+  if (mapped !== undefined) return `${mapped}肌力`;
+  const movement =
+    metricKey === null || metricKey === undefined
+      ? undefined
+      : MEASUREMENT_METRIC_LABELS[metricKey];
+  if (movement !== undefined) return `${movement}肌力`;
+  return null;
+};
+
+/** What a document must say instead, in state 3 above. */
+export const UNNAMED_MEASUREMENT_SUBJECT_ZH = '徒手肌力（本平台未能命名所测部位）';
+
+/**
+ * The stored `muscle_group` when it is a real muscle group, else null.
+ *
+ * `patient_measurements.muscle_group` is NOT NULL, so `addMeasurement`
+ * writes `COALESCE($3, 'custom')` for the rows that have none — and
+ * 「custom」 is not a member of `MUSCLE_GROUPS` nor of migration 022's
+ * CHECK set. Publishing it in a machine-readable `muscleGroup` field
+ * hands a registry a storage sentinel as an anatomical code; null is the
+ * true answer and `metricKey` beside it is the usable one.
+ */
+export const recognisedMuscleGroup = (muscleGroup: string | null | undefined): string | null =>
+  muscleGroup !== null &&
+  muscleGroup !== undefined &&
+  MUSCLE_GROUP_LABELS[muscleGroup] !== undefined
+    ? muscleGroup
+    : null;
+
+/**
+ * THE MOVEMENT BEHIND A GRADE WHOSE LABEL IS A MUSCLE — state 1 only.
+ *
+ * 「三角肌肌力 4 级」 obtained by 「举手过头，在家自己做的」 and the same
+ * grade obtained by an examiner's hand on the arm are not the same
+ * evidence, and `entryMode` says only who did it, not what they tried.
+ * Null in state 2, where the label already IS the movement and repeating
+ * it would read as a second finding.
+ */
+export const measurementMovementZh = (
+  muscleGroup: string | null | undefined,
+  metricKey: string | null | undefined,
+): string | null => {
+  if (muscleGroup === null || muscleGroup === undefined) return null;
+  if (MUSCLE_GROUP_LABELS[muscleGroup] === undefined) return null;
+  if (!metricKey) return null;
+  return MEASUREMENT_METRIC_LABELS[metricKey] ?? null;
+};
+
+/**
+ * The raw keys, for the note that accompanies state 3. Kept out of the
+ * label so nothing downstream maps 「custom」 as a body site, and kept in
+ * the document so the row is still traceable back to its source.
+ */
+export const unnamedMeasurementNoteZh = (
+  muscleGroup: string | null | undefined,
+  metricKey: string | null | undefined,
+): string =>
+  `本平台没能给这一条命名所测的肌肉或动作：档案里这一行记的 muscleGroup 是「${muscleGroup ?? '（空）'}」、metricKey 是「${metricKey ?? '（空）'}」，两者都不在本导出的对照表里。分级本身照原样给出，但在弄清这一行测的是什么之前，请不要把它并入任何肌群的时间序列。`;

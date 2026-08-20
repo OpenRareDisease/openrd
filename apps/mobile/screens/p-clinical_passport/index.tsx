@@ -31,8 +31,11 @@ import {
   getMyPatientProfile,
   isConsentRequiredError,
   readPassportGeneticEvidence,
+  readPassportValueOrigin,
+  readPassportValueOrigins,
   type ClinicalPassportSummary,
   type GeneticTestRequest,
+  type PassportDiagnosisValueKey,
   type PatientProfile,
   type StreamAiQuestionHandle,
 } from '../../lib/api';
@@ -50,6 +53,40 @@ import { buildAnesthesiaCard, type AnesthesiaCardModel } from '../../lib/anesthe
 import { renderAnesthesiaCardPng, type RenderedCard } from '../../lib/anesthesia-card-image';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import { formatDateLabel } from '../../lib/clinical-visuals';
+
+/**
+ * The hero metric labels, spelled the way the API spells them.
+ *
+ * `metrics` arrives as `Array<{ label, value, hint }>` and carries no
+ * discriminant, so every reference to one particular tile is a match on
+ * Chinese prose the API owns. Neither tsc nor eslint can see that join:
+ * both sides are `string`, so a rename on the server compiles clean on
+ * both sides and changes what the patient sees.
+ *
+ * It has already happened. The server renamed 肌力组数 to 肌力项数 once
+ * the count became one of (muscle group, side) pairs rather than of
+ * groups; this screen went on filtering by the old spelling, so the tile
+ * it suppresses came back — and the insert below, written for the
+ * three-element array that filter used to leave, put 最近记录 in the
+ * middle of a four-element one.
+ *
+ * `__tests__/api-string-parity.test.ts` reads the API source and
+ * fails when this table stops matching the labels it emits, in order.
+ * That test is the only thing that checks this join; keep the two in
+ * step or delete both.
+ */
+export const PASSPORT_METRIC_LABELS = {
+  completion: '完整度',
+  documentCount: '报告数',
+  strengthItemCount: '肌力项数',
+  latestUpdate: '最近更新',
+} as const;
+
+/** The tile this screen inserts. Not a metric the API sends — the
+ *  activity/measurement recency is read off `motor`, and it is named
+ *  here so the insert below and the parity test can agree that it is
+ *  ours rather than a server label that went missing. */
+const LATEST_RECORD_LABEL = '最近记录';
 
 const getFreshnessColors = (tone: ClinicalPassportSummary['diagnosis']['freshness']['tone']) => {
   switch (tone) {
@@ -97,6 +134,52 @@ const formatVisitPrepTimestamp = (value: string | null) => {
   const hour = String(date.getHours()).padStart(2, '0');
   const minute = String(date.getMinutes()).padStart(2, '0');
   return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
+};
+
+/**
+ * The heading over 诊断证据's summary paragraph. IT NAMES THE BLOCK, NOT
+ * AN AUTHOR.
+ *
+ * 「本人填写的诊断信息」 and 「管理员代填的诊断信息」 were written off
+ * `confirmation` alone, which is an evidence grade — see
+ * PassportDiagnosisConfirmation in profile.passport.ts — and says
+ * nothing about who typed anything. A genetics report parsed to nothing
+ * but a 分型 lands in `self_reported` with that 分型 read off the report
+ * by OCR, so the heading claimed the patient wrote a string nobody
+ * wrote, directly above it. Deleted rather than qualified; authorship
+ * is per value now, printed under each value from
+ * `diagnosis.valueOrigins`.
+ *
+ * Still a `Record` rather than a ternary chain, so a fifth state added
+ * to the union fails to compile here. The caller still writes
+ * `?? '诊断信息'` for the other direction, which the compiler cannot
+ * cover: `confirmation` is an unchecked assertion off the wire, so a
+ * NEWER API can hand this bundle a word this table has never heard of,
+ * and a lookup miss must not render as `undefined` under the values.
+ */
+const DIAGNOSIS_NOTE_TITLE: Record<ClinicalPassportSummary['diagnosis']['confirmation'], string> = {
+  genetic: '证据摘要',
+  // 证据摘要 as well: the block under this heading is the same join of
+  // values off the same laboratory report, and this state is the one
+  // where they were read and answered. What they are worth is the grade
+  // block's sentence, not this heading's.
+  genetic_non_permissive: '证据摘要',
+  self_reported: '诊断信息',
+  admin_entered: '诊断信息',
+  none: '诊断信息',
+};
+
+/** An ISO timestamp as 2026-08-13 for the provenance list. Returns the
+ *  raw string when it will not parse and null when there is none, so a
+ *  marker never prints 「Invalid Date」 and never silently loses its
+ *  date. */
+const formatOriginDate = (value: string | null) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
 };
 
 const escapeHtml = (value: string) =>
@@ -471,30 +554,106 @@ const ClinicalPassportScreen = () => {
   );
 
   /**
-   * Whether the diagnosis block below is showing evidence or a claim.
+   * Where each printed diagnosis value came from, or null when this
+   * API build does not send them.
    *
-   * The API has carried `confirmation` for a while and the PDF honours
-   * it; this screen did not read it at all, so 基因类型 and 诊断日期 were
-   * set in the same 16.5pt/700/tabular-nums metric type whether they
-   * came out of a genetics report or out of a free-text box on the
-   * baseline form — under a heading that said 证据摘要. Typography is
-   * not decoration here: a well-set number reads as a measurement.
+   * Shape-checked rather than asserted — see `readPassportValueOrigins`
+   * in lib/api.ts. Null is NOT 「every value is the patient's own」: it
+   * is 「the server did not say」, and the block below prints that
+   * instead of a source.
    */
-  const diagnosisConfirmed = passport?.diagnosis.confirmation === 'genetic';
+  const valueOrigins = useMemo(
+    () => readPassportValueOrigins(passport?.diagnosis.valueOrigins),
+    [passport],
+  );
   /**
-   * The one sentence saying so, taken from the summary card rather than
-   * written again. `summaryCards` already computes the wording for all
-   * three states from the same `confirmation` value, and a second
-   * sentence for the same fact is a second thing to keep in step.
+   * Where 证据摘要 came from, or null when this API build does not say.
+   *
+   * It is not in the map above: 证据摘要 is those values joined, so the
+   * API resolves its origin beside them and sends it on its own key.
    */
-  const diagnosisNotice = useMemo(() => {
-    if (!passport || passport.diagnosis.confirmation === 'genetic') return null;
-    return passport.summaryCards.find((card) => card.key === 'diagnosis')?.summary ?? null;
-  }, [passport]);
-  // Not amber, and not a fourth block of it. Amber in this product means
-  // exactly one thing — not genetically confirmed — and it is already
-  // spent on the banner of the PDF this screen exports.
-  const diagnosisValueStyle = diagnosisConfirmed ? styles.infoValue : styles.infoValueSelfReported;
+  const geneEvidenceOrigin = useMemo(
+    () => readPassportValueOrigin(passport?.diagnosis.geneEvidenceOrigin),
+    [passport],
+  );
+  /**
+   * The sentence above the values, and it states EVIDENCE only.
+   *
+   * It is not 「there is nothing to show」 — a genetics report parsed to
+   * nothing but a methylation value lands in a non-genetic state, since
+   * 甲基化 is not one of the three results above, with that report's
+   * 甲基化值 printed in the grid right below.
+   *
+   * Who put a value on the page is under that value, and the sentence
+   * pointing there is only written when there is something to point at:
+   * on an API build that sends no origins there is nothing under any of
+   * them.
+   *
+   * 「从基因报告里读出来的」 cannot be dropped: the D4Z4 重复数 and 甲基化
+   * cells below also print baseline values — an administrator's
+   * transcription or the patient's own typing — each with its source
+   * under it, and the flat sentence would deny a number on the same
+   * screen.
+   *
+   * 「可作确诊依据的」 cannot be dropped either, and it replaced the list
+   * of readings this line used to carry. That list was the server's
+   * grading rule copied into prose here, and the rule is a conjunction:
+   * a laboratory report stating a repeat count and no haplotype is
+   * unconfirmed, with that count in the grid below this sentence and
+   * 报告读取 under it. Same wording the API's own share page and
+   * referral pack use.
+   */
+  const valueOriginsClause = valueOrigins
+    ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
+    : '';
+  const diagnosisNotice = !passport
+    ? null
+    : passport.diagnosis.confirmation === 'genetic'
+      ? null
+      : // A REPORT WAS READ AND THIS IS WHAT IT SAID. The sentence below
+        // denies one, and denying it here would be false on a screen
+        // that is printing the laboratory's own 单倍型 two rows down —
+        // this state is reached only when the report determined it and
+        // the answer was 4qB. The grade block further down carries the
+        // guideline and the 下一步; this line says the one thing the
+        // reader must not miss while scrolling past the values.
+        passport.diagnosis.confirmation === 'genetic_non_permissive'
+        ? `未构成基因确诊：基因报告读到的 4q 单倍型不是允许型 4qA，这一条不支持 FSHD1 的致病机制。这不是排除诊断 —— 下面「证据分级」里写了指南怎么说、以及该问医生什么。${valueOriginsClause}`
+        : `未经基因确诊：这份护照里没有从基因报告里读出来的、可作确诊依据的基因结果。${valueOriginsClause}`;
+  /**
+   * One diagnosis cell: the value, the typographic register its own
+   * source has earned, and that source under it.
+   *
+   * PER VALUE, NOT PER BLOCK. `confirmation` is an evidence grade and
+   * says nothing about who put any one value on the page, so it decides
+   * nothing in here. Typography is not decoration on this page: a
+   * well-set number reads as a measurement, and this population lives
+   * through a diagnostic odyssey that a confident-looking page extends.
+   * Only a value this platform read off a report keeps that register —
+   * 「来源无法确定」 included, because it may be an account. Same split as
+   * the share page's `diagnosisRow`.
+   *
+   * With no origins on the wire every cell drops to the quieter
+   * register, which is the direction that cannot overstate.
+   *
+   * The source line is not amber. Amber in this product means exactly
+   * one thing — not genetically confirmed — and it is already spent on
+   * the banner of the PDF this screen exports.
+   */
+  const renderDiagnosisCell = (label: string, value: string, key: PassportDiagnosisValueKey) => {
+    const origin = valueOrigins?.[key] ?? null;
+    return (
+      <View style={styles.infoCell}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={origin?.kind === 'report' ? styles.infoValue : styles.infoValueSelfReported}>
+          {value}
+        </Text>
+        {origin && origin.kind !== 'absent' ? (
+          <Text style={styles.infoLabel}>{origin.labelZh}</Text>
+        ) : null}
+      </View>
+    );
+  };
 
   /**
    * The graded read of the genetic evidence, or null.
@@ -575,14 +734,38 @@ const ClinicalPassportScreen = () => {
 
   const heroMetrics = useMemo(() => {
     if (!passport) return [];
-    const metrics = passport.metrics.filter((item) => item.label !== '肌力组数');
-    metrics.splice(2, 0, {
-      label: '最近记录',
+    // 肌力项数 is dropped, and dropping it is a removal rather than a
+    // relocation: nothing else on this screen prints that count, and
+    // neither does the PDF it exports. Section 02 says so out loud —
+    // 「不再展示主观肌力体图」 — so a bare count of self-reported readings
+    // has no section left to belong to, while 最近记录 (which the same
+    // section does show) takes the fourth slot in the grid.
+    const metrics = passport.metrics.filter(
+      (item) => item.label !== PASSPORT_METRIC_LABELS.strengthItemCount,
+    );
+    // Anchored to 报告数, not to the index 2 it happens to sit at. The
+    // fixed index was written for the three-tile array the filter used
+    // to leave behind, and it silently became「third of four」the moment
+    // the filter stopped matching. With no 报告数 tile on the wire the
+    // insert goes last rather than guessing a position.
+    const afterDocumentCount = metrics.findIndex(
+      (item) => item.label === PASSPORT_METRIC_LABELS.documentCount,
+    );
+    metrics.splice(afterDocumentCount < 0 ? metrics.length : afterDocumentCount + 1, 0, {
+      label: LATEST_RECORD_LABEL,
       value: formatDateLabel(passport.motor.latestActivityAt ?? passport.motor.latestMeasurementAt),
       hint: passport.motor.activitySummary || '暂无日常记录变化摘要',
     });
     return metrics;
   }, [passport]);
+  /** The 报告数 tile, or nothing. Matched by the same constant the grid
+   *  above uses, so a server rename takes both readers out together and
+   *  the parity test names it once. */
+  const documentCountMetric = useMemo(
+    () =>
+      passport?.metrics.find((item) => item.label === PASSPORT_METRIC_LABELS.documentCount) ?? null,
+    [passport],
+  );
   const reportInsights = useMemo(
     () => buildReportInsights(profile?.documents ?? [], profile),
     [profile],
@@ -747,14 +930,16 @@ const ClinicalPassportScreen = () => {
               </View>
               <View style={styles.heroMetaChip}>
                 <Icon name="file-lines" size={12} color={COLOR.accent} />
-                {/* `?? '0'` answered "the passport hasn't loaded" with
-                    the number zero — a factual claim about the
-                    patient's account, made on the screen they export
-                    for a clinician. An em dash says nothing instead. */}
+                {/* Zero is a claim about this patient's account, made
+                    on the page they hand to a clinician, so it is only
+                    printed when the API actually said zero. Both ways
+                    of not knowing — the passport has not loaded, and it
+                    loaded without a 报告数 tile (an API that renamed the
+                    label, or dropped it) — print an em dash. A `?? '0'`
+                    used to cover the second one and answered a missing
+                    tile with「0 份来源报告」beside a full report list. */}
                 <Text style={styles.heroMetaText}>
-                  {passport
-                    ? `${passport.metrics.find((item) => item.label === '报告数')?.value ?? '0'} 份来源报告`
-                    : '报告数 —'}
+                  {documentCountMetric ? `${documentCountMetric.value} 份来源报告` : '报告数 —'}
                 </Text>
               </View>
             </View>
@@ -925,34 +1110,49 @@ const ClinicalPassportScreen = () => {
                       <Text style={styles.infoLabel}>临床护照 ID</Text>
                       <Text style={styles.infoValue}>{passport.passportId}</Text>
                     </View>
-                    <View style={styles.infoCell}>
-                      <Text style={styles.infoLabel}>基因类型</Text>
-                      <Text style={diagnosisValueStyle}>{passport.diagnosis.geneticType}</Text>
-                    </View>
-                    <View style={styles.infoCell}>
-                      <Text style={styles.infoLabel}>D4Z4 重复数</Text>
-                      <Text style={diagnosisValueStyle}>{passport.diagnosis.d4z4Repeats}</Text>
-                    </View>
-                    <View style={styles.infoCell}>
-                      <Text style={styles.infoLabel}>甲基化值</Text>
-                      <Text style={diagnosisValueStyle}>{passport.diagnosis.methylationValue}</Text>
-                    </View>
-                    <View style={styles.infoCell}>
-                      <Text style={styles.infoLabel}>诊断日期</Text>
-                      <Text style={diagnosisValueStyle}>{passport.diagnosis.diagnosisDate}</Text>
-                    </View>
+                    {renderDiagnosisCell('基因类型', passport.diagnosis.geneticType, 'geneticType')}
+                    {renderDiagnosisCell(
+                      'D4Z4 重复数',
+                      passport.diagnosis.d4z4Repeats,
+                      'd4z4Repeats',
+                    )}
+                    {renderDiagnosisCell(
+                      '甲基化值',
+                      passport.diagnosis.methylationValue,
+                      'methylationValue',
+                    )}
+                    {renderDiagnosisCell(
+                      '诊断日期',
+                      passport.diagnosis.diagnosisDate,
+                      'diagnosisDate',
+                    )}
                     {/* The rung the patient answered on the baseline
                         form. It answers a different question from
                         `confirmation` — 「what did you tell us」 vs
                         「what does the evidence show」 — and the passport
                         shows both rather than reconciling them, which
                         is also why this cell never takes metric type:
-                        it is a self-report by construction, whatever
-                        the uploaded reports say. Absent, not 「—」, when
-                        the question was never answered. */}
+                        it is not evidence, whatever the uploaded
+                        reports say. Absent, not 「—」, when the question
+                        was never answered.
+
+                        WHO filled it comes from the server, in
+                        `ladderOriginZh` (本人填写 / 管理员代填 /
+                        来源不明). The server is the only thing that can
+                        answer it — nothing in this bundle can tell from
+                        the answer alone — so this label prints what it
+                        sends rather than deciding. An API build that
+                        sends no origin gets the bare 「诊断进度」: naming
+                        the patient out of that silence is the same
+                        claim the 字段来源 block below refuses to make,
+                        and this cell sits above it. */}
                     {ladderLabel ? (
                       <View style={styles.infoCell}>
-                        <Text style={styles.infoLabel}>本人填写的诊断进度</Text>
+                        <Text style={styles.infoLabel}>
+                          {passport.diagnosis.ladderOriginZh
+                            ? `${passport.diagnosis.ladderOriginZh}的诊断进度`
+                            : '诊断进度'}
+                        </Text>
                         <Text style={styles.infoValueSelfReported}>{ladderLabel}</Text>
                       </View>
                     ) : null}
@@ -960,10 +1160,79 @@ const ClinicalPassportScreen = () => {
 
                   <View style={styles.noteCard}>
                     <Text style={styles.noteTitle}>
-                      {diagnosisConfirmed ? '证据摘要' : '本人填写的诊断信息'}
+                      {DIAGNOSIS_NOTE_TITLE[passport.diagnosis.confirmation] ?? '诊断信息'}
                     </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
+                    {/* Under the value, in the same register as the
+                        cells above. `absent` prints nothing: an empty
+                        value has no source to name. */}
+                    {geneEvidenceOrigin && geneEvidenceOrigin.kind !== 'absent' ? (
+                      <Text style={styles.infoLabel}>{geneEvidenceOrigin.labelZh}</Text>
+                    ) : null}
                   </View>
+
+                  {/* The cells `renderDiagnosisCell` prints carry their
+                      own sources, and so does 证据摘要; this is the state
+                      where the server did not send all of them, and
+                      silence would be read as 「every one of them came
+                      off a report」 by a reader who has learned what the
+                      line under a value means. The sentence names the
+                      values it covers rather than the grid they sit in,
+                      and covers only the ones with no line under them:
+                      the passport ID in that grid is generated here and
+                      claimed by nobody, and the 诊断进度 cell either
+                      carries the author the server named or names
+                      nobody at all. WeChat caches this web export for
+                      days, so a current bundle can be talking to an API
+                      build that sends neither key or only one of them,
+                      and the sentence has to hold for both. */}
+                  {valueOrigins && geneEvidenceOrigin ? null : (
+                    <View style={styles.noteCard}>
+                      <Text style={styles.noteTitle}>逐项来源</Text>
+                      <Text style={styles.noteText}>
+                        服务端这一版没有把逐项来源发全，基因类型、D4Z4
+                        重复数、甲基化值、诊断日期和证据摘要里，下面没有标来源的那些，是从报告里读出来的还是谁填进去的，本平台无法说明。
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* §B3 on the screen the PATIENT reads, and the last
+                      surface to get it: the printed PDF, the share page
+                      and the markdown export all list these, and
+                      §10（四）of the privacy policy promises 「App 里」
+                      by name. The cells above say where each printed
+                      diagnosis value came from; this says which BASELINE
+                      fields somebody else entered.
+
+                      `undefined` is not 「nothing is marked」. This app
+                      is a web export and WeChat caches a bundle for
+                      days, so a new front end talking to an API build
+                      that predates the field gets `undefined` — reading
+                      that as an empty list is exactly the false
+                      sentence this block exists to prevent, so it says
+                      the server did not send it. Same three-way split
+                      as `fieldOriginsBlock` in
+                      clinical-passport-pdf.ts. */}
+                  {!Array.isArray(passport.fieldOrigins) ? (
+                    <View style={styles.noteCard}>
+                      <Text style={styles.noteTitle}>字段来源</Text>
+                      <Text style={styles.noteText}>
+                        服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。
+                      </Text>
+                    </View>
+                  ) : passport.fieldOrigins.length === 0 ? null : (
+                    <View style={styles.noteCard}>
+                      <Text style={styles.noteTitle}>这些字段不是你本人填的</Text>
+                      {passport.fieldOrigins.map((origin) => (
+                        <Text key={origin.path} style={styles.noteText}>
+                          {origin.labelZh}：
+                          {origin.state === 'admin_entered'
+                            ? `「肌愈通」管理员于 ${formatOriginDate(origin.at) ?? '未记录时间'} 代为录入，不是你本人填写。`
+                            : `来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是你本人填写。`}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
 
                   {/* The graded read of the genetic evidence.
                       Deliberately below the values it is about, and

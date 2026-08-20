@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
+import { BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
+import { applyGeneticReportAutofill } from '../profile.autofill.js';
+import { buildFhirExport } from './fhir-r4.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
+import { buildTreatNmdExport } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
 const build = (overrides: Partial<PatientProfileDTO> = {}, includeLocalOnly = false) =>
@@ -69,6 +73,114 @@ describe('Phenopacket v2 — only verified ontology terms', () => {
   });
 });
 
+/**
+ * A `Disease.term` IS NOT A CONFIRMATION, AND THE PACKET HAS NOWHERE TO
+ * SAY SO.
+ *
+ * The v2 `Disease` message carries `term` and `excluded` and nothing
+ * that records how the diagnosis was established — and `excluded`
+ * means RULED OUT, so its default false is not a confirmation either.
+ * The packet therefore emitted one identical term for a genetically
+ * confirmed patient and for a patient whose repeat count this platform
+ * read off a 病历摘要, with nothing in the envelope separating them.
+ * The FHIR bundle answers this on `Condition.verificationStatus`; this
+ * is the same answer in the one place this format leaves for it.
+ */
+describe('Phenopacket v2 — 一个 Disease.term 不表示基因确诊', () => {
+  const transcription: PatientProfileDTO['documents'][number] = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    id: '88888888-8888-4888-8888-888888888899',
+    documentType: 'medical_summary',
+    ocrPayload: {
+      fields: { classifiedType: 'medical_summary', d4z4Repeats: '9', haplotype: '4qB' },
+    },
+  };
+
+  /* The exact field, not a `startsWith('diseases[]')` prefix. A second
+   * omission on the same prefix — `diseases[].term（分型取自何处）`, which
+   * says which string this packet's ontology term was classified from —
+   * now sits ahead of this one, and a prefix match silently retargeted
+   * every assertion below onto it. */
+  const DIAGNOSIS_BASIS_OMISSION_FIELD = 'diseases[].term（诊断依据）';
+
+  const basisOf = (overrides: Partial<PatientProfileDTO> = {}) =>
+    build(overrides).omissions.find((entry) => entry.field === DIAGNOSIS_BASIS_OMISSION_FIELD)
+      ?.reasonZh ?? '';
+
+  it('每次写出 Disease 都同时声明这个字段说不了诊断依据', () => {
+    const result = build();
+    expect(result.document.diseases).toHaveLength(1);
+    const basis = basisOf();
+    expect(basis).toContain('没有记录「这个诊断是怎么确立的」的位置');
+    expect(basis).toContain('不表示基因确诊');
+    // `excluded` is the slot a reader would otherwise reach for, so the
+    // sentence says what it actually means rather than leaving it.
+    expect(basis).toContain('excluded 表示「已排除该病」');
+  });
+
+  it('三种状态说三句不同的话 —— 读的是报告 / 读的是转录件 / 什么都没读', () => {
+    const laboratory = basisOf();
+    const transcribed = basisOf({ documents: [transcription] });
+    const nothing = basisOf({ documents: [] });
+
+    expect(laboratory).toContain('本平台读作这份档案基因证据的那一份是基因检测报告');
+
+    // The transcription state names the document class in the phrase
+    // every other surface uses, so a registry holding this beside the
+    // TREAT-NMD export reads one claim and not two wordings of one.
+    expect(transcribed).toContain('转录自非基因报告文件');
+
+    // And 「read a transcription」 is not merged with 「read nothing」: one
+    // says this platform holds a number it may not speak for, the other
+    // that it holds none. Merging them sends a registry asking after a
+    // document that does not exist.
+    expect(nothing).toContain('本平台此刻没有可作为这份档案基因证据来读的文件');
+    expect(nothing).not.toContain('转录自非基因报告文件');
+
+    expect(new Set([laboratory, transcribed, nothing]).size).toBe(3);
+  });
+
+  /**
+   * THE DISCLOSURE BRANCHED ON THE WRONG HALF OF THE STATE SPACE.
+   *
+   * It asked 「is a report on file」 before it asked which document was
+   * read, so the transcription warning was written only where no report
+   * existed — where there is no transcription to warn about — and went
+   * silent in the state it was written for: a genetics report on file
+   * that read out nothing is exactly when the picker falls through to a
+   * 病历摘要, and that packet named a laboratory report and said nothing
+   * about the page the numbers came off.
+   */
+  it('报告在档但读出来的是转录件时，转录声明照发', () => {
+    const basis = basisOf({
+      documents: [
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          id: '88888888-8888-4888-8888-888888888881',
+          documentType: 'genetic_report',
+          status: 'parsed',
+          ocrPayload: { fields: { reportTime: '2024-01-28' } },
+        },
+        { ...transcription, uploadedAt: '2024-03-01T06:00:00.000Z' },
+      ] as PatientProfileDTO['documents'],
+    });
+
+    expect(basis).toContain('转录自非基因报告文件');
+    expect(basis).not.toContain('本平台读作这份档案基因证据的那一份是基因检测报告');
+    // And the headline claim is the one the FHIR bundle and the
+    // TREAT-NMD item carry for the same profile.
+    expect(basis).toContain('本平台没有把这份档案判定为基因确诊');
+  });
+
+  it('没有可写的 Disease 时不发这条声明 —— 它说的是本文件里的那个 term', () => {
+    const result = build(withDiagnosisType(null));
+    expect(result.document.diseases).toBeUndefined();
+    expect(result.omissions.some((entry) => entry.field.startsWith('diseases[]'))).toBe(false);
+    // The other 'diseases' omission is the one that applies there.
+    expect(result.omissions.some((entry) => entry.field === 'diseases')).toBe(true);
+  });
+});
+
 describe('Phenopacket v2 — FSHD1 is not a sequence variant', () => {
   it('never emits interpretations, and says why', () => {
     const result = build();
@@ -85,6 +197,63 @@ describe('Phenopacket v2 — FSHD1 is not a sequence variant', () => {
     expect(serialised).not.toContain('DUX4');
     expect(serialised).not.toContain('geneContext');
     expect(serialised).not.toContain('gene-studied');
+  });
+
+  /**
+   * 「见下一条」 HAS TO BE THE NEXT ONE.
+   *
+   * The `interpretations` reason ends by telling the reader the report's
+   * readings are shown as themselves in the other two exports, 「见下一
+   * 条」. For one round the entry pushed next was the platform's
+   * JUDGEMENT of the report — the evidence grade, the assay method, the
+   * 诊断进度 — which says nothing about where the readings are; the entry
+   * it meant was two later, and the comment block describing the
+   * readings entry was sitting above the judgement push, which is how
+   * they came to be swapped. A receiver following that pointer landed on
+   * a paragraph about something else and had no reason to keep reading.
+   *
+   * Asserted by INDEX rather than by 「both entries exist」: existence was
+   * always true and is what let the order rot.
+   */
+  it('「见下一条」 指向的就是紧接着的那一条', () => {
+    [build(), build(withDiagnosisType(null)), build({ documents: [] })].forEach((result) => {
+      const fields = result.omissions.map((entry) => entry.field);
+      const at = fields.indexOf('interpretations');
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(result.omissions[at].reasonZh).toContain('见下一条');
+      expect(fields[at + 1]).toBe('diseases / measurements（基因报告上的读数）');
+    });
+  });
+
+  /**
+   * And the neighbouring entry must not point at one that is not there.
+   *
+   * The 临床护照 entry ended 「是否基因确诊这一判定见上面 diseases[].term
+   * （诊断依据）那一条」 unconditionally, while that entry is pushed only
+   * inside the branch that writes a `Disease`. For every profile with no
+   * classifiable 分型 — a real and common state, which this file's own
+   * `diseases` omission exists for — the pointer named an entry absent
+   * from the list it sits in.
+   */
+  it('没有可写的 Disease 时，不把读者指向一条不存在的 omission', () => {
+    const result = build(withDiagnosisType(null));
+    const fields = result.omissions.map((entry) => entry.field);
+    expect(fields).not.toContain('diseases[].term（诊断依据）');
+    const judgement = result.omissions.find((entry) =>
+      entry.field.startsWith('diseases（临床护照'),
+    );
+    expect(judgement?.reasonZh).not.toContain('见上面 diseases[].term（诊断依据）那一条');
+    expect(judgement?.reasonZh).toContain('是否基因确诊这一判定在本文件里没有承载位置');
+
+    // And every pointer the whole list makes at one of its own entries
+    // resolves. 「上一条」/「下一条」 are positional and checked above; this
+    // catches a reason that names a sibling by its `field` string.
+    result.omissions.forEach((entry) => {
+      const named = [...entry.reasonZh.matchAll(/diseases\[\]\.term（[^）]+）/g)].map(
+        (match) => match[0],
+      );
+      named.forEach((target) => expect(fields, `${entry.field} -> ${target}`).toContain(target));
+    });
   });
 });
 
@@ -201,8 +370,307 @@ describe('Phenopacket v2 — held-but-unemitted instruments are declared', () =>
       '这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取',
       '本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置',
       '需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出',
+      // The fifth is approved rather than filtered, per the note above.
+      // It comes from the `medicalActions` omission and enters the class
+      // on 轮椅 alone. It claims nothing about a walking state: it names
+      // the three transition events this platform records so that a
+      // receiver knows which of them exist to ask for, and the entry it
+      // sits in says in the same breath that none of them is written
+      // here. It is deliberately kept free of the row counts in the
+      // neighbouring sentence, so this exact string does not move with
+      // the profile.
+      '里程碑事件指本平台记录的三类转折点：开始使用轮椅、开始无创通气、开始使用踝足矫形器',
     ]);
     // And no locator may point into a document that has no sections.
     expect(locatorsIn(reason)).toEqual([]);
+  });
+});
+
+/** The provenance block an administrator's edit actually leaves on
+ *  disk, built with the real write helper. */
+const adminEdited = (): Partial<PatientProfileDTO> => {
+  const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+  const disease = stored.diseaseBackground as Record<string, unknown>;
+  const foundation = stored.foundation as Record<string, unknown>;
+  const marker = {
+    source: 'admin_entered',
+    adminUserId: '11111111-2222-3333-4444-555555555555',
+    at: '2026-08-13T04:11:07.912Z',
+  };
+  // 确诊年份 stays reachable through the back office; the 分型 marker is
+  // written by hand because the helper refuses every genetic path now.
+  // Profiles written before that carry one, and an exporter that dropped
+  // it would be a silent regression against real stored data.
+  return {
+    baseline: {
+      ...stored,
+      foundation: { ...foundation, diagnosisYear: 2016 },
+      diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+      [BASELINE_PROVENANCE_KEY]: {
+        'foundation.diagnosisYear': marker,
+        'diseaseBackground.diagnosisType': marker,
+      },
+    },
+  };
+};
+
+/**
+ * Contract §B3. A Phenopacket is protobuf-with-a-JSON-mapping and has
+ * no message field for 「this answer was typed by our staff」, so the
+ * marker rides the envelope rather than being dropped or smuggled into
+ * the document as a non-conformant key.
+ */
+describe('Phenopacket — §B3：管理员代填的值要跟着导出走', () => {
+  it('信封逐条列出代填的字段', () => {
+    const marked = build(adminEdited());
+    expect(marked.fieldOrigins.map((origin) => origin.path)).toEqual([
+      'diseaseBackground.diagnosisType',
+      'foundation.diagnosisYear',
+    ]);
+    expect(marked.notes.字段来源).toContain('确诊年份');
+  });
+
+  it('没有标记时说的是「没有代填」，不是沉默', () => {
+    expect(build().fieldOrigins).toEqual([]);
+    expect(build().notes.字段来源).toContain('没有本平台工作人员代填');
+  });
+});
+
+/**
+ * `Disease.term` IS THE ONLY MACHINE-USABLE CLINICAL ASSERTION THIS
+ * PACKET MAKES, and it used to be classified out of the ARCHIVE while
+ * every patient- and clinician-facing surface resolved the evidence
+ * document's own 分型 cell first. The two disagree over an ordinary
+ * profile — `applyGeneticReportAutofill` fills an EMPTY archive slot
+ * and never corrects a full one, so a questionnaire answered before the
+ * corrected report was uploaded keeps its answer forever — and this
+ * packet then filed the patient under OMIM:158900 while their passport,
+ * share page, referral pack and anaesthesia card all said FSHD2. FSHD1
+ * is a contracted D4Z4 array on a permissive 4qA allele; FSHD2 is a
+ * different mechanism, and a cohort assembled on this term inherits the
+ * error with nothing in the file to catch it.
+ */
+describe('Phenopacket v2 —— Disease.term 跟着报告，不跟着旧问卷答案', () => {
+  const reportSaysFshd2 = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', diagnosisType: 'FSHD2' } },
+  };
+
+  const mismatched = () => {
+    const base: PatientProfileDTO = {
+      ...EXPORT_FIXTURE_PROFILE,
+      documents: [reportSaysFshd2, ...EXPORT_FIXTURE_PROFILE.documents.slice(1)],
+    };
+    return { ...base, ...applyGeneticReportAutofill(base, base.documents) } as PatientProfileDTO;
+  };
+
+  const sourceOmissionOf = (result: ReturnType<typeof build>) =>
+    result.omissions.find((entry) => entry.field.includes('分型取自何处'))?.reasonZh ?? '';
+
+  it('报告写 FSHD2、问卷写 FSHD1 时，写出的本体项是 FSHD2', () => {
+    expect(build(mismatched()).document.diseases).toEqual([
+      {
+        term: { id: 'OMIM:158901', label: 'Facioscapulohumeral muscular dystrophy 2 (FSHD2)' },
+      },
+    ]);
+  });
+
+  /* `Disease` has no note slot anywhere in the v2 schema, so the
+   * omissions list is where this format says it — the same sentence the
+   * FHIR bundle sets on `Condition.note`, so a receiver holding both
+   * reads one account and not two wordings of one. */
+  it('档案里那个不一样的值也写出来，并且指明它在哪一份导出里', () => {
+    const reason = sourceOmissionOf(build(mismatched()));
+    expect(reason).toContain('FSHD2');
+    expect(reason).toContain('FSHD1');
+    expect(reason).toContain('不一致');
+    expect(reason).toContain('diagnosis.type');
+  });
+
+  it('报告没有分型那一项时，说清楚本体项是从档案值归一来的', () => {
+    const reason = sourceOmissionOf(build());
+    expect(reason).toContain('档案里记录的「FSHD1」');
+    expect(reason).toContain('那一份上没有这一项');
+  });
+
+  /**
+   * The `interpretations` omission used to end 「D4Z4 重复数与单倍型在
+   * TREAT-NMD 对齐导出中按其本来面目呈现」 — a two-item list of a
+   * four-member set. 甲基化 travelled to TREAT-NMD unnamed here, and the
+   * EcoRI fragment travelled to no portable export at all and was named
+   * nowhere. A receiver reading that sentence and finding a 4qA
+   * haplotype with no size measurement could not tell 「this patient has
+   * none」 from 「this document does not carry it」.
+   */
+  it('不承载读数这件事说全了四项，不只说两项', () => {
+    const reason =
+      build().omissions.find((entry) => entry.field.includes('基因报告上的读数'))?.reasonZh ?? '';
+    for (const cell of ['D4Z4 重复单元数', '4q 单倍型', 'EcoRI 片段', '甲基化']) {
+      expect(reason, cell).toContain(cell);
+    }
+    expect(reason).toContain('不要因为本文件里没有这些数据就认为患者没有做过这些检测');
+  });
+});
+
+/**
+ * 出生年份 / 确诊年份 — the entry has to describe THIS archive, and the
+ * elements it sends the receiver to have to be in the document it
+ * names.
+ *
+ * FOUR STATES PER DATE, because two stores answer at two precisions
+ * and the year slot has three answers of its own. The wording was
+ * hardcoded twice and was false both times: 「本平台记录的是出生年份与确
+ * 诊年份」 for the archive whose `date_of_birth` column is filled to the
+ * day, and — after that was branched — the same sentence for the
+ * archive that records NEITHER, which then also sent the receiver to a
+ * `Patient.birthDate` and a `Condition.recordedDate` that the sibling
+ * documents do not emit for it.
+ *
+ * So the assertion is not on wording. It builds all three documents
+ * from ONE `NormalisedSource`, the way one request does, and checks
+ * that every element the sentence points at exists in the document it
+ * points at — and that the pointer is dropped when it does not.
+ */
+describe('出生时间与确诊时间：说明必须跟着这份档案实际持有的精度走', () => {
+  const foundationWith = (birthYear: unknown, diagnosisYear: unknown) => ({
+    ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+    foundation: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).foundation as Record<
+        string,
+        unknown
+      >),
+      birthYear,
+      diagnosisYear,
+    },
+  });
+
+  const dateEntryOf = (profile: Partial<PatientProfileDTO>) =>
+    build(profile).omissions.find((entry) => entry.field.startsWith('subject.dateOfBirth'))
+      ?.reasonZh ?? '';
+
+  const STATES = [
+    {
+      nameZh: '记录到日',
+      overrides: { dateOfBirth: '1988-04-02', diagnosisDate: '2014-06-01' },
+      says: ['还有精确到日的出生日期', '本档案上的确诊日期是精确到日的'],
+      // Never the value: this packet withholds the birth date on
+      // purpose and the reason rides in the same JSON, so printing it
+      // to explain withholding it hands over the thing the field
+      // refuses.
+      neverSays: ['1988-04-02', '2014-06-01'],
+      pointsAtBirthDate: true,
+      pointsAtRecordedDate: true,
+    },
+    {
+      nameZh: '只有年份',
+      overrides: { dateOfBirth: null, diagnosisDate: null },
+      says: ['本档案上只有出生年份', '两处都只写到年'],
+      neverSays: ['1988-04-02', '2014-06-01'],
+      pointsAtBirthDate: true,
+      pointsAtRecordedDate: true,
+    },
+    {
+      nameZh: '记不清了',
+      overrides: {
+        dateOfBirth: null,
+        diagnosisDate: null,
+        baseline: foundationWith('记不清了', '记不清了'),
+      },
+      says: ['问过，患者记不清', '写成「记不清了」'],
+      neverSays: ['未采集'],
+      pointsAtBirthDate: false,
+      pointsAtRecordedDate: false,
+    },
+    {
+      nameZh: '未采集',
+      overrides: {
+        dateOfBirth: null,
+        diagnosisDate: null,
+        baseline: foundationWith(null, null),
+      },
+      says: ['本平台没有采集到', '写成「未采集」'],
+      neverSays: ['患者记不清'],
+      pointsAtBirthDate: false,
+      pointsAtRecordedDate: false,
+    },
+  ] as const;
+
+  STATES.forEach((state) => {
+    it(`${state.nameZh}：说明与同一次请求里另外两份文件对得上`, () => {
+      const reason = dateEntryOf(state.overrides);
+      state.says.forEach((phrase) => expect(reason, phrase).toContain(phrase));
+      state.neverSays.forEach((phrase) => expect(reason, phrase).not.toContain(phrase));
+
+      // The two sentences that are true of the FORMAT in every state,
+      // and are the reason this entry omits rather than emits: a
+      // protobuf Timestamp needs an instant, and `Disease.onset` means
+      // 发病 rather than 确诊.
+      expect(reason).toContain('本文件不写出生日期，也不写发病时间。');
+      expect(reason).toContain('Disease.onset 说的是「发病」，不是「确诊」');
+
+      // THE POINTERS, resolved against the documents they name. Built
+      // from the same profile, which is what one request does.
+      const profile = { ...EXPORT_FIXTURE_PROFILE, ...state.overrides };
+      const options = { includeLocalOnly: false, generatedAt: FIXTURE_GENERATED_AT };
+      const fhir = buildFhirExport(normaliseSource(profile, options));
+      const patient = fhir.document.entry
+        .map((entry) => entry.resource)
+        .find((resource) => resource.resourceType === 'Patient');
+      const condition = fhir.document.entry
+        .map((entry) => entry.resource)
+        .find((resource) => resource.resourceType === 'Condition');
+
+      const namesBirthDate = reason.includes('Patient.birthDate 上');
+      expect(namesBirthDate, 'Patient.birthDate').toBe(state.pointsAtBirthDate);
+      expect(
+        (patient as { birthDate?: string } | undefined)?.birthDate !== undefined,
+        'Patient.birthDate 实际是否写出',
+      ).toBe(state.pointsAtBirthDate);
+
+      const namesRecordedDate = reason.includes('Condition.recordedDate 上');
+      expect(namesRecordedDate, 'Condition.recordedDate').toBe(state.pointsAtRecordedDate);
+      expect(
+        (condition as { recordedDate?: string } | undefined)?.recordedDate !== undefined,
+        'Condition.recordedDate 实际是否写出',
+      ).toBe(state.pointsAtRecordedDate);
+
+      // TREAT-NMD's 确诊年份 is the one pointer that resolves in every
+      // state, because `serialiseYear` names 已知 / 记不清了 / 未采集
+      // rather than dropping the item.
+      const treatNmd = buildTreatNmdExport(normaliseSource(profile, options));
+      const diagnosisYear = treatNmd.document.sections
+        .find((section) => section.key === 'diagnosis')
+        ?.items.find((entry) => entry.key === 'diagnosis.year');
+      expect(reason).toContain('diagnosis.year');
+      expect(diagnosisYear, 'diagnosis.year').toBeDefined();
+    });
+  });
+});
+
+/**
+ * 家族史 — 「本平台持有患者对自身家族史的一段自述」 was one hardcoded
+ * string for every profile, including the ones whose 家族史 box is
+ * empty. The declaration itself stays unconditional (an empty box is
+ * worth declaring); the holding claim moves with the row.
+ */
+describe('家族史：声明照发，但「本平台持有」这句要跟着档案走', () => {
+  const familyReasonOf = (overrides: Partial<PatientProfileDTO>) =>
+    build(overrides).omissions.find((entry) => entry.field.includes('家族史'))?.reasonZh ?? '';
+
+  it('档案上有那段自述时，说的是「持有但不发送」', () => {
+    const reason = familyReasonOf({});
+    expect(reason).toContain('本平台持有患者对自身家族史的一段自述');
+    expect(reason).toContain('本平台持有的是一段中文自述');
+    expect(reason).toContain('不表示患者没有家族史');
+  });
+
+  it('档案上那一栏空着时，不说本平台持有它', () => {
+    const reason = familyReasonOf({ baseline: null });
+    expect(reason).not.toContain('本平台持有患者对自身家族史的一段自述');
+    expect(reason).not.toContain('本平台持有的是一段中文自述');
+    expect(reason).toContain('本平台此刻没有患者对自身家族史的任何陈述');
+    // Still declared, and still carrying the sentence that stops a
+    // receiver reading the absence as 「asked, and negative」.
+    expect(reason).toContain('不表示患者没有家族史');
   });
 });

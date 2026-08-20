@@ -2,7 +2,7 @@ import {
   LEGAL_CONTACT_EMAIL,
   LEGAL_DOCUMENTS,
   LEGAL_DOCUMENT_VERSIONS,
-  LEGAL_EFFECTIVE_DATE,
+  LEGAL_EFFECTIVE_DATES,
   OPERATOR_LEGAL_NAME,
   PRIVACY_POLICY_SECTIONS,
   PRIVACY_POLICY_TEXT,
@@ -12,6 +12,7 @@ import {
   USER_AGREEMENT_TEXT,
   GUARDIAN_CONSENT_SECTIONS,
 } from '../legal-content';
+import { ADMIN_FILLED_BASELINE_FIELDS } from '../legal-updates';
 
 /**
  * These are compliance assertions, not style ones. Each names a
@@ -93,6 +94,122 @@ describe('legal-content: PIPL Art. 17 disclosures', () => {
   });
 });
 
+describe('legal-content: the administrator back office (§10)', () => {
+  /**
+   * A back office that can read and edit a patient's record is a new
+   * recipient and a new processing purpose, and until 2026-08-13 this
+   * policy said nothing about it. These assertions are here so a future
+   * edit that trims §10 for length fails here rather than in front of a
+   * patient who was never told.
+   *
+   * Each needle is a fact about the code, not a phrasing preference:
+   *  · the marker is 「管理员代填」 and the passport/export must not say
+   *    「本人填写」 over it (baseline-provenance.ts). THIS FILE CAN ONLY
+   *    ASSERT THE SENTENCE — the code it describes is in the API
+   *    package and unreachable from a jest run here. What holds the
+   *    other end up, named so a reader can check rather than trust:
+   *    apps/api/.../profile.passport.diagnosis.test.ts (the fourth
+   *    confirmation state and the marked-field list),
+   *    passport-share.html.test.ts (the page a doctor opens),
+   *    export/{treat-nmd,fhir-r4,phenopacket}.test.ts (all three
+   *    documents), lib/__tests__/clinical-passport-pdf.test.ts (the
+   *    printed passport) and
+   *    screens/p-clinical_passport/__tests__/index.test.tsx (the passport
+   *    IN THE APP, which is the surface §10（四）names first and the last
+   *    one to get the itemised list) — the last two are in this package;
+   *  · the admin-writable set is enforced server-side, not by which
+   *    boxes a screen draws (ADMIN_WRITABLE_BASELINE_FIELDS);
+   *  · clearing a field leaves NO marker, and the policy says so
+   *    rather than leaving a reader to assume the opposite;
+   *  · reads are audited too, and a failed audit write REFUSES the
+   *    request rather than serving it (require-admin.ts);
+   *  · the trail lives 180 days (AUDIT_RETENTION_DAYS), which also means
+   *    an older access cannot be answered — the policy says both halves;
+   *  · the role can only be granted from a shell (scripts/admin-role.mjs).
+   */
+  it.each([
+    ['who can look', '只有角色被设为「管理员」的账号'],
+    ['how the role is granted', '在命令行上授予'],
+    ['the list is masked', '139****0001'],
+    ['reads are audited too', '包括只是打开看看'],
+    ['a failed audit write refuses the request', '宁可管理员看不成'],
+    ['the search term is not persisted', '不会写进这条记录'],
+    ['the retention window', '保存 180 天后自动删除'],
+    ['what falls outside it', '我们答不上来'],
+    ['the provenance marker', '管理员代填'],
+    ['and what it is not', '不会写成「本人填写」'],
+    [
+      'that the app itself lists the marked fields, not only the exports',
+      '你的临床护照（App 里、导出的 PDF、以及你分享给医生的那个网页）会把这些字段单独列出来',
+    ],
+    ['that the writable set is closed', '管理员只能编辑这些基线临床字段'],
+    ['that the boundary is the server, not the form', '请求会被直接拒绝'],
+    ['that reclaiming is per field', '是按字段算的'],
+    ['that clearing leaves no marker', '清空，则不会留下「管理员代填」标记'],
+    ['that the marker travels into the exports', 'FHIR / Phenopacket / TREAT-NMD'],
+    ['and into the referral sheet', '你带给医生的转诊资料'],
+    ['that an admin can export one patient', '导成一个文件'],
+    ['what the export drops', '它不写你的姓名、电话、住址，也不含家族史'],
+    ['what the export ADDS over the record page', '而这些在后台的患者档案页上一项都不显示'],
+    ['that a full-database CSV exists', '把全部患者导成一张表'],
+    ['how to ask who looked', '15 个工作日内答复'],
+  ])('states %s', (_label, needle) => {
+    expect(PRIVACY_POLICY_TEXT).toContain(needle);
+  });
+
+  it.each([
+    ['隐私政策 §10', () => PRIVACY_POLICY_SECTIONS, '10.'],
+    ['儿童规则 §4', () => GUARDIAN_CONSENT_SECTIONS, '4.'],
+  ])('%s names every field the back office may fill in', (_label, sections, prefix) => {
+    // An enumeration is the sentence that goes wrong quietly: a field
+    // joins ADMIN_FILLED_BASELINE_FIELDS — and with it the server's
+    // allowlist, which admin-filled-fields-parity.test.ts holds it to —
+    // while the paragraph that promises 「只有这些」 keeps the list it
+    // was written with. Held against the clause that makes the promise
+    // rather than the whole document, so a field named somewhere else
+    // (§3's inventory, §5's AI bullet) cannot stand in for it.
+    const section = sections().find((item) => item.title.startsWith(prefix));
+    if (!section)
+      throw new Error(`no section starting ${prefix} — this test's finder, not the app`);
+    for (const field of ADMIN_FILLED_BASELINE_FIELDS) {
+      expect(section.body).toContain(field.label);
+    }
+  });
+
+  it('does not tell a patient the exported file is the record page in another notation', () => {
+    // It is not, in either direction. `AdminController.exportPatient`
+    // runs `buildPortableExport` off `getProfileByUserId`, so the FHIR
+    // document carries measurements, function tests, symptom scores,
+    // daily impacts and the values OCR read out of the reports — none of
+    // which `getPatientRecord` sends to the back-office screen at all.
+    // §10 itself promises 「后台能看到的范围如果扩大，我们会先改这一条」,
+    // and a sentence equating the two is how that promise gets kept on
+    // paper and broken in the file.
+    expect(PRIVACY_POLICY_TEXT).not.toContain('内容与上一条能看到的范围相同');
+  });
+
+  it('does not leave §5 claiming the third-party list is the whole story', () => {
+    // §5 opens with 「以下是全部对外提供与委托处理的情形」. An internal
+    // administrator is not 向第三方提供, which is exactly why a reader
+    // would otherwise finish §5 believing nobody else can see anything.
+    expect(PRIVACY_POLICY_TEXT).toContain('不是「向第三方提供」');
+  });
+
+  it('no longer claims a report can only be fetched by the patient', () => {
+    // §6 used to say 「仅能通过你本人登录后的接口取回」, which the back
+    // office makes false.
+    expect(PRIVACY_POLICY_TEXT).not.toContain('仅能通过你本人登录后的接口取回');
+  });
+
+  it('corrects the guardian rules, which said operations staff do not look', () => {
+    const text = GUARDIAN_CONSENT_SECTIONS.map((section) => section.body).join('\n');
+    expect(text).not.toContain(
+      '我们的运维人员不会主动查阅具体患儿的报告；因排障确需接触时会有操作记录',
+    );
+    expect(text).toContain('管理员');
+  });
+});
+
 describe('legal-content: versioning', () => {
   it.each(Object.entries(LEGAL_DOCUMENT_VERSIONS))(
     '%s carries a date-stamped version',
@@ -109,9 +226,29 @@ describe('legal-content: versioning', () => {
     // The ledger records (document, version); the user has to be able
     // to see which version they are looking at, or the recorded value
     // proves nothing.
-    expect(text).toContain(LEGAL_DOCUMENT_VERSIONS[document]);
-    expect(text).toContain(LEGAL_EFFECTIVE_DATE);
+    //
+    // Asserted as the whole sentence, not as two independent
+    // `toContain`s. Those passed while the effective date was still the
+    // shared 2026-08-02 constant, because the privacy policy's own text
+    // mentions its revision date in three other places — the assertion
+    // was being satisfied by a string that had nothing to do with the
+    // version line.
+    expect(text).toContain(
+      `版本 ${LEGAL_DOCUMENT_VERSIONS[document]}，生效日期 ${LEGAL_EFFECTIVE_DATES[document]}`,
+    );
   });
+
+  it.each(Object.entries(LEGAL_DOCUMENT_VERSIONS))(
+    '%s takes effect on the day its version is dated',
+    (document, version) => {
+      // A revision that took effect on some other day would need a
+      // reason. Until there is one, the two dates moving apart means
+      // somebody bumped a version and forgot the effective date — which
+      // is the pair「版本 2026-08-13，生效日期 2026-08-02」that made this
+      // map per-document in the first place.
+      expect(LEGAL_EFFECTIVE_DATES[document as keyof typeof LEGAL_EFFECTIVE_DATES]).toBe(version);
+    },
+  );
 
   it('pins the document identifiers persisted in the ledger', () => {
     // Mirrored in apps/api/src/modules/legal/legal.constants.ts and in
@@ -156,7 +293,9 @@ describe('legal-content: Art. 31 儿童个人信息', () => {
     // guardian — not a paragraph inside the general agreement, which
     // would leave nothing recording WHO consented for a child.
     expect(GUARDIAN_CONSENT_SECTIONS.length).toBeGreaterThan(0);
-    expect(LEGAL_DOCUMENT_VERSIONS[LEGAL_DOCUMENTS.guardianConsent]).toBe(LEGAL_EFFECTIVE_DATE);
+    expect(LEGAL_DOCUMENT_VERSIONS[LEGAL_DOCUMENTS.guardianConsent]).toBe(
+      LEGAL_EFFECTIVE_DATES[LEGAL_DOCUMENTS.guardianConsent],
+    );
   });
 
   it('states the guardian affirmation the registration gate collects', () => {

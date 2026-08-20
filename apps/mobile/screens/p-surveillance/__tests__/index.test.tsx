@@ -17,6 +17,16 @@ import React from 'react';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 import { Text } from 'react-native';
 
+// `requireActual` below loads the real api.ts, which pulls in
+// AsyncStorage through session-storage, and that has no native module
+// under jest. Same stub api-transport.test.ts uses.
+jest.mock('../../../lib/session-storage', () => ({
+  __esModule: true,
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../../../lib/api', () => {
   class ApiError extends Error {
     status?: number;
@@ -24,6 +34,11 @@ jest.mock('../../../lib/api', () => {
   }
   return {
     __esModule: true,
+    // The real shape check, not a stub. The anesthesia card this page
+    // links to reads it, and it is what keeps a value's source off an
+    // invented author, so a test that faked it would be asserting
+    // against its own fiction.
+    readPassportValueOrigins: jest.requireActual('../../../lib/api').readPassportValueOrigins,
     ApiError,
     getClinicalPassportSummary: jest.fn(),
     getMyPatientProfile: jest.fn(),

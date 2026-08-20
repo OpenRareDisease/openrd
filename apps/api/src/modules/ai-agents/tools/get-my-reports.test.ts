@@ -1,8 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ToolContext } from './base.js';
 import { ToolValidationError } from './base.js';
-import { GetMyReportsTool } from './get-my-reports.js';
+import {
+  CLASSIFIED_REPORT_TYPES,
+  DOCUMENT_TYPE_ENUM,
+  GetMyReportsTool,
+  UPLOAD_DOCUMENT_TYPES,
+} from './get-my-reports.js';
 import type { RetrieveContext, RetrieveResult } from '../retrievers/base.js';
 import type { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 
@@ -181,5 +190,80 @@ describe('GetMyReportsTool scope', () => {
 
     expect(calls[0]).toMatchObject({ filter: { documentType: 'mri' } });
     expect((calls[0] as { filter: Record<string, unknown> }).filter.documentId).toBeUndefined();
+  });
+});
+
+/**
+ * Both vocabularies, pinned across the language boundary.
+ *
+ * `documentType` is the only argument the model can get wrong in a way
+ * the patient sees: a value the classifier never writes comes back
+ * empty, and an omitted value cannot be asked for at all. The strings
+ * are decided by `_classify_report` in
+ * apps/report-manager/app/services/fshd_report_service.py — another
+ * workspace, another language, no import between them — so the schema
+ * is checked against that source rather than against a memory of it.
+ */
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '..', '..', '..', '..', '..', '..');
+const PARSER_SOURCE = fs.readFileSync(
+  path.join(REPO_ROOT, 'apps', 'report-manager', 'app', 'services', 'fshd_report_service.py'),
+  'utf8',
+);
+
+describe('the OCR vocabulary get_my_reports advertises', () => {
+  /** Top-level keys of REPORT_TYPE_RULES. Nested rows inside a rule are
+   *  indented further and are tuples, not quoted keys. */
+  const parserRuleTypes = () => {
+    const block = PARSER_SOURCE.match(/^REPORT_TYPE_RULES.*= \{$\n([\s\S]*?)^\}$/m)?.[1];
+    expect(block).toBeDefined();
+    return [...(block ?? '').matchAll(/^ {4}"([a-z_]+)":/gm)].map((match) => match[1]);
+  };
+
+  it('is exactly what the FSHD parser can conclude', () => {
+    // `_classify_report` returns a REPORT_TYPE_RULES key, or the
+    // literal asserted below when no rule scores. That string is
+    // `analysis.fshd.report_type`, which embedded-report-ocr.ts copies
+    // into `ocr_payload.fields.classifiedType` — the column
+    // patient-reports.ts filters on. Nothing else writes it, so these
+    // two together are the whole vocabulary.
+    const ruleTypes = parserRuleTypes();
+    expect(ruleTypes).toContain('genetic_report');
+    expect(PARSER_SOURCE).toMatch(/return "other",/);
+
+    expect(CLASSIFIED_REPORT_TYPES.slice().sort()).toEqual([...ruleTypes, 'other'].sort());
+  });
+
+  it('advertises each value once', () => {
+    expect(new Set(DOCUMENT_TYPE_ENUM).size).toBe(DOCUMENT_TYPE_ENUM.length);
+    expect(DOCUMENT_TYPE_ENUM).toEqual(
+      expect.arrayContaining([...UPLOAD_DOCUMENT_TYPES, ...CLASSIFIED_REPORT_TYPES]),
+    );
+  });
+
+  it('accepts every advertised value through parseArgs', () => {
+    // The enum and the validator are two lists until something says so:
+    // a value the schema offers and `validate` rejects is a tool call
+    // that dies on arrival, with no retry in a two-round orchestrator.
+    const tool = new GetMyReportsTool({
+      search: vi.fn(),
+    } as unknown as PatientReportsRetriever);
+    for (const type of DOCUMENT_TYPE_ENUM) {
+      expect(tool.parseArgs(JSON.stringify({ documentType: type }))).toEqual({
+        documentType: type,
+      });
+    }
+  });
+
+  it('names every advertised value in the description the model reads', () => {
+    // The description is what the model actually plans against; an enum
+    // it cannot see spelled out is one it will not use.
+    const tool = new GetMyReportsTool({
+      search: vi.fn(),
+    } as unknown as PatientReportsRetriever);
+    const properties = tool.parametersSchema.properties as Record<string, { description: string }>;
+    for (const type of DOCUMENT_TYPE_ENUM) {
+      expect(properties.documentType.description).toContain('`' + type + '`');
+    }
   });
 });

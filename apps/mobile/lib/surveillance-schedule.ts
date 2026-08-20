@@ -54,9 +54,15 @@
  */
 
 import { buildAnesthesiaCard } from './anesthesia-card';
+import { formatProductDate } from './clinical-visuals';
 import { ageInYears } from './guardian-consent';
 import { bucketForScore } from '../screens/p-data_entry/sleep-score';
-import type { ClinicalPassportSummary, PatientProfile } from './api';
+import {
+  readPassportValueOrigins,
+  type ClinicalPassportSummary,
+  type PassportValueOrigin,
+  type PatientProfile,
+} from './api';
 
 /** AAN recommendation strength, kept as the guideline states it. */
 export type SurveillanceLevel = 'B' | 'C';
@@ -76,8 +82,59 @@ export type SurveillancePolarity = 'do' | 'do_not';
  *                  patient's own record here.
  *  not_matched   — the record we hold does not show that condition.
  *                  NOT the same as 「you don't need this」.
- *  unknown       — the guideline's condition is about something this
- *                  platform never collects, or collected unreadably.
+ *  unknown       — this platform cannot answer the guideline's
+ *                  condition. The reasons are not one thing, and a row
+ *                  may only claim the one that is true of it. These are
+ *                  the ones this file produces today; the list is open,
+ *                  so a row reaching a state not below is a row to
+ *                  describe here, not a bug:
+ *
+ *                  · the condition is about something never collected
+ *                    here — scoliosis, daytime somnolence. This is the
+ *                    only one 「本平台没有」 is true about.
+ *                  · it was collected and no usable reading came back:
+ *                    an OCR that found no number, or a count cell the
+ *                    server read and refused (「0」,「3kb」), or a
+ *                    WeChat-cached bundle whose API predates the
+ *                    reading. The number is often still ON the page —
+ *                    what is missing is a verdict on it.
+ *                  · it was collected, is perfectly readable, and is
+ *                    not PRECISE enough to decide this particular
+ *                    boundary — `hearing_child` on a patient whose
+ *                    birth YEAR is on file and whose 7 周岁 boundary
+ *                    falls between the two ages that year allows.
+ *                  · it was collected, is readable, IS precise, the
+ *                    boundary IS decided, and the guideline's condition
+ *                    still does not follow — `retinal_screening` on a
+ *                    count inside the 1–4 band read off a report that
+ *                    also states a non-permissive 4qB allele. The
+ *                    number answers; the group the guideline names
+ *                    (large deletion INSIDE FSHD) is not this
+ *                    platform's to put the patient into on a
+ *                    non-permissive result. Note what this is NOT:
+ *                    `not_matched` would read as an exclusion drawn
+ *                    from a haplotype, and `matched` is the disagreement
+ *                    with the clinical passport this arm was added to
+ *                    end.
+ *                  · it was collected, is readable, IS precise, and the
+ *                    guideline's condition DOES follow from it — and the
+ *                    reading is too OLD to be a statement about the
+ *                    patient now. `sleep_referral` on a 「较差」 sleep
+ *                    score older than `RECENT_WINDOW_DAYS`: 3/10 is
+ *                    squarely inside the band this row scores on, and
+ *                    the row still declines, because every other arm it
+ *                    has is gated on the same 180-day window and a
+ *                    two-year-old bad week is a different person's. The
+ *                    four above are 「we cannot read it」; this one is
+ *                    「we read it, and it is not about today」. It is not
+ *                    `matched` (that would date a referral question to a
+ *                    week the patient has left behind) and it is not
+ *                    `not_matched` (nothing here says the patient sleeps
+ *                    well now).
+ *
+ *                  Everything after the first bullet is why a row
+ *                  reaching `unknown` still has to name what it holds:
+ *                  「本平台没有」 is false about all of them.
  */
 export type SurveillanceApplicability = 'everyone' | 'matched' | 'not_matched' | 'unknown';
 
@@ -222,15 +279,125 @@ const SCHOOL_ENTRY_AGE = 7;
 const hasValue = (value: string | null | undefined): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim() !== '—';
 
-/** YYYY-MM-DD, or null. Full year on purpose: 「05-14」 on a wheelchair
- *  event tells the patient nothing about whether it was this spring. */
+/** A calendar date with no time part.
+ *
+ *  A monitoring slot's `latestDate` arrives from the API already
+ *  formatted as a bare 「YYYY-MM-DD」, and re-parsing a string that is
+ *  already the answer is where the day was lost a second time:
+ *  `new Date('2025-05-09')` is UTC midnight, so `getDate` in the
+ *  device's zone printed 2025-05-08 for a report the passport dated
+ *  05-09, and this schedule then disagreed with the passport it was
+ *  built from. `formatProductDate` short-circuits exactly this shape;
+ *  the regex is still here to check what came back out of it. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** YYYY-MM-DD on the product's calendar, or null. Full year on purpose:
+ *  「05-14」 on a dated result tells the patient nothing about whether
+ *  it was this spring.
+ *
+ *  THIS IS THE RENDERER FOR A VALUE THAT REALLY IS A DAY — a monitoring
+ *  slot's `latestDate`, a symptom score's `recordedAt`, both of which
+ *  are written the moment the observation is made. It is the wrong
+ *  renderer for a follow-up milestone, because it always produces a
+ *  day: see `formatMilestoneDate` below, which is what the wheelchair
+ *  and the non-invasive-ventilation rows go through now.
+ *
+ *  THE ZONE IS THE PRODUCT'S, NOT THE HANDSET'S. `recordedAt` is a real
+ *  instant, and this used to read it back through `getFullYear` /
+ *  `getMonth` / `getDate` — so a sleep score filed at 16:00 UTC or
+ *  later printed one day here and the next day in every server-rendered
+ *  document off the same row. `formatProductDate` is the same
+ *  arithmetic apps/api's `formatProductDate` does; this is
+ *  referral-pack.ts's `formatDate` wrapper around it, null-ing anything
+ *  that did not come back as a calendar day.
+ *
+ *  A whitespace-only or 「—」 value is refused by `hasValue` before it
+ *  gets here, so the null this returns still means 「nothing to
+ *  print」 and never 「the empty string」. */
 const formatFullDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
-  const date = new Date(value);
+  const formatted = formatProductDate(value);
+  return formatted && DATE_ONLY.test(formatted) ? formatted : null;
+};
+
+/**
+ * A FOLLOW-UP MILESTONE'S DATE, AS MUCH OF IT AS THIS PAGE MAY PRINT.
+ *
+ * `patient_followup_events.occurred_at` is TIMESTAMPTZ NOT NULL and has
+ * no way to say 「只知道是哪一年」, so a patient whose wheelchair answer
+ * was 「2019 年」 is stored as the first instant of 2019. That is the
+ * shape apps/api's occurrence-date.ts names `pinnedToYearStart`, and
+ * refusing to print it as a calendar day is the whole reason that
+ * module exists.
+ *
+ * WHAT THIS ROW USED TO PRINT was `formatFullDate` over exactly that
+ * instant: 「你在随访里记录了「开始使用轮椅」（2019-01-01）」 — the
+ * fabricated 1 January that the referral pack, the FHIR bundle and the
+ * TREAT-NMD document all decline to print for the same event, off the
+ * same column, in the same run. And because `formatFullDate` then read
+ * a UTC instant back through `getFullYear`/`getMonth`/`getDate` — it
+ * goes through the product's calendar now, see its own note — every
+ * device west of Greenwich printed （2018-12-31）: the wrong YEAR on the
+ * milestone a neurologist reads as the start of wheelchair use. China
+ * is UTC+8, so the product's own timezone can never show that half.
+ *
+ * WHAT IT PRINTS INSTEAD is the referral pack's own answer for the same
+ * column, word for word — 「2019 年」 (referral-pack.ts's
+ * `milestoneDateZh`; `toPartialFhirDate` emits 「2019」 for it). The test
+ * for the pin is done in UTC, the way occurrence-date.ts does it,
+ * because in any other zone one stored row would answer differently on
+ * two handsets.
+ *
+ * A REAL 1 JANUARY LOSES ITS MONTH AND DAY HERE, and that is the trade
+ * every other surface in this repo has already made. The event form
+ * sends whatever date the patient typed, so a genuine 2019-01-01 and a
+ * pinned 「2019 年」 are the same bytes by the time anything reads them
+ * — nothing downstream can tell the two apart. Under-claiming precision
+ * for the first patient is recoverable; asserting an observation date
+ * nobody ever gave is not. Printing a day here while the pack printed a
+ * year was also two documents built from one profile disagreeing about
+ * when one person started using a wheelchair.
+ *
+ * THE TEST FOR THE PIN IS IN UTC AND THE DAY IS ON THE PRODUCT'S
+ * CALENDAR, and those are two different questions with two different
+ * right answers.
+ *
+ * `pinnedToYearStart` is a statement about the SHAPE OF THE STORED
+ * VALUE — 「the column holds exactly the first millisecond of a year」 —
+ * and occurrence-date.ts makes it in UTC so that one row cannot answer
+ * it differently on two hosts. This does the same, with the same UTC
+ * accessors, so a milestone the referral pack prints as 「2019 年」 is
+ * printed as 「2019 年」 here.
+ *
+ * The day is a question about the CALENDAR THE DOCUMENT IS READ ON, and
+ * that is `PRODUCT_TIME_ZONE`. This used to answer it in UTC too, and
+ * defended that with 「no path writes a real time of day into this
+ * column」. That premise was false: `followupEventSchema.occurredAt` is
+ * `isoDateString`, which is `z.string().trim().refine(Date.parse)` —
+ * it accepts a full timestamp, and the API stores whatever it accepted.
+ * Rendered against a real 2025-11-20T16:30:00.000Z, this page printed
+ * 2025-11-20 while the referral pack built from the same row printed
+ * 2025-11-21, which is the two-documents-disagreeing failure the pin
+ * itself exists to prevent, in the other half of the same function.
+ *
+ * Reading it on the product's calendar is also right for the majority
+ * shape — the bare 「YYYY-MM-DD」 the event form posts, which the API
+ * parses at UTC midnight and hands back through `toISOString`. Beijing
+ * is ahead of UTC, so a midnight instant keeps its day: 2019-06-14
+ * still prints 2019-06-14, here and in the pack.
+ */
+const formatMilestoneDate = (value: string | null | undefined): string | null => {
+  if (!hasValue(value)) return null;
+  const date = new Date(value.trim());
   if (Number.isNaN(date.getTime())) return null;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  const atMonthStart =
+    date.getUTCDate() === 1 &&
+    date.getUTCHours() === 0 &&
+    date.getUTCMinutes() === 0 &&
+    date.getUTCSeconds() === 0 &&
+    date.getUTCMilliseconds() === 0;
+  if (atMonthStart && date.getUTCMonth() === 0) return `${date.getUTCFullYear()} 年`;
+  return formatFullDate(value);
 };
 
 const daysBetween = (from: string, today: Date): number | null => {
@@ -282,38 +449,243 @@ const normalizedScore = (item: {
 const monitoringItem = (summary: ClinicalPassportSummary, key: 'respiratory' | 'cardiac') =>
   summary.monitoring.items.find((item) => item.key === key) ?? null;
 
+declare const LABORATORY_REPEAT_COUNT: unique symbol;
+
 /**
- * True only when the D4Z4 repeat count is unambiguously in the range
- * the guideline calls a large deletion.
+ * THE D4Z4 REPEAT COUNT THE SERVER HAS ALREADY RULED MAY BE JUDGED.
  *
- * Ported from the API's `isLargeD4Z4Deletion`
- * (apps/api/src/modules/patient-profile/profile.passport.ts) because
- * the mobile bundle cannot import from the API package. Same rule,
- * same reasons, and the table in the test file is the same table:
+ * `summary.diagnosis.laboratoryRepeatCount` is the API's
+ * `determinateRepeatCount` on the wire: the repeat-count cell of the
+ * laboratory's own report, parsed there, and sent only when it came out
+ * as one plain number that is neither a length in kb nor a 0. A range, a
+ * comparison operator, a cell that names a count in order to say it was
+ * not found, a kb length, a 0, an administrator's transcription of a
+ * report read out over the phone, the patient's own typing and a count
+ * quoted in a 病历摘要 all arrive as null — each for the reason the API's
+ * own note gives, and not one of them by a rule kept on this side.
  *
- *  - the guideline supplies both forms of the threshold in one
- *    sentence — 「contracted D4Z4 allele of 10–20 kb or 1–4 repeats」 —
- *    so nothing here converts kb to repeats on its own authority;
- *  - the input is OCR'd off a genetics report and arrives as free
- *    text (「3」,「3个」,「1-10」,「≤10」). A range or a comparison
- *    operator means the number is not known, and this gates a
- *    recommendation to go pay for an ophthalmology appointment, so
- *    anything short of a single plain integer is treated as unknown;
- *  - 0 repeats is not a viable FSHD1 allele. Reading one means the
- *    extraction is wrong, not that the deletion is enormous.
- *
- * If the API's version changes, this one has to change with it — the
- * two are checked against the same cases but nothing in the build
- * links them.
+ * WHAT THIS REPLACED, AND WHY IT HAD TO BE REPLACED. This file used to
+ * mint its own decidable reading out of the printed `d4z4Repeats` row
+ * and `valueOrigins`, then classify it with a hand-kept copy of the
+ * API's parser — the unit rule, the range rule, the negation rule and
+ * the zero rule, restated in a second set of regular expressions on the
+ * far side of a wire. Rendered against a cell reading 「0」, the copy and
+ * the server disagreed about the same passport: the server called that
+ * reading one it could not make sense of and asked for the original,
+ * while this page put 「按你的记录不适用」 on a card recommending an eye
+ * examination and told the reader the number fell outside the
+ * guideline's band — an exclusion drawn from a reading that excludes
+ * nothing. There is one parser now, it runs on the server, and this file
+ * cannot re-open the question because it no longer holds anything to
+ * re-open it with.
  */
-export const isLargeD4Z4Deletion = (raw: string | null | undefined): boolean => {
-  const text = (raw ?? '').trim();
-  if (!text || text === '—') return false;
-  if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
-  const numbers = text.match(/\d+(?:\.\d+)?/g);
-  if (!numbers || numbers.length !== 1) return false;
-  const repeats = Number(numbers[0]);
-  return Number.isInteger(repeats) && repeats >= 1 && repeats <= 4;
+export interface LaboratoryRepeatCount {
+  /** The count as the report printed it —「3」,「3个」. */
+  readonly raw: string;
+  readonly [LABORATORY_REPEAT_COUNT]: true;
+}
+
+/**
+ * WHAT THE SERVER SAID ABOUT THE REPEAT COUNT — three answers this row
+ * has to keep apart, because they owe the reader different sentences.
+ *
+ *  count      — a determinate laboratory count. The only reading the
+ *               guideline branch below may see.
+ *  none       — the server answered, and its answer is that no count on
+ *               this passport may decide anything. The number the page
+ *               prints may still be there; what it is not is decidable.
+ *  unanswered — the field is not on the wire. This bundle ships as a web
+ *               export WeChat's in-app browser caches for days, so a
+ *               handset can be running today's code against an API build
+ *               that predates the field, and 「报告没有给出确定的重复数」
+ *               would be this app answering for a server that said
+ *               nothing.
+ */
+export type LaboratoryRepeatCountReading =
+  | { readonly state: 'count'; readonly count: LaboratoryRepeatCount }
+  | { readonly state: 'none' }
+  | { readonly state: 'unanswered' };
+
+/**
+ * THE ONLY EXPRESSION THAT MINTS A DECIDABLE COUNT, and it mints one
+ * only out of the field the API sends for exactly this purpose.
+ *
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call and that type
+ * parameter is an unchecked assertion over whatever the server sent, so
+ * the bytes are checked here rather than trusted: anything that is not a
+ * string — the field missing, or a shape this bundle has no reading for
+ * — is 「the server did not answer」 and never 「there is no count」.
+ */
+export const readLaboratoryRepeatCount = (
+  summary: ClinicalPassportSummary,
+): LaboratoryRepeatCountReading => {
+  const sent = summary.diagnosis.laboratoryRepeatCount;
+  if (sent === null) return { state: 'none' };
+  if (typeof sent !== 'string') return { state: 'unanswered' };
+  const raw = sent.trim();
+  if (!raw || raw === '—') return { state: 'none' };
+  return { state: 'count', count: { raw } as LaboratoryRepeatCount };
+};
+
+/**
+ * THE BAND, AND IT IS THE ONE THING THIS FILE STILL COMPUTES.
+ *
+ * Nothing on the wire answers 「is this count inside the range the
+ * guideline calls a large deletion」 — the passport sends the count and
+ * decides the classification privately, in its own
+ * `isLargeD4Z4Deletion` — so the band is here, and it is the guideline's
+ * own pairing quoted in the unit the number arrives in: 「contracted
+ * D4Z4 allele of 10–20 kb or 1–4 repeats」. Nothing here converts the kb
+ * half into the repeat half, and nothing here needs to: the only reading
+ * that reaches this predicate is one the server has already withheld
+ * for a stated kb.
+ *
+ * SO IF THE API'S BAND MOVES, THESE TWO NUMBERS HAVE TO MOVE WITH IT,
+ * and they are the whole of what can drift now — the parse that used to
+ * sit beside them, and that is what actually drifted, is gone. The
+ * sentence the row prints is built out of these same two numbers, so a
+ * change to the band rewrites the copy instead of leaving yesterday's
+ * range printed under today's decision.
+ */
+const LARGE_DELETION_MIN_REPEATS = 1;
+const LARGE_DELETION_MAX_REPEATS = 4;
+
+/** The band as the row says it out loud, from the numbers it judges by. */
+const LARGE_DELETION_RANGE_ZH = `${LARGE_DELETION_MIN_REPEATS}–${LARGE_DELETION_MAX_REPEATS}`;
+
+/**
+ * The number back out of the string the server vetted.
+ *
+ * `determinateRepeatCount` hands over the cell as the report printed it
+ *  —「3」or「3个」— and hands over nothing at all unless that cell parsed
+ * to a single plain number in repeat units, so taking the number out
+ * again is the whole of the reading. A string that does not hold exactly
+ * one number is refused rather than guessed at, which can only withhold
+ * the recommendation.
+ */
+const repeatCountValue = (count: LaboratoryRepeatCount | null): number | null => {
+  const numbers = count?.raw.match(/\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length !== 1) return null;
+  const value = Number(numbers[0]);
+  return Number.isFinite(value) ? value : null;
+};
+
+/** True only for a laboratory count inside the band above. */
+export const isLargeD4Z4Deletion = (count: LaboratoryRepeatCount | null): boolean => {
+  const value = repeatCountValue(count);
+  return (
+    value !== null &&
+    Number.isInteger(value) &&
+    value >= LARGE_DELETION_MIN_REPEATS &&
+    value <= LARGE_DELETION_MAX_REPEATS
+  );
+};
+
+/**
+ * WHERE EVERY UNDECIDED ARM OF THE RETINA ROW ENDS.
+ *
+ * One sentence, at module scope, because more than one arm needs it and
+ * two wordings of 「this is the doctor's call, with the original in front
+ * of them」 on one row is two things to keep in step.
+ */
+const ASK_DOCTOR_ZH = '这一条要不要做，请医生看着报告原件判断。';
+
+/**
+ * The 判断不了 sentence for a count this page is showing but did not get
+ * off an uploaded document.
+ *
+ * ONE SENTENCE PER ORIGIN, and only where the origin itself is the
+ * evidence for the sentence. A flat 「它不是本平台从基因报告里读出来的」
+ * is false in one of the states that reach here — `indeterminate` is
+ * the API's answer for 「the read-time OCR autofill copies a report's
+ * value into an empty baseline field and leaves no record, so this
+ * platform cannot tell that apart from the patient's own typing」, and
+ * asserting the negative there contradicts the server's own record of
+ * what it does not know.
+ *
+ * NOR MAY THIS FILE NARRATE THE MECHANISM BEHIND `indeterminate`. It
+ * used to: 「读取档案时系统会拿报告里的值补上空着的栏位」 was printed for
+ * every indeterminate value, and the API resolves that kind down two
+ * roads, only one of which is the autofill. The other is 「the archive
+ * holds it, a box exists, and NOTHING on file carries a repeat count at
+ * all」 — the state a patient who typed a number into the registration
+ * form and uploaded nothing is in, and the sentence named them a report
+ * they have never had. The server distinguishes the two in `detail`,
+ * written for a reader; it is written ABOUT the patient rather than TO
+ * them, so this row prints the server's `labelZh` — the phrase the API
+ * words for exactly this purpose, and the same one the passport, the
+ * share page and the referral pack put beside the value — and claims
+ * nothing further.
+ *
+ * That is also what keeps this row honest against an origin kind this
+ * bundle has never heard of: `readPassportValueOrigin` falls an
+ * unrecognised kind to `indeterminate` and carries the server's own
+ * `labelZh` with it, so the default arm below prints the newer API's
+ * words instead of inventing an account of a state it cannot know.
+ */
+const unverifiedRepeatEvidence = (printed: string, origin: PassportValueOrigin | null): string => {
+  // 「你的记录里」 rather than 「你档案里」, because one of the origins that
+  // reaches here is a number this platform read off an uploaded 病历摘要
+  // — not something in the archive at all. The arms whose origin does
+  // prove the archive slot say so themselves, in their own clause.
+  const head = `你的记录里 D4Z4 重复数是 ${printed}`;
+  // THIS ROW NO LONGER TELLS THE PATIENT WHICH REPORT WAS READ.
+  //
+  // It used to end 「本平台只读你上传的最新一份基因报告 —— 重复数写在
+  // 别的报告上，这一行就读不到它」, and both halves described a rule the
+  // API has stopped having. `pickGeneticEvidenceDocument` prefers the
+  // genetics laboratory's own report over a document quoting one, a
+  // report whose parse landed over one whose parse did not, and a
+  // richer report over a thinner one, reaching upload time only to
+  // break a tie between equals. So the newest report may well not be
+  // the one that was read, and a count printed on an earlier one may
+  // well be exactly what this page is showing.
+  //
+  // What replaces it is not a corrected version of the sentence. This
+  // module is handed a passport summary — values and their origins,
+  // and not one word about the documents behind them. It cannot see
+  // which report was picked, so any sentence it writes on the subject
+  // is a rule quoted from memory, which is what went stale the first
+  // time. Every arm below says where the number on THIS page came
+  // from, which is what `origin` actually answers, and stops there.
+  const askDoctor = ASK_DOCTOR_ZH;
+  // No `valueOrigins` on the wire: this app ships as a web export that
+  // WeChat's in-app browser caches for days, so a handset can be
+  // running today's bundle against an API build that sends none.
+  // 「不是从报告里读出来的」 would be inventing the answer the server did
+  // not give — and so would the arms below, every one of which is a
+  // reading of something the server said.
+  if (!origin) {
+    return `${head}，但本平台这次没有拿到这个数的来源，所以说不出它是从上传的文件里读出来的，还是填在档案里的。${askDoctor}`;
+  }
+  switch (origin.kind) {
+    case 'admin_entered':
+      return `${head}，它是本平台的管理员代你录进来的 —— 是谁、什么时候，护照的「字段来源」那一栏里有。这个数是从你的档案里取的，本平台没有从你上传的文件里读出过它。${askDoctor}`;
+    case 'admin_unreadable':
+      // The marker exists and cannot be parsed. 「不是你自己填的」 is
+      // the whole of what it proves — naming an author it does not name
+      // is the direction this row exists to avoid.
+      return `${head}，它不是你自己填的，但那条来源记录本平台读不出来，原因写在护照的「字段来源」里。这个数是从你的档案里取的，本平台没有从你上传的文件里读出过它。${askDoctor}`;
+    case 'patient':
+      // The one arm that may still say something about the documents,
+      // because this origin kind IS a statement about them: the server
+      // resolves `patient` only when nothing it holds carries a repeat
+      // count at all, so 「没有任何一份能读出重复数的」 is the condition
+      // being reported rather than a rule being restated. Which document
+      // would have been read had one existed is still not said, and
+      // 「把报告传上来，这一行就会跟着改」 is still gone — that needs a
+      // parse this file cannot see.
+      return `${head}，它填在你的档案里，而本平台手上没有任何一份能读出重复数的文件。${askDoctor}`;
+    default:
+      // `indeterminate`, plus any kind this bundle has no sentence for
+      // — including the API's `transcribed`, whose whole point is that
+      // the number was read off a page a laboratory did not write. The
+      // server's own phrase, and nothing added to it: see the header.
+      // 「你可能是自己填的」 and 「系统可能从报告里读来的」 are both states
+      // the API answers with `indeterminate`, and it also answers that
+      // way for a patient who has uploaded nothing at all.
+      return `${head}，本平台给它标的来源是「${origin.labelZh}」。${askDoctor}`;
+  }
 };
 
 /**
@@ -342,11 +714,55 @@ const STRENGTH_DRUG_PATTERNS: Array<{ label: string; needles: string[] }> = [
   { label: '地尔硫䓬', needles: ['diltiazem', '地尔硫', '合心爽', '恬尔心'] },
 ];
 
-const matchedStrengthDrugs = (profile: PatientProfile | null): string[] => {
-  const names = (profile?.medications ?? [])
-    .map((item) => (item.medicationName ?? '').toLowerCase())
+/**
+ * THE THREE STATES THIS ROW OWES THE READER, AND IT USED TO HAVE TWO.
+ *
+ *  null  — there is no medication list to read. No profile, no
+ *          `medications` key on the wire, a list with no rows, or a
+ *          list whose every row has a blank name.
+ *  []    — a list with readable names was read, and none of them is
+ *          one of the three drugs.
+ *  [...] — the drugs that matched, by their guideline label.
+ *
+ * WHAT THIS REPLACED. It returned `string[]`, and all four of the
+ * states above collapsed onto the empty array — so `buildMedicationRow`
+ * printed one sentence for all of them: 「你的用药记录里没有这三类药」.
+ * That is a NEGATIVE FINDING about a medication record this platform
+ * does not have. `medications` is optional on the wire and the
+ * medication module is one most patients never open, so the empty list
+ * is the COMMON case, not an edge: a patient on prednisone who has
+ * never typed it in here was reading a Level B 「不要开」 row telling
+ * them their own record is clear. Nothing on this platform asks 「你没
+ * 在吃药吧」 and nothing records the answer, so an empty list is the
+ * absence of a question, never the presence of a no.
+ *
+ * This file's header states the rule the old shape broke: `not_matched`
+ * never means 你不需要, and every row has to say in its own words that
+ * what it holds is a gap in the platform's records. This row was the
+ * first one found saying it had looked when it had not.
+ *
+ * THE SECOND HALF OF THAT RULE — say it about the RIGHT column — is a
+ * later sweep, and it caught four more rows: `hearing_child` denied a
+ * birth date while `foundation.birthYear` sat on file,
+ * `pain_management` denied a pain record while
+ * `currentChallenges.pain` sat on file, `pulmonary_repeat` denied a
+ * wheelchair while `currentStatus.assistiveDevices` held one, and
+ * `sleep_referral` closed with 「这些只有你自己知道」 to a patient who
+ * had answered `currentStatus.breathingSymptoms`. Each of those four
+ * carries the note at its own site. `medications` has no second column
+ * — nothing else on this platform records a drug — so this function
+ * stays a single read.
+ */
+const matchedStrengthDrugs = (profile: PatientProfile | null): string[] | null => {
+  const medications = profile?.medications;
+  if (!Array.isArray(medications)) return null;
+  // Trimmed before the emptiness test, so a row whose name is
+  // whitespace counts as unread rather than as read-and-clear. Trimming
+  // cannot change what `includes` finds.
+  const names = medications
+    .map((item) => (item.medicationName ?? '').trim().toLowerCase())
     .filter((name) => name.length > 0);
-  if (names.length === 0) return [];
+  if (names.length === 0) return null;
   return STRENGTH_DRUG_PATTERNS.filter((drug) =>
     drug.needles.some((needle) => names.some((name) => name.includes(needle.toLowerCase()))),
   ).map((drug) => drug.label);
@@ -379,6 +795,28 @@ const respiratoryEvidence = (summary: ClinicalPassportSummary): string => {
   return '本平台还没有收到你的肺功能结果。这不代表你没做过 —— 只说明这里没有记录。';
 };
 
+/**
+ * The 辅具 entry naming a wheelchair, as the patient's own record spells
+ * it, or null.
+ *
+ * Matched by substring and NOT with a `\b` boundary: 「轮椅」 is written
+ * without spaces around it, and the list is free text on the wire
+ * (`z.array(z.string())`) even though the questionnaire offers a fixed
+ * set — so 「电动轮椅」 and 「轮椅（户外）」 are shapes that reach here and
+ * that the patient would not accept being told are 「no wheelchair on
+ * file」. The stored string is returned rather than a boolean so the row
+ * can quote what they actually wrote.
+ */
+const baselineWheelchairDevice = (profile: PatientProfile | null): string | null => {
+  const devices = profile?.baseline?.currentStatus?.assistiveDevices;
+  if (!Array.isArray(devices)) return null;
+  return (
+    devices
+      .map((device) => (typeof device === 'string' ? device.trim() : ''))
+      .find((device) => device.includes('轮椅')) ?? null
+  );
+};
+
 const buildRespiratoryRows = (
   summary: ClinicalPassportSummary,
   profile: PatientProfile | null,
@@ -401,7 +839,58 @@ const buildRespiratoryRows = (
   };
 
   const wheelchair = latestFollowupEvent(profile, 'started_wheelchair');
-  const wheelchairDate = formatFullDate(wheelchair?.occurredAt);
+  // A milestone, not an observation time — see formatMilestoneDate.
+  const wheelchairDate = formatMilestoneDate(wheelchair?.occurredAt);
+  const wheelchairDevice = baselineWheelchairDevice(profile);
+  // 「轮椅依赖」 IS THE GUIDELINE'S CONDITION AND NEITHER COLUMN SETTLES
+  // IT — which is exactly why both of them have to reach this row.
+  //
+  // The row used to look only at the `started_wheelchair` follow-up
+  // event and then tell everyone else 「你的记录里也没有轮椅相关的随访
+  // 事件」 under a heading of 判断不了. That sentence is true and the
+  // paragraph around it is not: 「轮椅」 is one of
+  // `ASSISTIVE_DEVICE_OPTIONS` (lib/profile-baseline-options), the
+  // baseline questionnaire stores the patient's pick in
+  // `currentStatus.assistiveDevices`, and this app prints it back to
+  // them on the 疾病背景 card under 「辅具」. A patient who ticked it was
+  // reading, on this page, that the platform holds nothing about a
+  // wheelchair it had just shown them.
+  //
+  // BOTH COLUMNS SCORE THE SAME because they are the same grade of
+  // evidence — a patient-entered statement that they use a wheelchair —
+  // and the caveat the event arm already carries is the honest reading
+  // of either: whether the use amounts to the guideline's 「依赖」 is
+  // the doctor's call, made with the patient in front of them. That
+  // parity is the whole of the reason, and it is worth saying what does
+  // NOT decide it: this used to appeal to 「`unknown` means something
+  // this platform never collects」, which is one of that state's
+  // reasons and not its definition — see the type. A collected,
+  // readable answer can score `unknown` (`hearing_child` on a birth
+  // year, `retinal_screening` on 4qB), so nothing about the tick being
+  // on file rules that state out here. What rules it out is that the
+  // event arm, on evidence of the same grade, already scores `matched`.
+  const wheelchairEvidence = (() => {
+    if (wheelchair) {
+      return `你在随访里记录了「开始使用轮椅」${wheelchairDate ? `（${wheelchairDate}）` : ''}。轮椅依赖是指南列出的复查条件之一 —— 但你的用法是不是指南说的「依赖」，要医生看过才算。`;
+    }
+    if (wheelchairDevice) {
+      return `你在基础档案的「辅具」里填了「${wheelchairDevice}」。轮椅依赖是指南列出的复查条件之一 —— 但填了辅具不等于指南说的「依赖」，那要医生看过才算。`;
+    }
+    // THE LAST CLAUSE USED TO BE 「也就是说，这一栏的「对不上」只代表这里
+    // 没有数据」 FOR EVERYONE, AND IT IS A 「本平台没有」 — the one
+    // sentence the type above forbids an `unknown` row to say about
+    // something it holds. 「基线结果异常」 is the FIRST condition this
+    // guideline row lists, and a patient whose pulmonary function report
+    // parsed has that result on file: the 做一次肺功能基线 row two lines
+    // up on this same page prints it back to them. Same sweep, same
+    // shape as the medication, FVC, pain and 辅具 findings above — a row
+    // reading one column and speaking for the record as a whole.
+    const head =
+      '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的随访事件和基础档案的「辅具」里也都没有轮椅。';
+    return hasReadableRespiratory
+      ? `${head}肺功能结果本平台是有的（上面「做一次肺功能基线」那一条写着是什么），只是够不够指南说的「基线异常」，要医生看着报告原件说。`
+      : `${head}也就是说，这一栏判断不了只代表这里没有数据。`;
+  })();
   const repeat: SurveillanceRow = {
     id: 'pulmonary_repeat',
     title: '肺功能要不要定期复查',
@@ -409,16 +898,18 @@ const buildRespiratoryRows = (
     polarity: 'do',
     guideline:
       '指南没有让所有人定期复查肺功能。需要定期复查的是这几种情况：基线结果异常，或者合并明显的近端肌无力、脊柱后凸侧弯、轮椅依赖，以及其他会影响通气的疾病（例如慢阻肺、心脏病）。',
-    applicability: wheelchair ? 'matched' : 'unknown',
-    evidence: wheelchair
-      ? `你在随访里记录了「开始使用轮椅」${wheelchairDate ? `（${wheelchairDate}）` : ''}。轮椅依赖是指南列出的复查条件之一 —— 但你的用法是不是指南说的「依赖」，要医生看过才算。`
-      : '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的记录里也没有轮椅相关的随访事件。也就是说，这一栏的「对不上」只代表这里没有数据。',
+    applicability: wheelchair || wheelchairDevice ? 'matched' : 'unknown',
+    evidence: wheelchairEvidence,
     ask: '可以问：「按我现在的情况，肺功能需要多久查一次？还是查过这一次就够了？」',
     source: SURVEILLANCE_SOURCE,
   };
 
   const niv = latestFollowupEvent(profile, 'started_niv');
-  const nivDate = formatFullDate(niv?.occurredAt);
+  // The same column and the same year-only answer as the wheelchair
+  // row above: 「开始无创通气」 is one of the three device milestones
+  // occurrence-date.ts is written about, and it was printing the same
+  // fabricated 1 January.
+  const nivDate = formatMilestoneDate(niv?.occurredAt);
   const sleep = latestSymptomScore(profile, 'sleep_quality');
   const sleepDate = formatFullDate(sleep?.recordedAt);
   const sleepIsRecent = sleep ? isRecent(sleep.recordedAt, today) : false;
@@ -431,6 +922,63 @@ const buildRespiratoryRows = (
     dyspneaRatio !== null &&
     dyspneaRatio >= 0.5 &&
     isRecent(dyspnea.recordedAt, today);
+
+  /**
+   * THE OTHER HALF OF THIS ROW'S CONDITION — 「FVC 明显偏低」 — SAID
+   * ACCORDING TO WHAT THE PASSPORT ACTUALLY HOLDS.
+   *
+   * Found by the same sweep that produced the medication row above, and
+   * it is the same defect in a second place: a flat 「本平台没有你的 FVC
+   * 百分比」 was printed for every patient who has no sleep score,
+   * including the ones whose uploaded pulmonary function report parsed.
+   * `respiratorySummary` is built from `fvcPredPct` among other cells
+   * (profile.passport.ts), so a patient with 「FVC 58%」 on file read
+   * 「你的档案里有肺功能结果：… FVC 58%」 in the 肺功能基线 row and
+   * 「本平台…也没有 FVC 百分比」 two rows below it — one page, two
+   * answers, and the patient it contradicts itself for is the one under
+   * the guideline's own 60% example.
+   *
+   * WHAT IT STILL DOES NOT DO IS READ THE NUMBER. The summary is free
+   * text assembled from whatever cells the OCR found, and pulling a
+   * percentage back out of it here would be a second parser on this
+   * side of the wire — the mistake the D4Z4 note above this file
+   * records at length. Whether the value clears the guideline's line is
+   * the doctor's read of the report, so this says what is on file and
+   * stops.
+   */
+  const fvcHalfEvidence = (() => {
+    if (hasReadableRespiratory) {
+      return '你的档案里有肺功能结果（上面「做一次肺功能基线」那一条写着是什么），但这一页不替你判断那些数字够不够指南说的那条线 —— 那要医生看着报告原件读。';
+    }
+    if (respiratory?.state === 'unreadable') {
+      return '你上传过肺功能报告，但系统没能自动读出数值，所以指南里 FVC 的那一半这里判断不了。';
+    }
+    return '本平台没有你的 FVC 百分比，所以指南的另一半条件这里判断不了。';
+  })();
+
+  /**
+   * THE BASELINE'S OWN ANSWER TO THIS ROW'S QUESTION, AND THE ROW USED
+   * TO END BY TELLING THE PATIENT ONLY THEY COULD KNOW IT.
+   *
+   * `currentStatus.breathingSymptoms` is the baseline questionnaire's
+   * 「有气短或睡眠呼吸问题」 — collected by this platform, stored, and
+   * printed back to the patient as 「呼吸状态」 on the 疾病背景 card
+   * (lib/followup-analytics `buildDiseaseBackgroundFacts`). It is the
+   * same condition this row is about: the row's own `dyspneaIsHigh` arm
+   * already treats 气短 as matching.
+   *
+   * The last arm below read `symptomScores` alone and, finding no sleep
+   * score, closed with 「白天特别困、早上起来头痛、夜里反复醒 —— 这些只
+   * 有你自己知道」 — said to a patient who had answered exactly that
+   * question here and been shown their own answer one screen over.
+   *
+   * A `false` IS NOT READ AS REASSURANCE. Answering 「没有」 once at
+   * registration is not a statement about tonight, and this row's other
+   * arms are all gated on a 180-day window this column has no date to
+   * clear. So `true` is named and scored, `false` is left to the arms
+   * below, and neither is turned into 「你没事」.
+   */
+  const baselineBreathingSymptoms = profile?.baseline?.currentStatus?.breathingSymptoms === true;
 
   const sleepEvidence = (() => {
     if (niv) {
@@ -448,6 +996,14 @@ const buildRespiratoryRows = (
         `你最近一次气短评分是 ${dyspnea.score}/${dyspnea.scaleMax}（${dyspneaDate ?? '日期不详'}）。`,
       );
     }
+    if (baselineBreathingSymptoms) {
+      // No date on this column, so no 「最近」 and no 半年 window — the
+      // sentence says when it was answered instead of implying it is
+      // current.
+      parts.push(
+        '你在基础档案里填过「有气短或睡眠呼吸问题」，那是建档时的回答，本平台不知道现在还是不是这样。',
+      );
+    }
     if (parts.length > 0) {
       parts.push(
         '睡不好和气短都有很多种原因，夜间通气不足只是其中一种，而且不是最常见的一种。把它作为一个需要排除的可能提出来就够了。',
@@ -458,9 +1014,9 @@ const buildRespiratoryRows = (
       return `你有过偏低的睡眠评分（${sleep.score}/10，${sleepDate ?? '日期不详'}），但那已经是半年以前的记录了，不能代表你现在的情况。`;
     }
     if (sleep) {
-      return `你最近一次睡眠评分是 ${sleep.score}/10（${sleepDate ?? '日期不详'}），不在偏低的区间。本平台没有你的 FVC 百分比，所以指南的另一半条件这里判断不了。`;
+      return `你最近一次睡眠评分是 ${sleep.score}/10（${sleepDate ?? '日期不详'}），不在偏低的区间。${fvcHalfEvidence}`;
     }
-    return '本平台没有你的睡眠评分，也没有 FVC 百分比，这一条判断不了。白天特别困、早上起来头痛、夜里反复醒 —— 这些只有你自己知道，出现了就值得说。';
+    return `本平台没有你的睡眠评分。${fvcHalfEvidence}白天特别困、早上起来头痛、夜里反复醒 —— 这些只有你自己知道，出现了就值得说。`;
   })();
 
   const sleepReferral: SurveillanceRow = {
@@ -470,7 +1026,10 @@ const buildRespiratoryRows = (
     polarity: 'do',
     guideline:
       '指南建议：如果肺功能明显偏低（例如 FVC 低于 60%），或者出现白天过度嗜睡、睡了也不解乏（夜里频繁醒、早上头痛），应当转呼吸科或睡眠医学科，评估要不要做夜间睡眠监测、要不要用夜间无创通气。指南写明：早期开始无创通气可以改善生存和生活质量。',
-    applicability: niv || (sleepIsPoor && sleepIsRecent) || dyspneaIsHigh ? 'matched' : 'unknown',
+    applicability:
+      niv || (sleepIsPoor && sleepIsRecent) || dyspneaIsHigh || baselineBreathingSymptoms
+        ? 'matched'
+        : 'unknown',
     evidence: sleepEvidence,
     ask: niv
       ? '可以问：「我现在的无创通气参数还合适吗？需要复查睡眠监测吗？」'
@@ -559,14 +1118,240 @@ const buildCardiacRow = (summary: ClinicalPassportSummary): SurveillanceRow => {
   };
 };
 
+/**
+ * WHEN THIS PATIENT WAS BORN, AS MUCH OF IT AS THE PLATFORM HOLDS —
+ * and it is very often a year rather than a date.
+ *
+ *  date — `profile.dateOfBirth`, a whole calendar date. One age.
+ *  year — `baseline.foundation.birthYear` and nothing narrower. The age
+ *         is one of TWO whole numbers and this platform cannot say
+ *         which, because it does not know whether the birthday has
+ *         happened yet this year.
+ *  none — neither column holds anything usable.
+ *
+ * WHAT THIS REPLACED. The hearing row read `profile.dateOfBirth` alone
+ * and printed 「档案里没有可用的出生日期，年龄这一条判断不了」 for
+ * everyone without it. `dateOfBirth` is written by the registration
+ * form; `foundation.birthYear` is a separate column that the baseline
+ * questionnaire, the patient's own 档案 edit and an administrator
+ * (p-admin patient-record's 「出生年份」 field) all write on their own,
+ * and it is the one the 档案 page PREFERS — `formatAgeLabel` there
+ * prints 「N 岁左右」 off `birthYear` and only falls back to the date.
+ * So a patient could read their own age on one screen of this app and,
+ * on the next, be told the platform has no birth date to judge by. The
+ * row was not short of a record; it was reading the wrong column.
+ *
+ * THE YEAR IS NOT DOWNGRADED TO 「no answer」 EITHER. Two of the three
+ * questions this row asks are settled by a year alone: a child born in
+ * 2020 is 5 or 6 this year and BOTH are under school age, an adult born
+ * in 1988 is 37 or 38 and both are over it. Only a birth year whose two
+ * candidate ages straddle `SCHOOL_ENTRY_AGE` is genuinely undecidable,
+ * and that is the one arm that still says 判断不了 — naming the year it
+ * has and the day it lacks, rather than denying the record.
+ *
+ * ONE CLOCK, AND IT IS THE PRODUCT'S. BOTH ARMS. This used to run two,
+ * and defended it: the `year` arm took its year off `formatProductDate`
+ * while the `date` arm passed `today` straight into `ageInYears`
+ * (lib/guardian-consent), which reads it with the LOCAL calendar
+ * accessors — so that arm answered on the handset's calendar. The note
+ * that stood here called the divergence harmless because 「the two can
+ * only disagree during the hours when Asia/Shanghai and the handset are
+ * in different years」.
+ *
+ * THAT WAS FALSE, AND RENDERING IT SAYS SO IN AUGUST. `ageInYears` does
+ * not compare years, it asks whether the birthday has happened yet —
+ * `now.getMonth()` and `now.getDate()` — so the two calendars disagree
+ * on the DAY, every day, for the eight hours Asia/Shanghai is already
+ * into tomorrow. One passport, one instant (2026-08-05T04:00:00Z), one
+ * patient born 2019-08-05, built twice: on a handset in Shanghai the
+ * hearing row scores `not_matched` and reads 「患者今年 7 岁，这一条是给
+ * 学龄前幼儿的」, and on a handset in Los Angeles the same row scores
+ * `matched` and reads 「患者今年 6 岁，在这一条覆盖的年龄段里」. The
+ * schedule's own `matchedCount` moved with it, 4 to 5. A yearly hearing
+ * screen for a preschooler is the row where a missed year costs speech
+ * development, and which answer the family got depended on where the
+ * phone thought it was.
+ *
+ * So `ageInYears` is now handed a clock whose LOCAL fields are the
+ * product's calendar day (`productCalendarClock`) instead of the raw
+ * instant. Nothing in lib/guardian-consent changes — the PIPL Art. 31
+ * consent gate at registration still calls it with its own clock, and
+ * that gate is not this file's to move.
+ */
+type BirthEvidence =
+  | { kind: 'date'; minAge: number; maxAge: number }
+  | { kind: 'year'; birthYear: number; minAge: number; maxAge: number }
+  | { kind: 'none' };
+
+/**
+ * 「What day is it」, answered once, on the product's calendar.
+ *
+ * `formatProductDate` is this file's own renderer for that question, so
+ * everything below takes its answer off the string that function
+ * produces rather than off `today.getFullYear()` / `getMonth()` /
+ * `getDate()`, which are the handset's and are a different day for the
+ * eight hours Asia/Shanghai is already into tomorrow.
+ */
+const productCalendarDay = (today: Date): string | null => {
+  const day = formatProductDate(today.toISOString());
+  return day && DATE_ONLY.test(day) ? day : null;
+};
+
+const productCalendarYear = (today: Date): number | null => {
+  const day = productCalendarDay(today);
+  if (!day) return null;
+  const year = Number(day.slice(0, 4));
+  return Number.isFinite(year) ? year : null;
+};
+
+/**
+ * THE PRODUCT'S CALENDAR DAY, SHAPED FOR A READER THAT USES THE LOCAL
+ * ACCESSORS.
+ *
+ * `ageInYears` (lib/guardian-consent) decides whether the birthday has
+ * happened by reading `now.getFullYear()` / `getMonth()` / `getDate()`,
+ * and it has to keep doing that: the PIPL Art. 31 guardian-consent gate
+ * at registration is the same function and is separately tested. What
+ * this file controls is which instant it hands over, so it hands over
+ * one whose LOCAL fields already ARE the product's calendar day. The
+ * answer is then the same on every handset without a line of
+ * guardian-consent.ts moving.
+ *
+ * MIDDAY, NOT MIDNIGHT. `new Date(y, m, d)` asks for local 00:00, and a
+ * few zones do not have one on their DST changeover day — the clock
+ * jumps 23:59 to 01:00 — where the constructor silently lands on the
+ * previous day and would put back the off-by-one this exists to remove.
+ * Only the calendar fields are ever read back off it.
+ */
+const productCalendarClock = (today: Date): Date | null => {
+  const day = productCalendarDay(today);
+  if (!day) return null;
+  const year = Number(day.slice(0, 4));
+  const month = Number(day.slice(5, 7));
+  const date = Number(day.slice(8, 10));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(date)) return null;
+  return new Date(year, month - 1, date, 12, 0, 0, 0);
+};
+
+/** The same 「usable birth year」 test the 档案 page applies before it
+ *  prints an age (p-archive `formatAgeLabel`), so the two screens
+ *  cannot disagree about whether the platform holds one. A year in the
+ *  future is not a birth year and is refused here as well. */
+const readBirthYear = (value: unknown, thisYear: number | null): number | null => {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 1900) return null;
+  if (thisYear === null || value > thisYear) return null;
+  return value;
+};
+
+const readBirthEvidence = (profile: PatientProfile | null, today: Date): BirthEvidence => {
+  // Taking the leading YYYY-MM-DD covers a server that ever starts
+  // sending a timestamp — today it sends a plain date (profile.service's
+  // toDateString).
+  const rawDob = (profile?.dateOfBirth ?? '').trim();
+  const dobMatch = /^(\d{4}-\d{2}-\d{2})/.exec(rawDob);
+  // The product's calendar, not the handset's — see productCalendarClock.
+  const clock = productCalendarClock(today);
+  const age = dobMatch && clock ? ageInYears(dobMatch[1], clock) : null;
+  // A negative age is a birth date in the future — not a reading this
+  // row may branch on, so it falls through to the year below.
+  if (age !== null && age >= 0) return { kind: 'date', minAge: age, maxAge: age };
+
+  const thisYear = productCalendarYear(today);
+  const birthYear = readBirthYear(profile?.baseline?.foundation?.birthYear, thisYear);
+  if (birthYear === null || thisYear === null) return { kind: 'none' };
+
+  // Whole years elapsed is `thisYear - birthYear` once the birthday has
+  // passed and one less before it. Clamped at 0 for someone born this
+  // year, where 「one less」 is not an age.
+  const maxAge = thisYear - birthYear;
+  return { kind: 'year', birthYear, minAge: Math.max(0, maxAge - 1), maxAge };
+};
+
 const buildEyeAndEarRows = (
   summary: ClinicalPassportSummary,
   profile: PatientProfile | null,
   today: Date,
 ): SurveillanceRow[] => {
-  const repeats = summary.diagnosis.d4z4Repeats;
-  const isLarge = isLargeD4Z4Deletion(repeats);
-  const hasPlainCount = /^\d+$/.test((repeats ?? '').trim());
+  /**
+   * A COUNT THE SERVER RULED DECIDABLE, OR NOTHING.
+   *
+   * This row decides whether a guideline about vision loss applies, so
+   * its input is `LaboratoryRepeatCount` — a value the printed
+   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. A number out
+   * of the archive, a length in kb, a 0, a range and a cell saying the
+   * contraction was not found all send this to the 判断不了 branch, which
+   * asks for the original; not one of those states is decided here.
+   *
+   * AND THE SENTENCE STOPS SHORT OF THE LABORATORY. It used to open
+   * 「你的基因报告里 D4Z4 重复数是 3」, which is a claim about who
+   * measured the number, and rendered against a profile whose only
+   * document was a 病历摘要 quoting a count, that sentence had this app
+   * telling a patient their genetics report says something no genetics
+   * report here has said. The API now keeps a transcription out of this
+   * field entirely — but a bundle this old talking to an API that old is
+   * a state a rolling deploy produces, and the wording has to hold there
+   * too. What is true on every build is that this platform read the
+   * number off something the patient uploaded, and that is what the
+   * decided arms below say.
+   */
+  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  const origin = origins?.d4z4Repeats ?? null;
+  const reading = readLaboratoryRepeatCount(summary);
+  const laboratoryCount = reading.state === 'count' ? reading.count : null;
+  const isLarge = isLargeD4Z4Deletion(laboratoryCount);
+  /**
+   * THE REPORT THIS COUNT CAME OFF STATES 4qB.
+   *
+   * The passport's own answer, read rather than derived: the API sets
+   * this confirmation out of the same laboratory record the count comes
+   * out of, and its own retina step steps aside on it — the guideline
+   * limits the dilated exam to the large-deletion group INSIDE FSHD, and
+   * a contraction reported on the non-permissive allele is not this
+   * platform's to place in that group. Without this the two surfaces
+   * disagreed on one passport: the clinical passport declined to
+   * recommend the examination and said why, while this page put 「和你的
+   * 记录对得上」 on it.
+   */
+  const nonPermissiveHaplotype = summary.diagnosis.confirmation === 'genetic_non_permissive';
+  /** The number the page is showing, decidable or not — so the 判断不了
+   *  sentences can name what the reader is looking at instead of
+   *  claiming this platform has nothing. */
+  const printedRepeats = (summary.diagnosis.d4z4Repeats ?? '').trim();
+  const showsRepeats = printedRepeats !== '' && printedRepeats !== '—' && origin?.kind !== 'absent';
+
+  const retinaEvidence = (() => {
+    if (laboratoryCount) {
+      if (!isLarge) {
+        return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，不在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`;
+      }
+      if (nonPermissiveHaplotype) {
+        return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，落在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内；但同一份报告上的 4q 单倍型不是允许型 4qA。指南把这一条限定在 FSHD 患者里大片段缺失的那一组人身上，本平台不拿一个非允许型的结果把你归进那一组。下次就诊时把这两项一起提出来，由医生看着报告原件说。`;
+      }
+      return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，落在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内。这不是急事，但值得在下次就诊时主动提出来。`;
+    }
+    if (showsRepeats && origin?.kind === 'report') {
+      // THE PAGE IS SHOWING A NUMBER THE REPORT'S OWN CELL SUPPLIED AND
+      // THIS ROW IS STILL NOT DECIDING ON IT. One sentence for the four
+      // states that reach here — a length in kb, a 0, a range, a cell
+      // that names a count in order to say it was not found — because
+      // this file cannot tell them apart any more and would have to
+      // re-open the parse to try. What it can say is true of all four
+      // and is the reason none of them decides: the guideline's boundary
+      // is written in repeat units and the cell did not yield one.
+      //
+      // The sentence it replaced named the two states it knew about —
+      // 「可能是还没上传写着它的文件，也可能是文件上那一格写的不是一个确定
+      // 的数字」 — and both halves were false of a cell reading 「3kb」 or
+      // 「0」: the file is on file and the number in it is perfectly
+      // definite. It is in another unit, or it is a reading the server
+      // could not make sense of.
+      return reading.state === 'none'
+        ? `报告上那一格写的是「${printedRepeats}」，本平台没有从它读出一个能用来判断这一条的重复单元数 —— 指南这一条的界限是按重复单元数（${LARGE_DELETION_RANGE_ZH}）写的，读不出这样一个数我们就不猜。${ASK_DOCTOR_ZH}`
+        : `你的记录里 D4Z4 重复数是 ${printedRepeats}，本平台这次没能确认它是不是一个可以用来判断这一条的读数。${ASK_DOCTOR_ZH}`;
+    }
+    if (showsRepeats) return unverifiedRepeatEvidence(printedRepeats, origin);
+    return `本平台手上没有你的 D4Z4 重复数：可能是还没上传写着它的文件，也可能是上传的文件上没有这一格。${ASK_DOCTOR_ZH}`;
+  })();
 
   const retina: SurveillanceRow = {
     id: 'retinal_screening',
@@ -575,26 +1360,78 @@ const buildEyeAndEarRows = (
     polarity: 'do',
     guideline:
       '指南建议：D4Z4 大片段缺失（缺失后片段 10–20 kb，约 1–4 个重复）的患者，转有经验的眼科医生（最好是视网膜专科）做一次散瞳间接检眼镜。渗出性视网膜病变（Coats 病）在 FSHD 里很少见，但几乎只出现在这一组人身上；不处理可能造成明显的视力损失，早发现能挡住。之后多久复查一次，由第一次的结果决定。',
-    applicability: isLarge ? 'matched' : hasPlainCount ? 'not_matched' : 'unknown',
-    evidence: isLarge
-      ? `你的基因报告里 D4Z4 重复数是 ${repeats}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
-      : hasPlainCount
-        ? `你的基因报告里 D4Z4 重复数是 ${repeats}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
-        : '本平台读不出你的 D4Z4 重复数：可能是还没上传基因报告，或者报告上写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
+    applicability: laboratoryCount
+      ? isLarge
+        ? nonPermissiveHaplotype
+          ? 'unknown'
+          : 'matched'
+        : 'not_matched'
+      : 'unknown',
+    evidence: retinaEvidence,
     ask: '可以问：「按我的基因结果，需要做一次散瞳眼底检查吗？」',
     source: SURVEILLANCE_SOURCE,
   };
 
-  // The date of birth is already on file and already governs the PIPL
-  // Art. 31 guardian-consent gate at registration; `ageInYears` is
-  // that same tested calculation rather than a second one. Taking the
-  // leading YYYY-MM-DD covers a server that ever starts sending a
-  // timestamp — today it sends a plain date (profile.service's
-  // toDateString).
-  const rawDob = (profile?.dateOfBirth ?? '').trim();
-  const dobMatch = /^(\d{4}-\d{2}-\d{2})/.exec(rawDob);
-  const age = dobMatch ? ageInYears(dobMatch[1], today) : null;
-  const isYoungChild = age !== null && age >= 0 && age < SCHOOL_ENTRY_AGE;
+  const birth = readBirthEvidence(profile, today);
+  const hearingApplicability: SurveillanceApplicability =
+    birth.kind === 'none'
+      ? 'unknown'
+      : birth.maxAge < SCHOOL_ENTRY_AGE
+        ? 'matched'
+        : birth.minAge >= SCHOOL_ENTRY_AGE
+          ? 'not_matched'
+          : // Only a birth year, and this year's band straddles the
+            // boundary. Neither answer is available; see below.
+            'unknown';
+
+  /** 「如果家里有确诊 FSHD 的小孩」 — this row stays useful to a reader
+   *  it does not cover, and every arm that does not cover them says so.
+   *  One constant because the arms differ only in what precedes it; it
+   *  used to be two near-identical sentences, one per arm. */
+  const hearingFamilyClause = '如果家里有确诊 FSHD 的学龄前小孩，这一条对他们适用。';
+
+  const hearingEvidence = (() => {
+    if (birth.kind === 'date') {
+      return birth.maxAge < SCHOOL_ENTRY_AGE
+        ? `按档案里的出生日期，患者今年 ${birth.maxAge} 岁，在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`
+        : `按档案里的出生日期，患者今年 ${birth.maxAge} 岁，这一条是给学龄前幼儿的。${hearingFamilyClause}`;
+    }
+    if (birth.kind === 'year') {
+      // 「今年 5 岁或 6 岁」, and 「今年 0 岁」 for a child born this year,
+      // where 「one less」 is not an age and the band is a single number.
+      const ageZh =
+        birth.minAge === birth.maxAge
+          ? `${birth.maxAge} 岁`
+          : `${birth.minAge} 岁或 ${birth.maxAge} 岁`;
+      // This head says what the platform HAS and what it did with it.
+      // It deliberately does not add 「没有具体的出生日期」: this arm is
+      // also where an unusable `dateOfBirth` lands (a date in the
+      // future), and asserting the column is empty would be a second
+      // false statement about the record in the sentence written to
+      // stop the first one.
+      const head = `档案里有你填的出生年份（${birth.birthYear} 年）。按年份算，生日过了没有本平台不知道，所以患者今年 ${ageZh}。`;
+      if (birth.maxAge < SCHOOL_ENTRY_AGE) {
+        return `${head}不管生日过没过，都在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`;
+      }
+      if (birth.minAge >= SCHOOL_ENTRY_AGE) {
+        return `${head}不管生日过没过，都已经过了这一条的年龄段 —— 它是给学龄前幼儿的。${hearingFamilyClause}`;
+      }
+      // THE ONE STATE THAT IS STILL 判断不了, AND IT SAYS WHY.
+      // 「档案里没有可用的出生日期」 was the old sentence here and it was
+      // false about this patient — the year is on file, the 档案 page
+      // prints an age off it. What a year cannot settle is which side of
+      // a birthday today is, and that is exactly what this row's
+      // boundary turns on, so the sentence names the year and the gap
+      // rather than denying the record.
+      return `${head}${SCHOOL_ENTRY_AGE} 周岁的界线正好落在这两个数中间，只有年份分不出来 —— 生日过了没有，你自己知道。${hearingFamilyClause}`;
+    }
+    // 「没有能用来算年龄的」 rather than 「没有」: this arm is also reached
+    // by a `dateOfBirth` or a `birthYear` that is on file and unusable
+    // (a birth date in the future, a year like 1200), and telling that
+    // patient the columns are empty would be the same false negative
+    // one row down from where it was just fixed.
+    return `档案里没有能用来算年龄的出生日期或出生年份，这一条判断不了。${hearingFamilyClause}`;
+  })();
 
   const hearing: SurveillanceRow = {
     id: 'hearing_child',
@@ -603,17 +1440,38 @@ const buildEyeAndEarRows = (
     polarity: 'do',
     guideline:
       '指南建议：确诊 FSHD 的幼儿，在确诊时以及之后每年做一次听力筛查，直到上学。理由写得很直接 —— 听力损失在确诊时不一定已经出现，而且可能是进行性的；成人和大孩子自己察觉得到，婴幼儿察觉不到，这个年龄漏掉的听力损失会明显影响语言发育。',
-    applicability: isYoungChild ? 'matched' : age !== null ? 'not_matched' : 'unknown',
-    evidence: isYoungChild
-      ? `按档案里的出生日期，患者今年 ${age} 岁，在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`
-      : age !== null
-        ? `按档案里的出生日期，患者今年 ${age} 岁，这一条是给学龄前幼儿的。如果家里有确诊 FSHD 的小孩，这一条对他们适用。`
-        : '档案里没有可用的出生日期，年龄这一条判断不了。如果家里有确诊 FSHD 的学龄前孩子，这一条对他们适用。',
+    applicability: hearingApplicability,
+    evidence: hearingEvidence,
     ask: '可以问：「孩子需要每年做听力筛查吗？该去耳鼻喉科还是听力中心？」',
     source: SURVEILLANCE_SOURCE,
   };
 
   return [retina, hearing];
+};
+
+/**
+ * The baseline questionnaire's own pain answer, on the 0–5 scale the
+ * API declares for it (`difficultyScoreSchema`, profile.schema.ts) and
+ * the same one the 疾病背景 card prints it against
+ * (lib/followup-analytics `buildDiseaseBackgroundFacts`, 「疼痛 N/5」).
+ *
+ * SAME SWEEP AS THE MEDICATION AND FVC ROWS ABOVE, third instance:
+ * 「本平台没有你的疼痛记录」 was printed for everyone with no follow-up
+ * `pain` symptom score, including the patients who had answered the
+ * baseline question — a number this app shows them on the 疾病背景 card
+ * and an administrator sees under 「疼痛」 in p-admin. The row was not
+ * short of a record; it was reading one column and speaking for two.
+ *
+ * IT DOES NOT MOVE `applicability`. This value is answered once, at
+ * registration, on a different scale from the follow-up score, and
+ * `matched` on this row means a RECENT notable pain reading — the
+ * 180-day window is the whole point of the branch. A five-year-old
+ * baseline answer is worth naming and is not worth scoring, so it is
+ * displayed with its origin and decides nothing.
+ */
+const baselinePainScore = (profile: PatientProfile | null): number | null => {
+  const value = profile?.baseline?.currentChallenges?.pain;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const buildPainRow = (profile: PatientProfile | null, today: Date): SurveillanceRow => {
@@ -622,6 +1480,11 @@ const buildPainRow = (profile: PatientProfile | null, today: Date): Surveillance
   const painDate = formatFullDate(pain?.recordedAt);
   const painIsNotable =
     pain !== null && ratio !== null && ratio >= 0.4 && isRecent(pain.recordedAt, today);
+  const baselinePain = baselinePainScore(profile);
+  const noFollowupScoreEvidence =
+    baselinePain === null
+      ? '本平台没有你的疼痛记录。这一条本来就是写给医生的：该主动问的是他们。'
+      : `你在基础档案里把「疼痛」填成了 ${baselinePain}/5，但本平台没有你在随访里打过的疼痛评分 —— 基础档案那一格只填过一次，不代表你现在的情况。这一条本来就是写给医生的：该主动问的是他们。`;
 
   return {
     id: 'pain_management',
@@ -635,14 +1498,36 @@ const buildPainRow = (profile: PatientProfile | null, today: Date): Surveillance
       ? `你最近一次疼痛评分是 ${pain.score}/${pain.scaleMax}（${painDate ?? '日期不详'}）。把这个数字和「哪个部位、什么动作会疼」一起说，比只说「疼」更容易找到原因。`
       : pain
         ? `你最近一次疼痛评分是 ${pain.score}/${pain.scaleMax}（${painDate ?? '日期不详'}）。`
-        : '本平台没有你的疼痛记录。这一条本来就是写给医生的：该主动问的是他们。',
+        : noFollowupScoreEvidence,
     ask: '可以问：「我这个疼是从哪来的？需要先看康复科吗？」',
     source: SURVEILLANCE_SOURCE,
   };
 };
 
+/** Why the row is on the page for someone it does not match. Shared by
+ *  both non-matching states so the two sentences differ only in the
+ *  clause that is actually different — what this platform holds. */
+const MEDICATION_ROW_RATIONALE =
+  '这一条放在这里，是因为它可能会被推荐给你 —— 到时候你知道指南是怎么说的。';
+
 const buildMedicationRow = (profile: PatientProfile | null): SurveillanceRow => {
   const matched = matchedStrengthDrugs(profile);
+  const evidence = (() => {
+    if (matched === null) {
+      // NO LIST TO READ. The old copy for this state said 「你的用药记录
+      // 里没有这三类药」 — see matchedStrengthDrugs. What is true is only
+      // about the platform's holdings, so that is all this says.
+      return `本平台没有你的用药记录，所以这一条对不对得上，这里看不出来 —— 这不代表你没在吃药，只说明你还没有在本平台填过用药。${MEDICATION_ROW_RATIONALE}`;
+    }
+    if (matched.length === 0) {
+      // A list WAS read. This is the only state in which a sentence
+      // about what the record does not contain is a statement this
+      // platform can make — and it still says whose list it is, because
+      // the platform only ever sees what the patient typed in.
+      return `你填在本平台的用药记录里没有这三类药 —— 本平台只看得到你自己填的那些，在别处开的药它不知道。${MEDICATION_ROW_RATIONALE}`;
+    }
+    return `你的用药记录里出现了${matched.join('、')}。如果这是为了改善肌力开的，值得再和医生确认一次；如果是为了别的病（比如哮喘、高血压），那不在这一条的范围里 —— 请不要自己停药。`;
+  })();
   return {
     id: 'no_strength_drugs',
     title: '不要为了「增肌力」吃这三类药',
@@ -650,11 +1535,13 @@ const buildMedicationRow = (profile: PatientProfile | null): SurveillanceRow => 
     polarity: 'do_not',
     guideline:
       '指南写得很明确：医生不应当为了改善肌力而给 FSHD 患者开沙丁胺醇（albuterol）、糖皮质激素或地尔硫䓬。沙丁胺醇的随机对照试验是阴性结果，糖皮质激素和地尔硫䓬的开放标签试验都没看到获益。到目前为止，没有任何药物被证明能延缓、停止或逆转 FSHD 的肌无力，FDA 也没有批准过这样的药。',
-    applicability: matched.length > 0 ? 'matched' : 'everyone',
-    evidence:
-      matched.length > 0
-        ? `你的用药记录里出现了${matched.join('、')}。如果这是为了改善肌力开的，值得再和医生确认一次；如果是为了别的病（比如哮喘、高血压），那不在这一条的范围里 —— 请不要自己停药。`
-        : '你的用药记录里没有这三类药。这一条放在这里，是因为它可能会被推荐给你 —— 到时候你知道指南是怎么说的。',
+    // 'everyone' for both non-matching states, and deliberately not
+    // `not_matched` for either: a 「不要为了增肌力开这三类药」 row is
+    // addressed to every FSHD patient, and the difference between 「读过
+    // 你的用药记录，没有这三类药」 and 「本平台没有你的用药记录」 lives in
+    // the evidence line, which is where this file puts the reason.
+    applicability: matched !== null && matched.length > 0 ? 'matched' : 'everyone',
+    evidence,
     ask: '可以问：「这个药是为了什么开的？如果是为了肌力，还有必要继续吗？」',
     source: SURVEILLANCE_SOURCE,
   };

@@ -1,0 +1,650 @@
+/**
+ * WHICH UPLOADED DOCUMENT IS THIS PROFILE'S GENETIC EVIDENCE.
+ *
+ * The rule, and the alias table it reads through, are the API's. They
+ * live in `pickGeneticEvidenceDocument` and `GENETIC_FIELD_KEYS` under
+ * apps/api, which is where every server-side reader of a genetic value
+ * gets its answer — the passport, the baseline autofill, the portable
+ * exports. This bundle cannot import from that package, so this file
+ * carries the same rule for the same reasons, exactly as
+ * `isLargeD4Z4Deletion` in lib/surveillance-schedule.ts carries the
+ * same threshold. IF EITHER SIDE'S RULE CHANGES THE OTHER HAS TO CHANGE
+ * WITH IT: they are checked against the same cases and nothing in the
+ * build links them.
+ *
+ * Why the copy is here rather than a fifth private answer inside
+ * `buildReportInsights`: that reader used to take the newest document
+ * typed `genetic_report`, falling back to the newest document carrying
+ * any genetic key. 我的档案 and 病程 print its numbers, the clinical
+ * passport prints the API's, and once the API's rule changed those two
+ * were naming different reports on the same patient with nothing on
+ * either page saying so. One rule stated once per bundle is the most
+ * this repository's layout allows; four private ones is what it had.
+ *
+ * WHAT THIS FILE DOES NOT DECIDE: whether a value may drive a clinical
+ * recommendation. That is `readLaboratoryRepeatCount`'s question and it
+ * is not answered here or from a document at all — the API answers it
+ * once, in `determinateRepeatCount`, and sends the answer as
+ * `diagnosis.laboratoryRepeatCount`.
+ */
+
+/**
+ * The shape this module needs from a document row.
+ *
+ * `id` and `status` are required, not optional-with-a-default. A caller
+ * that cannot say whether a parse landed cannot be given a default,
+ * because the default is the erasure this rule exists to stop: a report
+ * whose parse has not come back says nothing yet, and treating its
+ * silence as a reading is how a fresh upload used to empty a passport.
+ */
+export interface GeneticEvidenceDocumentLike {
+  id: string;
+  /**
+   * The row's stored `document_type` as the server sends it, WHICH IS
+   * NOT RELIABLY THE TYPE ITS UPLOADER DECLARED.
+   *
+   * The upload writes the dropdown value into the column and then the
+   * parse overwrites it with `resolveDocumentTypeFromPayload`'s answer
+   * (apps/api/src/modules/patient-profile/profile.controller.ts), which
+   * prefers `ocrPayload.fields.classifiedType`. So on every parsed row
+   * this is the classifier's label. Nothing here may read it as 「what
+   * the patient said」 — `readUploaderDeclaredType` is the one reader
+   * allowed to, and it looks in `ocrPayload.fields.documentType`, which
+   * is where the declaration survives.
+   */
+  documentType?: string | null;
+  /** The row's parse state: `parsed`, `needs_review`, `processing`,
+   *  `parse_failed`, or the legacy `uploaded`. */
+  status: string | null;
+  uploadedAt?: string | null;
+  ocrPayload?: {
+    fields?: Record<string, string | number>;
+    /** The page the parser read. Present on every document the profile
+     *  endpoint returns — PROFILE_OCR_PAYLOAD_PROJECTION in
+     *  apps/api/src/modules/patient-profile/profile.service.ts collapses
+     *  the parser's two spellings into this one — and it is what
+     *  `isLaboratoryGeneticReport` reads the document's structure off. */
+    extractedText?: string | null;
+  } | null;
+}
+
+/**
+ * Every OCR key any writer in this pipeline has produced for a genetic
+ * value, in the order they are preferred.
+ *
+ * The same table the API reads through, and the same order — the
+ * hand-correctable spellings first, so a patient who fixed a misread
+ * digit sees their own number rather than the OCR's. The lists that
+ * used to sit inline in `buildReportInsights` were already identical
+ * member for member, which is why moving onto this table changed no
+ * displayed value; what it changes is that there is now one table to
+ * add a key to.
+ */
+export const GENETIC_FIELD_KEYS = {
+  geneticType: ['diagnosisType', 'geneticType', 'geneType', 'diagnosis_type', 'genetic_type'],
+  haplotype: ['haplotype', 'haplotype4q', 'haplotype_4q'],
+  ecoRIFragment: [
+    'ecoRIFragment',
+    'ecoriFragment',
+    'ecoriFragmentKb',
+    'ecori_fragment_kb',
+    'EcoRI_kb',
+    'EcoRIFragment',
+  ],
+  d4z4Repeats: ['d4z4Repeats', 'd4z4RepeatPathogenic', 'd4z4_repeat_pathogenic', 'd4z4_repeats'],
+  methylationValue: ['methylationValue', 'methylation_value'],
+  testMethod: ['geneticTestMethod', 'genetic_test_method'],
+} as const;
+
+/** The keys a 诊断日期 can come off. */
+export const DIAGNOSIS_DATE_KEYS = ['diagnosisDate', 'diagnosis_date'];
+
+/** The keys under which a report states a RESULT. A document not typed
+ *  `genetic_report` is genetic evidence only if it carries one of these
+ *  — 检测方法 and 诊断日期 are excluded on purpose, because a document
+ *  whose only genetic content is 「Southern blot」 has reported nothing
+ *  about this patient. */
+const GENETIC_RESULT_KEY_GROUPS: readonly (readonly string[])[] = [
+  GENETIC_FIELD_KEYS.geneticType,
+  GENETIC_FIELD_KEYS.haplotype,
+  GENETIC_FIELD_KEYS.ecoRIFragment,
+  GENETIC_FIELD_KEYS.d4z4Repeats,
+  GENETIC_FIELD_KEYS.methylationValue,
+];
+
+/** Everything a reader can take off the one document this module picks
+ *  — the results plus the report's stated 检测方法 and 诊断日期. Derived
+ *  from the tables above rather than restated, so a group added there is
+ *  weighed here without a second edit. */
+const GENETIC_DOCUMENT_VALUE_KEY_GROUPS: readonly (readonly string[])[] = [
+  ...GENETIC_RESULT_KEY_GROUPS,
+  GENETIC_FIELD_KEYS.testMethod,
+  DIAGNOSIS_DATE_KEYS,
+];
+
+const CLASSIFIED_TYPE_KEYS = ['classifiedType', 'classified_type', 'reportType', 'report_type'];
+
+/**
+ * THE `fields` CELL THE UPLOADER'S OWN DECLARATION IS STAMPED INTO.
+ *
+ * The API's `UPLOADER_DECLARED_TYPE_KEYS`. Every OCR provider on the
+ * server writes this cell out of the `documentType` it was CALLED with,
+ * which is the upload form's dropdown value, before any classification
+ * exists; the classification lands in `classifiedType` and the column
+ * UPDATE reads that one. So the blob carries what the patient said and
+ * what the parser decided side by side, and they can disagree — which
+ * is the only reason the fourth question is worth asking.
+ *
+ * Deliberately NOT on `CLASSIFIED_TYPE_KEYS`: if a classifier label
+ * could be read here the fourth question would be the first one again.
+ */
+const UPLOADER_DECLARED_TYPE_KEYS = ['documentType', 'document_type'];
+
+/** Statuses in which the extraction job has come back. Everything else
+ *  — `processing`, `parse_failed`, the legacy `uploaded` — is a row
+ *  whose file this platform has not read. */
+const PARSE_LANDED_STATUSES: ReadonlySet<string> = new Set(['parsed', 'needs_review']);
+
+/**
+ * One value off a payload, under the first key that holds one.
+ *
+ * Strings and finite numbers only. A field holding an array or an
+ * object is not a reading: stringifying one produced 「4qA,4qB」 for a
+ * haplotype field listing the probes and printed it where a real result
+ * goes. There is no sensible coercion, so there is none — and the
+ * payload arrives as whatever the server stored, so the guard is a
+ * runtime one and not only a type.
+ */
+const pickReading = (
+  fields: Record<string, string | number> | undefined,
+  keys: readonly string[],
+): string | null => {
+  if (!fields) return null;
+  for (const key of keys) {
+    const value = fields[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+};
+
+const payloadFields = (document: GeneticEvidenceDocumentLike) => document.ocrPayload?.fields;
+
+/** What kind of document this is, as the parser classified it when it
+ *  managed to, else as the uploader declared it. */
+const documentClassifiedType = (document: GeneticEvidenceDocumentLike): string =>
+  pickReading(payloadFields(document), CLASSIFIED_TYPE_KEYS) ?? document.documentType ?? '';
+
+declare const uploaderDeclaredBrand: unique symbol;
+
+/**
+ * A DOCUMENT TYPE THAT IS THE UPLOADER'S OWN DECLARATION AND CANNOT BE
+ * ANYTHING ELSE. The API's `UploaderDeclaredDocumentType`, carried here
+ * for the reason the whole file is.
+ *
+ * Nominal on purpose: the brand symbol is module-private, so a plain
+ * `string` — `document.documentType`, or any resolved label — is not
+ * assignable to it and the compiler says so at the call site. A comment
+ * asking the fourth question to read only the declaration was written
+ * twice and was false both times; a type is what holds it.
+ */
+export type UploaderDeclaredDocumentType = string & {
+  readonly [uploaderDeclaredBrand]: true;
+};
+
+/**
+ * THE TYPE THE UPLOADER PICKED FROM THE DROPDOWN, or `null` when this
+ * row cannot say.
+ *
+ * Read off `ocrPayload.fields.documentType` — see
+ * `UPLOADER_DECLARED_TYPE_KEYS` — and not off the row's
+ * `documentType`, which the server's parse overwrites with the
+ * classification.
+ *
+ * The column is still the answer on a row the parse never labelled,
+ * and that is not a guess: the server replaces the column exactly when
+ * the payload holds a usable label under one of `CLASSIFIED_TYPE_KEYS`,
+ * so a payload holding none of them is a column that has only ever
+ * carried the declaration. Where the payload holds one and carries no
+ * stamped declaration there is nothing left to read, and this returns
+ * `null` rather than handing out the classifier's own output.
+ */
+const readUploaderDeclaredType = (
+  document: GeneticEvidenceDocumentLike,
+): UploaderDeclaredDocumentType | null => {
+  const fields = payloadFields(document);
+  const stamped = pickReading(fields, UPLOADER_DECLARED_TYPE_KEYS);
+  if (stamped) return stamped as UploaderDeclaredDocumentType;
+  if (pickReading(fields, CLASSIFIED_TYPE_KEYS)) return null;
+  const declared = document.documentType?.trim();
+  return declared ? (declared as UploaderDeclaredDocumentType) : null;
+};
+
+/** Did the patient themselves pick 基因检测报告 from the upload menu.
+ *  The only comparison made against an `UploaderDeclaredDocumentType`,
+ *  so the branded value is never widened back to `string` anywhere a
+ *  resolved label could take its place. */
+const uploaderDeclaredGeneticReport = (document: GeneticEvidenceDocumentLike): boolean =>
+  (readUploaderDeclaredType(document) as string | null) === 'genetic_report';
+
+/**
+ * THE STRUCTURE TABLES AND THE THREE READERS BELOW ARE THE API'S.
+ *
+ * `NARRATIVE_DOCUMENT_KIND_MARKERS`, `CLINICAL_STORY_SECTION_MARKERS`,
+ * `LABORATORY_REPORT_MARKERS` and the functions over them are copied
+ * from apps/api/src/modules/patient-profile/genetic-evidence.ts, whose
+ * narrative half in turn mirrors the same two tuples in
+ * apps/report-manager/app/services/fshd_report_service.py. Three copies
+ * of one question, and nothing in the build links them — the same
+ * standing condition this whole file is written under. IF ONE MOVES
+ * THEY ALL MOVE.
+ *
+ * Neither table is a vocabulary. No disease word belongs on either,
+ * because scoring a document on the genetics words it CONTAINS is
+ * exactly the defect they exist to end: a 门诊病历摘要 quoting a repeat
+ * count contains all of them.
+ *
+ * And a narrative marker is not a SIGNATURE, a timestamp or an
+ * identifier. 医师签名 was added to the narrative half and had to come
+ * out: every genetics report is signed, so one 「医师签名：王医师」 on an
+ * otherwise unchanged Southern blot took it out of
+ * `isLaboratoryGeneticReport` — 基因确诊 to self_reported, and 病历摘要 on
+ * the citation chip. A hit is disqualifying on its own, so the test for
+ * an entry is 「no genetics laboratory prints this」.
+ */
+/** The `fields` cells whose value is TEXT OFF THE PAGE. An allowlist,
+ *  not 「every string on the blob」: an arbitrary OCR key can hold
+ *  arbitrary prose, and a two-character section label matched inside
+ *  somebody's free text is not the document showing its structure.
+ *  `classifiedType` and `reportTypeLabel` are absent on purpose —
+ *  `reportTypeLabel` on a document the classifier called a genetics
+ *  report is the literal string 基因检测报告, so reading it would let the
+ *  classifier corroborate itself. */
+const PAGE_TEXT_FIELD_KEYS: readonly string[] = [
+  'interpretationSummary',
+  'interpretation_summary',
+  'facility',
+  'department',
+  'specimen',
+];
+
+/** THE WORDS THAT NAME A DOCUMENT A CLINICAL NARRATIVE — a TITLE, not
+ *  a topic. Each is what the page calls ITSELF, and no result report is
+ *  titled any of them, which is why this half needs no second
+ *  witness. */
+const NARRATIVE_DOCUMENT_KIND_MARKERS: readonly string[] = [
+  '病历摘要',
+  '门诊病历',
+  '住院病历',
+  '出院小结',
+  '住院小结',
+  '出院记录',
+  '入院记录',
+  '病程记录',
+];
+
+/** THE SECTIONS A PERSON'S STORY IS TOLD IN. Names of SECTIONS rather
+ *  than of documents, and a result report prints these words in two
+ *  places that are not sections: as REQUISITION COLUMNS across the top
+ *  of a radiology or EMG report, and as the object of a sentence —
+ *  请结合临床及查体 / 与主诉相符 / 结合既往史 is the standard closing of a
+ *  Chinese radiology conclusion. See `showsClinicalNarrative`. */
+const CLINICAL_STORY_SECTION_MARKERS: readonly string[] = [
+  '主诉',
+  '现病史',
+  '既往史',
+  '个人史',
+  '婚育史',
+  '查体',
+  '体格检查',
+  '专科检查',
+  '诊疗经过',
+];
+
+/** Cells only the narrative extractor writes — a key-shaped witness for
+ *  the same question, which survives where the page text does not. */
+const CLINICAL_NARRATIVE_FIELD_KEYS: readonly string[] = [
+  'onsetAge',
+  'onset_age',
+  'progressionNode',
+  'progression_node',
+  'familyHistory',
+  'family_history',
+  'keyClinicalSigns',
+  'key_clinical_signs',
+  'currentFunctionStatus',
+  'current_function_status',
+];
+
+const LABORATORY_REPORT_MARKERS: readonly string[] = [
+  '基因检测报告',
+  '遗传病检测报告',
+  '分子诊断',
+  '检测项目',
+  '检测方法',
+  '检测结果',
+  '检测结论',
+  '检测机构',
+  '送检单位',
+  '送检医师',
+  '报告医师',
+  '审核医师',
+  '实验室',
+  'southern',
+];
+
+/** The document's own page, as much of it as the payload kept. */
+const documentEvidenceText = (document: GeneticEvidenceDocumentLike): string => {
+  const parts: string[] = [];
+  const text = document.ocrPayload?.extractedText;
+  if (typeof text === 'string' && text.trim()) parts.push(text);
+  const fields = payloadFields(document);
+  if (fields) {
+    for (const key of PAGE_TEXT_FIELD_KEYS) {
+      const value = fields[key];
+      if (typeof value === 'string' && value.trim()) parts.push(value);
+    }
+  }
+  return parts.join('\n').toLowerCase();
+};
+
+/** Where a heading may start: the head of its line, a space, an opening
+ *  bracket, or the end of the previous sentence — never welded to
+ *  another Chinese character, which is what makes the 查体 of
+ *  「请结合临床及查体」 a noun inside a phrase rather than a section. */
+const startsAHeading = (before: string): boolean =>
+  /\s/.test(before) || '【[（(「《〔〖'.includes(before) || '。！？；;.!?'.includes(before);
+
+/** Where a heading may end: its separator, or the line. Running text
+ *  after the marker means it is a mention, not a section label. */
+const endsAHeading = (after: string): boolean =>
+  /\s/.test(after) || '：:】]）)」》〕〗'.includes(after);
+
+/** A label the way a printed form prints one. */
+const FIELD_LABEL = /[一-龥A-Za-z][一-龥A-Za-z0-9]{0,7}[：:]/;
+
+/** IS THIS LINE A ROW OF FORM FIELDS RATHER THAN A SECTION OF PROSE.
+ *  A radiology or EMG report is printed with the referring clinician's
+ *  requisition across the top, and that block carries 主诉 and 现病史 as
+ *  COLUMNS — two or more labels separated by nothing but whitespace.
+ *  A narrative section owns its line, and two narrative sections that
+ *  share one are separated by the end of a sentence rather than by a
+ *  column gap. One column is not a form row, deliberately: where the
+ *  layout cannot tell, the answer is narrative. */
+const isFormRow = (line: string): boolean =>
+  line.split(/\s+/).filter((column) => FIELD_LABEL.test(column)).length >= 2;
+
+/** Does `marker` appear on `line` in heading position. */
+const showsHeading = (line: string, marker: string): boolean => {
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    const before = at === 0 ? '\n' : line[at - 1];
+    const after = line[at + marker.length] ?? '\n';
+    if (startsAHeading(before ?? '\n') && endsAHeading(after)) return true;
+  }
+  return false;
+};
+
+/** Does this line call the document a narrative — the document-kind
+ *  name ENDS the line or carries its own separator. What precedes it is
+ *  not asked: the 病历摘要 inside 门诊病历摘要 is still the page naming
+ *  itself, while 「参见出院小结中的记载」 puts 中 after the name and is a
+ *  mention. */
+const namesItselfANarrative = (line: string): boolean =>
+  NARRATIVE_DOCUMENT_KIND_MARKERS.some((marker) => {
+    for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+      const rest = line.slice(at + marker.length);
+      if (rest.trim() === '' || endsAHeading(rest[0] ?? '\n')) return true;
+    }
+    return false;
+  });
+
+/** Does this line open a section of a person's story. */
+const isNarrativeSectionLine = (line: string): boolean =>
+  !isFormRow(line) && CLINICAL_STORY_SECTION_MARKERS.some((marker) => showsHeading(line, marker));
+
+/**
+ * IS THE PROSE ON THIS PAGE A STORY ABOUT A HUMAN BEING, rather than a
+ * test's conclusion about a result.
+ *
+ * NOT 「does this page contain any of seventeen words」, which is what it
+ * was and what cost genuine result reports their grade: the requisition
+ * block printed across the top of a radiology report carries 主诉 /
+ * 现病史 as form columns, and 请结合临床及查体 / 与主诉相符 / 结合既往史 is
+ * the standard closing of a Chinese radiology, EMG or muscle-MRI
+ * conclusion — a radiologist REFERRING to the clinical history, which
+ * is the opposite of the document being one. So the markers are read in
+ * their position: a section heading is not a mention, a requisition
+ * column is not a narrative section, and a document title is neither.
+ * Every case the page's own layout cannot settle stays a narrative.
+ */
+const showsClinicalNarrative = (document: GeneticEvidenceDocumentLike): boolean => {
+  const fields = payloadFields(document);
+  if (fields && CLINICAL_NARRATIVE_FIELD_KEYS.some((key) => pickReading(fields, [key]))) {
+    return true;
+  }
+  const lines = documentEvidenceText(document).split(/\r?\n/);
+  if (lines.some(namesItselfANarrative)) return true;
+  return lines.some(isNarrativeSectionLine);
+};
+
+/** Does it read as a laboratory's report. The 检测方法 the parser read
+ *  off the page counts: it states what the laboratory did. */
+const showsLaboratoryReportStructure = (document: GeneticEvidenceDocumentLike): boolean => {
+  if (pickReading(payloadFields(document), GENETIC_FIELD_KEYS.testMethod)) return true;
+  const text = documentEvidenceText(document);
+  return LABORATORY_REPORT_MARKERS.some((marker) => text.includes(marker));
+};
+
+/**
+ * IS THIS DOCUMENT THE GENETICS LABORATORY'S OWN REPORT.
+ *
+ * The API's `isLaboratoryGeneticReport`, carried here for the reason
+ * the picker is — this bundle cannot import from that package, and both
+ * halves of the rule have to move together.
+ *
+ * Exported because the question does not stop mattering once the pick
+ * is made. The picker takes a 病历摘要 quoting a repeat count when the
+ * laboratory's report read out nothing, on purpose, because for some
+ * patients it is the only copy of the number in existence. That is a
+ * decision about DISPLAY: the value may be shown, always with its
+ * origin beside it, and no sentence over it may be written in a
+ * laboratory's voice.
+ *
+ * A CLASSIFICATION ALONE NO LONGER SATISFIES IT. This was one string
+ * compare against a label written by a keyword classifier that scores a
+ * document on the genetics words it CONTAINS — so a 门诊病历摘要 quoting
+ * the patient's own result classified as the laboratory's report and
+ * was graded like one, on 我的档案 and 病程 as well as on the server. And
+ * a classifier fix reclassifies nothing already stored, so the gate has
+ * to be satisfiable only by agreement between the inferred label and
+ * the document's own page:
+ *
+ *   1. the parser has to have called it a genetics report;
+ *   2. its page must not show a clinical narrative — 主诉 / 现病史 /
+ *      查体 — and the parser must not have read narrative-only cells
+ *      off it;
+ *   3. its page has to show a laboratory report — 检测项目 / 检测方法 /
+ *      送检单位 / 报告医师 — or the parser has to have read the report's
+ *      stated 检测方法 off it;
+ *   4. and only where it shows neither does the uploader's declared
+ *      type decide — `readUploaderDeclaredType` answers it, off the
+ *      cell the parse stamps the declaration into rather than off the
+ *      column the parse overwrites.
+ *
+ * (2) outranks (3) rather than being weighed against it: a 病历摘要 with
+ * the whole report pasted into it is still a 病历摘要, and it would
+ * otherwise show more laboratory sections than narrative ones. A real
+ * genetics report uploaded under the 其他 picker keeps its grade,
+ * because (3) reads the document and not the dropdown.
+ *
+ * (4) WAS THE DEFECT. It read `document.documentType` while this block
+ * and the API's both called that 「the uploader's declared type」. It is
+ * not: the server's parse UPDATEs the column with the label it prefers
+ * off `fields.classifiedType`, so on every parsed row (1) and (4) were
+ * one expression and (3) — the agreeing witness the gate is built on —
+ * was dead. Driven through this bundle: a 门诊病历摘要 the old keyword
+ * classifier scored `genetic_report`, uploaded as 其他, with no page on
+ * the archived payload, came back `true` here and 病程 → 检查结果
+ * printed its transcribed D4Z4 count in the panel a laboratory's
+ * numbers get.
+ *
+ * REFUSING (4) OUTRIGHT WAS NOT THE FIX, and the API's block records
+ * what it cost: on every parsed row the fourth question became
+ * unanswerable, so a GENUINE report whose page was not stored and whose
+ * 检测方法 the parser could not read — the ordinary case, not an edge —
+ * graded as a transcription and the patient dropped from 基因确诊 to
+ * 自述. The declaration is not lost: the server stamps it into
+ * `fields.documentType` and the classifier writes a different cell. So
+ * (4) reads it there, where the classification (1) already read cannot
+ * stand in for it.
+ */
+export const isLaboratoryGeneticReport = (document: GeneticEvidenceDocumentLike): boolean => {
+  if (documentClassifiedType(document) !== 'genetic_report') return false;
+  if (showsClinicalNarrative(document)) return false;
+  if (showsLaboratoryReportStructure(document)) return true;
+  return uploaderDeclaredGeneticReport(document);
+};
+
+/**
+ * WHAT A VALUE READ OFF SUCH A DOCUMENT IS CALLED.
+ *
+ * The API's `TRANSCRIBED_EVIDENCE_LABEL_ZH`, and the same string the
+ * server already sends this bundle as `origin.labelZh` for a
+ * transcribed value — 临床护照, 我的档案 and 我的随访计划 all print it
+ * from the wire. It is copied here for the one reader that has no
+ * origin to print: `buildReportInsights` picks the document itself, off
+ * `profile.documents`, and 病程 → 检查结果 renders what it returns.
+ *
+ * IF THE API'S CHANGES THIS HAS TO CHANGE WITH IT, exactly as the
+ * picker above does. Two wordings of one claim across two screens of
+ * one app is the defect this constant exists to avoid, and nothing in
+ * the build links them.
+ */
+export const TRANSCRIBED_EVIDENCE_LABEL_ZH = '转录自非基因报告文件';
+
+const getTimestamp = (value: string | null | undefined) => {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+/** How much of the diagnosis block this document can supply. Zero for a
+ *  document whose parse has not landed: such a row has no payload,
+ *  because the upload path inserts it empty and the reparse path blanks
+ *  it before the job starts.
+ *
+ *  IT COUNTS ALL SEVEN KEYS, 检测方法 AND 诊断日期 INCLUDED, and two of
+ *  those are bookkeeping rather than a statement about this patient —
+ *  which is why it is no longer what the first question below asks. See
+ *  `GENETIC_RESULT_KEY_GROUPS`. */
+const countGeneticValues = (document: GeneticEvidenceDocumentLike) => {
+  const fields = payloadFields(document);
+  if (!fields) return 0;
+  return GENETIC_DOCUMENT_VALUE_KEY_GROUPS.filter((keys) => pickReading(fields, keys)).length;
+};
+
+/**
+ * WHICH ONE DOCUMENT IS THIS PROFILE'S GENETIC EVIDENCE.
+ *
+ * A candidate is a document typed `genetic_report`, or any document
+ * carrying a genetic RESULT — a 病历摘要 quoting the repeat count is the
+ * only copy some patients have. Among candidates the order is:
+ *
+ * IT STATES A RESULT. A document this platform has read no RESULT off
+ * cannot be the evidence for anything. That is what stops a new upload
+ * from emptying the page: the row sits in `processing` with no payload
+ * for as long as the parse takes, a parse that raises lands in
+ * `parse_failed` and stays there, and on a date order both outranked
+ * the older report that had parsed. A silent document is still picked
+ * when nothing else is on file, so the page can still say when
+ * something was last uploaded; it supplies no value, which is the
+ * honest answer for a file we have not read.
+ *
+ * THE QUESTION IS `GENETIC_RESULT_KEY_GROUPS` AND NOT 「it yielded any
+ * field」. It was `countGeneticValues(document) > 0` over all seven
+ * keys, and 检测方法 / 诊断日期 are bookkeeping: a report whose parse
+ * read its method label and lost the result to a mangled table scored 1
+ * and ranked as a document that had spoken — outranking a 病历摘要
+ * carrying the patient's only surviving copy of their repeat count, and
+ * deleting that number from every screen.
+ *
+ * THEN THE LABORATORY, ahead of anything else and ahead of how much
+ * either carries. Ranking by information content first is how a 病历摘要
+ * quoting a repeat count came to outrank the genetics report it was
+ * quoting: a transcription is not a measurement, and a sparse report
+ * from the laboratory is still the laboratory.
+ *
+ * THEN THE LANDED PARSE, which separates two documents that are
+ * otherwise equal — a legacy row carrying fields from a pre-async
+ * extraction path, against a row the current pipeline finished.
+ *
+ * THEN THE ONE THAT STATES A D4Z4 LENGTH. 重复数 is not one of five
+ * equal rows: it is the value the FSHD1 boundary is drawn against and
+ * the one 基因确诊 is decided by, and the others qualify it. A report
+ * that states one and a report that does not are not two datings of the
+ * same thing. A short-read WES reports a 4q haplotype and states no
+ * length — the guideline says that method 「cannot be determined by
+ * short read WES- or WGS-like technologies」 — and letting it outrank an
+ * older Southern blot on date alone took a confirmed patient from
+ * 基因确诊 to 未确诊, measured. Asked of what the report SAID, not of
+ * `geneticTestMethod`, which is one of the demoted bookkeeping keys and
+ * is `unknown` on most rows.
+ *
+ * THEN NEWER, AND ONLY THEN RICHER — this pair was the other way round.
+ * A count of parsed fields is a fact about THIS PLATFORM'S EXTRACTION,
+ * not about the document: an OCR change re-ranks the same two reports
+ * with nothing about the patient having changed. Two reports that both
+ * sized the array are two datings of one measurement, and a repeat count
+ * is the value a re-test exists to revise, so the later one is the one
+ * the laboratory stands behind. The erasure argument does not reach here
+ * — 「a newer report's silence must not delete an older reading」 is
+ * discharged by the two questions above it.
+ *
+ * THEN `id`, so an unchanged profile re-renders identically.
+ *
+ * ONE DOCUMENT AND NOT A MERGE of the best value for each row. 分型,
+ * 单倍型, EcoRI 片段, D4Z4 重复数 and 甲基化 are one assay's reading, and
+ * the passport grades them against the 检测方法 of the same report — a
+ * D4Z4 count taken from a Southern blot beside a haplotype taken from a
+ * WES would be graded as one report holding both, which is the sentence
+ * this product exists to avoid saying.
+ */
+export const pickGeneticEvidenceDocument = <T extends GeneticEvidenceDocumentLike>(
+  documents: readonly T[],
+): T | null => {
+  // Ranked once per document rather than inside the comparator:
+  // classifying and counting both walk the payload, and a comparator
+  // that re-walks it re-reads the same report for every comparison it
+  // takes part in.
+  const candidates = documents
+    .map((document) => {
+      const fields = payloadFields(document);
+      return {
+        document,
+        typed: isLaboratoryGeneticReport(document),
+        carriesResult: GENETIC_RESULT_KEY_GROUPS.some((keys) => pickReading(fields, keys)),
+        statesLength: Boolean(pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats)),
+        values: countGeneticValues(document),
+        parseLanded: PARSE_LANDED_STATUSES.has(document.status ?? ''),
+        time: getTimestamp(document.uploadedAt),
+      };
+    })
+    .filter((candidate) => candidate.typed || candidate.carriesResult);
+  if (candidates.length === 0) return null;
+  return (
+    candidates.sort(
+      (a, b) =>
+        Number(b.carriesResult) - Number(a.carriesResult) ||
+        Number(b.typed) - Number(a.typed) ||
+        Number(b.parseLanded) - Number(a.parseLanded) ||
+        Number(b.statesLength) - Number(a.statesLength) ||
+        b.time - a.time ||
+        b.values - a.values ||
+        (a.document.id < b.document.id ? -1 : a.document.id > b.document.id ? 1 : 0),
+    )[0]?.document ?? null
+  );
+};

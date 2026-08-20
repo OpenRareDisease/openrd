@@ -374,14 +374,19 @@ export default StyleSheet.create({
     lineHeight: 22,
   },
   /**
-   * The same cells when `diagnosis.confirmation !== 'genetic'`.
+   * The register for a value this platform is not printing 报告读取
+   * under. That covers a value it did not read off a report AND a value
+   * whose origin never arrived — `renderDiagnosisCell` picks between
+   * this and `infoValue` on `origin?.kind === 'report'`, so a null
+   * origins map lands every value here. Erring towards this one is
+   * deliberate: metric type is a claim about where a number came from,
+   * and 「we do not know」 must not be able to borrow it.
    *
-   * Metric type — 16.5pt, 700, tabular figures — is what this screen
-   * uses for a measured value, and the four diagnosis cells were set in
-   * it whether the number came off a genetics report or out of the
-   * free-text box on the baseline form. Body-strong instead, and the
-   * tabular figures dropped with it: aligned digits are a table of
-   * readings, and 「FSHD1」 typed by a patient who has been guessing for
+   * `renderDiagnosisCell` picks between this and `infoValue` per value,
+   * off that value's own origin, and the 诊断进度 cell takes this one
+   * outright. Metric type — 700, tabular figures — is what the screen
+   * sets a measured value in, and aligned digits read as a table of
+   * readings: 「FSHD1」 typed by a patient who has been guessing for
    * eight years is not one.
    *
    * Built from TYPE.bodyStrong rather than overriding `infoValue`, so

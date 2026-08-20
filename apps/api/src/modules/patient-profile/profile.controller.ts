@@ -2,11 +2,17 @@ import type { Response } from 'express';
 import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
+import { applyPatientBaselineWrite, leafPaths } from './baseline-provenance.js';
 import {
   buildPortableExport,
   isPortableExportFormat,
   PORTABLE_EXPORT_FORMATS,
 } from './export/index.js';
+import {
+  readUploaderDeclaredType,
+  uploaderDeclaredTypeFromUploadForm,
+  type UploaderDeclaredDocumentType,
+} from './genetic-evidence.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
@@ -31,6 +37,7 @@ import {
   submissionListQuerySchema,
   updateProfileSchema,
 } from './profile.schema.js';
+import type { BaselineProfileInput } from './profile.schema.js';
 import type { PatientProfileService } from './profile.service.js';
 import { buildReferralPack } from './referral-pack.js';
 import type { AppLogger } from '../../config/logger.js';
@@ -385,10 +392,73 @@ const mapDeletionError = (error: unknown): unknown => {
  *  instead of silently cutting off. */
 export const EXPORT_MAX_SUBMISSION_PAGES = 50;
 export const EXPORT_MAX_AUDIT_ROWS = 5000;
+/** A fall a day for eight years. Beyond the diary's own MAX_FALL_ROWS
+ *  (400) because that one bounds a screen and this one bounds a file
+ *  the patient keeps. */
+export const EXPORT_MAX_FALL_ROWS = 3000;
+/** Two scales, minutes to administer, superseded rows included. A
+ *  patient could not reach this by hand; a script could. */
+export const EXPORT_MAX_INSTRUMENT_ROWS = 2000;
 /** Minimum spacing between two exports from the same user — the
  *  export fans out into dozens of paged queries, so it gets a
  *  cooldown instead of riding the generic auth rate limit. */
 export const EXPORT_COOLDOWN_MS = 60_000;
+
+/**
+ * WHAT THE PORTABILITY FILE DOES NOT CARRY, SAID IN THE FILE.
+ *
+ * export/envelope.ts already argues this for the three research
+ * formats: 「An empty `omissions` array would be the claim that nothing
+ * was left out」. The PIPL body is not a conformant third-party
+ * document and has no such envelope, so for a long time it made that
+ * claim by having no list at all — its docstring said 「everything the
+ * platform stores about the caller」 and the privacy screen says 「全部
+ * 档案、记录、报告清单与授权历史」, and neither was true.
+ *
+ * The falls diary and the instrument administrations were the two
+ * clinical categories missing outright; those are now CARRIED, not
+ * declared, because they are the patient's own record and they travel
+ * fine. What is left below is everything else this platform stores
+ * against an account, each with the reason it stays out. A reader who
+ * finds a category here has been told; a category in neither the body
+ * nor this list is the bug.
+ *
+ * `notes.documents` says the first entry too, in the wording it has
+ * had since v1. The duplication is deliberate — that key is what
+ * existing readers look at, and this list has to be complete on its
+ * own to be worth anything.
+ */
+export const EXPORT_OMISSIONS: ReadonlyArray<{ category: string; reasonZh: string }> = [
+  {
+    category: '报告原件',
+    reasonZh:
+      '报告的原始文件（图片 / PDF）不放进这个 JSON：它们可以任意大，塞进来会让这份文件下载不动。profile.documents 列出了每一份的标题、类型、上传时间与校验值，原件在「报告详情」页逐份下载。',
+  },
+  {
+    category: '登录手机号与邮箱',
+    reasonZh:
+      '账号的登录标识不写进这个文件。它是这份文件万一外流时最直接的再识别入口，而这份文件是要被下载、转发、存进网盘的。你自己填在档案里的联系方式在 profile.contactPhone 与 profile.contactEmail。',
+  },
+  {
+    category: '注销申请记录',
+    reasonZh:
+      '是否申请过注销、预定清除时间，属于账号生命周期状态而不是健康记录，在「我的 → 注销账号」页实时可见。',
+  },
+  {
+    category: '安全审计日志',
+    reasonZh:
+      '登录、管理员查阅你的档案、分享链接被打开等操作记录，按合规要求单独留存，其中含其他人（管理员）的操作信息，因此不随本文件导出。需要查阅可以单独申请。',
+  },
+  {
+    category: '短信验证码与登录风控记录',
+    reasonZh: '一次性验证码与失败次数属于安全凭据，保存期以分钟计，导出它们只会削弱账号安全。',
+  },
+  {
+    category: '早期版本遗留的数据表',
+    reasonZh:
+      '社区帖子、旧版问答会话与旧版报告索引来自更早的版本，当前版本没有任何写入路径，因此本文件不包含它们。',
+  },
+];
 
 /** The slice of the AI AuditLogger the export needs. Injected as an
  *  interface (rather than importing the class) so the profile module
@@ -415,6 +485,191 @@ const countExtractedFields = (payload: unknown): number => {
   const raw = fields.fieldCount;
   const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+/** Keys `fields` carries that are not readings off the report: the
+ *  parse's own status and counters, the classifier's verdict, the
+ *  uploader's type hint, and the stamps this app adds afterwards.
+ *  Mirrors `PIPELINE_BOOKKEEPING_FIELDS` on the report screen. */
+const PIPELINE_BOOKKEEPING_FIELDS = new Set([
+  'documentType',
+  'document_type',
+  'analysisStatus',
+  'analysis_status',
+  'ocrStatus',
+  'ocr_status',
+  'ocrIssue',
+  'ocr_issue',
+  'extractedTextLength',
+  'extracted_text_length',
+  'reviewRecommendedCount',
+  'review_recommended_count',
+  'fieldCount',
+  'field_count',
+  'classifiedType',
+  'classified_type',
+  'classifiedTypeConfidence',
+  'classified_type_confidence',
+  'reportTypeLabel',
+  'report_type_label',
+  'manuallyEditedAt',
+  'manually_edited_at',
+  'aiSummary',
+  'ai_summary',
+  'aiSummarySource',
+  'aiSummaryInputHash',
+  'hint',
+]);
+
+/**
+ * Does this payload hold anything a patient would miss?
+ *
+ * `countExtractedFields` alone was not enough once reparse started
+ * admitting rows that have something to lose. It reads the Python
+ * parser's own `fieldCount`, and a payload written by a provider that
+ * files no such counter — the legacy `uploaded` rows, the mock, a
+ * hand-corrected record — reads as zero while carrying a full report.
+ * Landing an empty result over one of those, on the strength of a
+ * counter that was never written, is the data loss this whole gate
+ * exists to prevent. So: the counter when there is one, and otherwise
+ * the count of keys that are not bookkeeping.
+ */
+const countClinicalReadings = (payload: unknown): number => {
+  const counted = countExtractedFields(payload);
+  if (counted > 0) return counted;
+  if (!isRecord(payload)) return 0;
+  const fields = isRecord(payload.fields) ? payload.fields : null;
+  if (!fields) return 0;
+  return Object.entries(fields).filter(
+    ([key, value]) => !PIPELINE_BOOKKEEPING_FIELDS.has(key) && String(value ?? '').trim() !== '',
+  ).length;
+};
+
+const clinicalReadingKeys = (payload: unknown): string[] => {
+  if (!isRecord(payload)) return [];
+  const fields = isRecord(payload.fields) ? payload.fields : null;
+  if (!fields) return [];
+  return Object.entries(fields)
+    .filter(
+      ([key, value]) => !PIPELINE_BOOKKEEPING_FIELDS.has(key) && String(value ?? '').trim() !== '',
+    )
+    .map(([key]) => key);
+};
+
+/**
+ * What a reparse did to the row, written onto the payload so the
+ * patient can be told rather than left to notice.
+ *
+ * ⚠ NOTHING TELLS THEM YET, AND THIS COMMENT HAS BEEN THE WHOLE OF THE
+ * PROMISE. The API side is complete and has been since this shipped:
+ * the block is written onto the stored payload by `decideReparseLanding`
+ * below, it is named explicitly in `PROFILE_OCR_PAYLOAD_PROJECTION` so
+ * it survives the list projection, and GET …/documents/:id/ocr returns
+ * it inside the full payload. It reaches no screen. A patient who
+ * pressed 重新识别 and lost three readings sees three fewer rows and no
+ * sentence, which is exactly the 「left to notice」 this type exists to
+ * prevent — and worse than never having said it, because the row now
+ * carries a written record that the product declines to read out.
+ *
+ * THE SCREEN IS ANOTHER LANE'S FILE. It is
+ * apps/mobile/screens/p-report_detail/index.tsx (with the list card in
+ * apps/mobile/screens/p-report_management/index.tsx), and the wire
+ * shape it must read, on the payload it already has in hand, is:
+ *
+ *     ocrPayload.reparse?: {
+ *       attemptedAt: string;            // ISO
+ *       outcome: 'replaced' | 'kept_previous';
+ *       removedReadings?: string[];     // `fields` keys, absent when none
+ *       notice: string;                 // ready to render, Chinese, no interpolation
+ *     }
+ *
+ * `notice` is a finished sentence: show it. `removedReadings` names the
+ * cells by their `fields` key, so a screen can point at the gaps rather
+ * than only describe them. Both are absent on every row nobody has
+ * reparsed (3 rows in this deployment carry the block today), so the
+ * whole thing is one optional read with no migration behind it.
+ */
+export interface ReparseOutcome {
+  attemptedAt: string;
+  outcome: 'replaced' | 'kept_previous';
+  /** Readings the previous payload had and the new one does not. */
+  removedReadings?: string[];
+  notice: string;
+}
+
+/**
+ * WHETHER THE NEW PARSE MAY REPLACE THE OLD PAYLOAD.
+ *
+ * The eligibility gate used to answer this by refusing to start. It
+ * cannot any more — the rows most in need of repair are exactly the
+ * ones carrying readings — so the protection moved here, to the one
+ * moment where both results exist and can be compared.
+ *
+ * ONE REFUSAL, AND ONLY ONE: a re-run that came back with NOTHING does
+ * not get to replace a payload that had something. That covers the
+ * failure the patient would actually suffer — a raise inside the
+ * parser, a storage read that returned a truncated file, an OCR
+ * provider that timed out — and in every one of those cases the row
+ * goes back to exactly what it was, under its old status.
+ *
+ * AND DELIBERATELY NOT 「FEWER FIELDS THAN BEFORE」, which was the first
+ * shape of this rule and is wrong on this platform. The bugs being
+ * repaired are DUPLICATION bugs: on five of the seven documents CK,
+ * CK-MB, 肌酐 and LDH all carry the CK number, so a correct re-parse of
+ * those files lands FEWER fields than the archive holds, and a
+ * count-must-not-drop rule would refuse every repair it exists to
+ * enable while admitting nothing. Fewer readings, honestly read, is a
+ * better payload. What the patient is owed there is not a veto — it is
+ * being told, which `removedReadings` is.
+ */
+const decideReparseLanding = (input: {
+  previousPayload: unknown;
+  previousStatus: string | null;
+  nextPayload: unknown;
+  nextStatus: string;
+}): { payload: unknown; status: string; adopted: boolean } => {
+  const previousReadings = countClinicalReadings(input.previousPayload);
+  const nextReadings = countClinicalReadings(input.nextPayload);
+  const attemptedAt = new Date().toISOString();
+
+  if (previousReadings > 0 && nextReadings === 0) {
+    return {
+      payload: {
+        ...(isRecord(input.previousPayload) ? input.previousPayload : {}),
+        reparse: {
+          attemptedAt,
+          outcome: 'kept_previous',
+          notice: '重新识别没有取到报告里的数据，已保留上一次的识别结果。',
+        } satisfies ReparseOutcome,
+      },
+      // Back to where it was. `nextStatus` here is `parse_failed` or a
+      // `parsed` that landed nothing, and either would relabel a row
+      // whose content we just decided to keep.
+      status: input.previousStatus ?? 'parsed',
+      adopted: false,
+    };
+  }
+
+  if (previousReadings === 0) {
+    return { payload: input.nextPayload, status: input.nextStatus, adopted: true };
+  }
+
+  const before = new Set(clinicalReadingKeys(input.previousPayload));
+  const after = new Set(clinicalReadingKeys(input.nextPayload));
+  const removedReadings = [...before].filter((key) => !after.has(key)).sort();
+  const outcome: ReparseOutcome = {
+    attemptedAt,
+    outcome: 'replaced',
+    ...(removedReadings.length ? { removedReadings } : {}),
+    notice: removedReadings.length
+      ? '重新识别后，有些原先显示过的数值这次没有取到，已从这份报告中移除。'
+      : '已用重新识别的结果更新这份报告。',
+  };
+  return {
+    payload: { ...(isRecord(input.nextPayload) ? input.nextPayload : {}), reparse: outcome },
+    status: input.nextStatus,
+    adopted: true,
+  };
 };
 
 export class PatientProfileController {
@@ -538,25 +793,61 @@ export class PatientProfileController {
    * Full data export (data-portability right, 个保法可携带权): one
    * JSON document holding everything the platform stores about the
    * caller — profile with all nested records + document metadata,
-   * consent state and full consent history, sharing preferences,
-   * the submission timeline, and the scrubbed AI audit trail.
+   * the falls diary, every instrument administration, consent state
+   * and full consent history, the agreement-acceptance history,
+   * sharing preferences and every passport share ever minted, the
+   * submission timeline, and the scrubbed AI audit trail.
+   *
+   * FORMAT VERSION 2. v1 carried none of the four sections named
+   * below, and carried no statement that it did not. It was
+   * ADDITIVELY wrong — a v1 reader's keys all still mean what they
+   * meant — but a v1 file is not a complete record, and a consumer
+   * has to be able to tell which one it is holding. Every v1 key
+   * keeps its name, its shape and its position.
+   *
+   *   `falls`                     — patient_falls, the diary. The
+   *     timeline twin of each fall was always here (it is a
+   *     `patient_followup_events` row of type `fall`), so v1 files
+   *     show the patient that they fell and lose every answer they
+   *     gave about it: activity, place, hands full, got up unaided,
+   *     injured. Full history, no window — see
+   *     `listFallDiaryForExport`.
+   *   `instrumentAdministrations` — instrument_administrations plus
+   *     instrument_item_responses. Brooke and Vignos: the scales this
+   *     product administers to the patient. Absent from v1 entirely,
+   *     including the item-level answers they gave.
+   *   `legalAcceptances`          — legal_document_acceptances, with
+   *     withdrawals. The screen says 授权历史 and v1 answered with AI
+   *     consent only.
+   *   `passportShares`            — passport_share_links +
+   *     passport_pickup_codes: every door the patient opened into
+   *     their own record, revoked and expired included, tokens never.
    *
    * Document binaries are NOT inlined (they can be arbitrarily
    * large); their metadata lists every file and the detail screen
-   * offers per-file download. Loops are bounded so a pathological
-   * account can't hold the connection forever: submissions cap at
+   * offers per-file download. That, and everything else this platform
+   * holds against the account and does not put in this file, is
+   * enumerated in `omissions` — see EXPORT_OMISSIONS for why the
+   * document says so rather than leaving the reader to notice.
+   *
+   * Loops are bounded so a pathological account can't hold the
+   * connection forever: submissions cap at
    * EXPORT_MAX_SUBMISSION_PAGES pages, audit at
-   * EXPORT_MAX_AUDIT_ROWS rows, and the payload says so via
-   * `truncation` flags instead of silently cutting off.
+   * EXPORT_MAX_AUDIT_ROWS rows, falls at EXPORT_MAX_FALL_ROWS and
+   * instruments at EXPORT_MAX_INSTRUMENT_ROWS, and the payload says
+   * so via `truncation` flags instead of silently cutting off.
    *
    * `?format=` switches this endpoint to one of the portable
    * research/clinical formats instead (see ./export). Those are a
    * DIFFERENT job: the default body is the PIPL portability answer —
    * everything we hold, in our own shape — while a `format` response
    * is one document in somebody else's shape, with an explicit
-   * statement of what it could not carry. The default body is
-   * unchanged when `format` is absent, down to the field order,
-   * because that response is a legal obligation and not a feature.
+   * statement of what it could not carry. Adding `?format=` still
+   * does not touch the default body — that promise is what the note
+   * below the cooldown is about — but the default body itself is a
+   * legal obligation rather than a feature, which is exactly why it
+   * grew to v2 the moment it was found to be short of what the
+   * product tells patients it contains.
    */
   exportMyData = async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user.id;
@@ -578,7 +869,7 @@ export class PatientProfileController {
 
       // Deliberately outside the cooldown below, and deliberately NOT
       // stamping it. That throttle exists because the full export
-      // fans out into ~75 paged queries; a portable document costs
+      // fans out into ~100 paged queries; a portable document costs
       // exactly one getProfileByUserId — the same query GET /me
       // already serves with no throttle at all. Sharing the budget
       // would mean a patient who exported their PIPL bundle then gets
@@ -598,9 +889,10 @@ export class PatientProfileController {
       return;
     }
 
-    // Per-user cooldown: the export fans out into up to ~75 paged
-    // queries, so an authenticated caller in a retry loop is a real
-    // DB-load hazard. Same single-instance in-memory pattern as
+    // Per-user cooldown: the export fans out into up to ~100 paged
+    // queries (v2 added the falls diary, the instrument pages and two
+    // authorisation reads to the count), so an authenticated caller in
+    // a retry loop is a real DB-load hazard. Same pattern as
     // inFlightOcrJobs; a legitimate user exports once, not per
     // minute. Entries are pruned on each pass so the map can't grow
     // beyond the set of users active within one cooldown window.
@@ -620,10 +912,27 @@ export class PatientProfileController {
       throw new AppError('Patient profile not found', 404);
     }
 
-    const [consent, consentHistory, sharingPreferences] = await Promise.all([
+    const [
+      consent,
+      consentHistory,
+      sharingPreferences,
+      fallDiary,
+      instrumentAdministrations,
+      legalAcceptances,
+      passportShares,
+    ] = await Promise.all([
       this.service.getConsentDetails(userId),
       this.service.getConsentHistory(userId, { limit: 500 }),
       this.service.getSharingPreferences(userId),
+      // The four categories v1 dropped without saying so. In the same
+      // Promise.all as their siblings on purpose: they are the same
+      // one-shot reads against the same pool, and putting them after
+      // it would add four round trips to an endpoint that already has
+      // a cooldown for being expensive.
+      this.service.listFallDiaryForExport(userId, EXPORT_MAX_FALL_ROWS),
+      this.service.listInstrumentAdministrationsForExport(userId, EXPORT_MAX_INSTRUMENT_ROWS),
+      this.service.listLegalAcceptancesForExport(userId),
+      this.service.listPassportSharesForExport(userId),
     ]);
 
     const submissions: unknown[] = [];
@@ -657,7 +966,7 @@ export class PatientProfileController {
     }
 
     res.status(200).json({
-      formatVersion: 1,
+      formatVersion: 2,
       exportedAt: new Date().toISOString(),
       profile,
       consent,
@@ -665,14 +974,29 @@ export class PatientProfileController {
       sharingPreferences,
       submissions,
       aiAuditTrail,
+      falls: fallDiary.falls,
+      instrumentAdministrations: instrumentAdministrations.administrations,
+      legalAcceptances: legalAcceptances.acceptances,
+      passportShares: passportShares.shares,
       truncation: {
         submissions: submissionsTruncated,
         aiAuditTrail: auditTruncated,
         consentHistory: consentHistory.length >= 500,
+        falls: fallDiary.truncated,
+        instrumentAdministrations: instrumentAdministrations.truncated,
+        legalAcceptances: legalAcceptances.truncated,
+        passportShares: passportShares.truncated,
       },
+      omissions: EXPORT_OMISSIONS,
       notes: {
         documents:
           '文档原始文件不包含在本导出中；profile.documents 列出全部文件元数据，可在报告详情页逐份下载原件。',
+        // The reader has to be able to find the omission list without
+        // knowing it exists. Same argument as `portableFormats`
+        // below: a statement of what is missing that only a source
+        // reader can locate is not a statement to the patient.
+        omissions:
+          '本文件没有收录的内容，逐条列在 omissions 里，每条写明原因；omissions 之外没有其他被略过的类别。',
         // Discovery. Without this line the three portable formats are
         // reachable only by someone who has read the source, which
         // makes "the record is portable" true in the code and false
@@ -688,9 +1012,81 @@ export class PatientProfileController {
     res.status(200).json(result);
   };
 
+  /**
+   * The patient's own baseline write — and the other half of §B3.
+   *
+   * `baselineProfileSchema` is a plain Zod object, so the parse above
+   * STRIPS `fieldProvenance`, and `upsertBaseline` writes its argument
+   * over the whole `baseline_payload` column. Without the merge below,
+   * one patient saving one unrelated field erased every 管理员代填
+   * marker on the profile — including on fields they never touched —
+   * and the passport, the exports and the privacy policy all then said
+   * 「本人填写」 over values an administrator typed.
+   *
+   * `applyPatientBaselineWrite` carries the block forward and drops the
+   * entry for exactly the fields this write CHANGES. That is §B3's
+   * 「患者自己后续再改同一个字段时，标记回到本人填写」, per field, which
+   * is what §10（四）of the privacy policy promises in those words.
+   *
+   * `previous` must be the STORED column, not `getBaselineByUserId`'s
+   * read-time merge — see `getStoredBaselinePayload` for why.
+   *
+   * The read and the write are two statements rather than one
+   * transaction. On THIS side two saves racing can only lose a marker
+   * (the later write diffs against a payload that predates the earlier
+   * one), never invent one; a lost marker degrades a value to
+   * 「本人填写」, which is the wrong direction, so this is a real if
+   * small hazard and it is written down rather than implied. Closing it
+   * needs `upsertBaseline` to do the merge inside its own UPDATE.
+   *
+   * The administrator's side is NOT symmetric and is not held by the
+   * diff's direction: its body is the whole baseline as the form
+   * loaded it, so a field the patient changed while that page sat open
+   * would read as changed by the administrator and gain a marker
+   * nobody earned. What holds it there is the `If-Match` precondition
+   * on `AdminController.updatePatientBaseline`, not this argument.
+   */
   updateMyBaseline = async (req: AuthenticatedRequest, res: Response) => {
     const payload = baselineProfileSchema.parse(req.body);
-    const result = await this.service.upsertBaseline(req.user.id, payload);
+
+    // A BODY THAT PARSED TO NOTHING IS NOT 「CLEAR EVERYTHING」.
+    // `baselineProfileSchema` drops keys it does not know AT EVERY
+    // LEVEL, so this counts LEAVES rather than sections: a body naming
+    // a section the schema still knows and filling it with field names
+    // it does not (a renamed key, a snake_case ops script) parses to
+    // {foundation: {}}, which has a top-level key and no answers in it.
+    // That is the shape a version-skewed client actually produces; the
+    // all-unknown-sections shape is the hand-crafted one. And
+    // `upsertBaseline` REPLACES the column — so a request whose every
+    // key is unrecognised arrives here as {} and erases the whole
+    // baseline, answering 200.
+    //
+    // This app ships as a web export and WeChat caches it for days, so
+    // 「a bundle older than the current schema」 is the ordinary case
+    // rather than the exotic one. Reproduced against a running API: a
+    // PUT of {「lifestyle」: {…}} over a stored baseline left the column
+    // as {} with a 200.
+    //
+    // The form always submits its sections, so an empty payload never
+    // comes from this build. Clearing a single field still works — send
+    // the field as null, which is a key the schema knows.
+    if (leafPaths(payload).length === 0) {
+      throw new AppError(
+        '这次保存里没有一项是本平台这一版认得的字段，所以什么都没有改。多半是这个页面的版本比服务端旧了：把页面整个刷新一次（微信里可能要先清一下缓存），再保存一次。',
+        400,
+      );
+    }
+
+    const stored = await this.service.getStoredBaselinePayload(req.user.id);
+    const merged = applyPatientBaselineWrite(stored?.payload ?? null, payload);
+    // The cast is the point of the call. `BaselineProfileInput` has no
+    // `fieldProvenance` member — the schema strips it — while
+    // `upsertBaseline` writes its argument into the jsonb column
+    // verbatim, so the extra key has to survive the parameter.
+    const result = await this.service.upsertBaseline(
+      req.user.id,
+      merged as unknown as BaselineProfileInput,
+    );
     res.status(200).json(result);
   };
 
@@ -877,7 +1273,9 @@ export class PatientProfileController {
       documentId: result.id,
       buffer: file.buffer,
       mimeType: file.mimetype ?? null,
-      documentType: payload.documentType,
+      // Straight off the upload form, before any parse exists — the one
+      // instant at which a plain string IS the declaration.
+      documentType: uploaderDeclaredTypeFromUploadForm(payload.documentType),
       fileName: file.originalname ?? undefined,
       reportName: payload.title ?? file.originalname ?? undefined,
     });
@@ -909,9 +1307,40 @@ export class PatientProfileController {
     documentId: string;
     buffer: Buffer;
     mimeType: string | null;
-    documentType: string;
+    /**
+     * THE TYPE THE UPLOADER DECLARED, AND THE PARSE STAMPS IT INTO THE
+     * PAYLOAD IT WRITES.
+     *
+     * Every provider copies this argument into
+     * `ocr_payload.fields.documentType` — `buildFields` in
+     * embedded-report-ocr.ts, and the same line in mock-ocr.ts and
+     * baidu-ocr.ts — and that cell is the ONLY surviving record of what
+     * the patient picked, because `updateDocumentOcrResult` below
+     * overwrites `patient_documents.document_type` with the
+     * classification. `isLaboratoryGeneticReport` reads it as the
+     * declaration and grades a genetics report on it.
+     *
+     * So it is branded. `reparseDocument` used to pass
+     * `document.document_type` here, which on a row a previous parse
+     * had classified is the classifier's own label — the second parse
+     * would have laundered it into the declaration's cell and the
+     * gate's fourth question would be its first question again, one
+     * round later. `readUploaderDeclaredType` and
+     * `uploaderDeclaredTypeFromUploadForm` are the only two ways to
+     * obtain this type, so that substitution is now a compile error
+     * rather than a comment nobody reads.
+     */
+    documentType: UploaderDeclaredDocumentType;
     fileName?: string;
     reportName?: string;
+    /**
+     * The payload this job is about to overwrite, and the status the
+     * row wore while carrying it. Absent on the upload path, where
+     * there is nothing to overwrite; supplied by `reparseDocument`,
+     * where there may be a whole report.
+     */
+    previousPayload?: unknown;
+    previousStatus?: string | null;
   }) {
     const job = this.ocrLimiter(async () => {
       let ocrPayload: unknown | null = null;
@@ -930,10 +1359,21 @@ export class PatientProfileController {
       }
 
       const resolvedDocumentType = resolveDocumentTypeFromPayload(input.documentType, ocrPayload);
+      // The one place both results exist at once, which is why the
+      // decision is taken here and not at the button.
+      const landing = decideReparseLanding({
+        previousPayload: input.previousPayload ?? null,
+        previousStatus: input.previousStatus ?? null,
+        nextPayload: ocrPayload,
+        nextStatus: resolveDocumentStatusFromPayload(ocrPayload),
+      });
       await this.service.updateDocumentOcrResult(input.userId, input.documentId, {
-        status: resolveDocumentStatusFromPayload(ocrPayload),
-        ocrPayload,
-        documentType: resolvedDocumentType,
+        status: landing.status,
+        ocrPayload: landing.payload,
+        // Only when the new result is the one being kept. A restored
+        // payload must not carry a classification taken off a parse
+        // this row is not adopting.
+        documentType: landing.adopted ? resolvedDocumentType : undefined,
       });
     })
       .catch((error) => {
@@ -970,30 +1410,101 @@ export class PatientProfileController {
       status === 'processing' &&
       !Number.isNaN(uploadedAt.getTime()) &&
       uploadedAt.getTime() < stuckSinceMs;
-    // A `parsed` row that extracted nothing is a failure wearing a
-    // success label. The patient sees「没有解析出具体数据」and, until
-    // now, had no way to act on it: reparse was refused on the
-    // reasoning that the source file hadn't changed. True, but the
-    // *parser* changes — the lab-table extractor was returning zero
-    // fields for every report whose OCR put table cells on separate
-    // lines, and each of those rows is now recoverable by re-running
-    // the same file. Reports that did extract fields stay out of
-    // scope, where the original reasoning still holds.
-    const parsedButEmpty = status === 'parsed' && countExtractedFields(document.ocr_payload) === 0;
+    // A REPARSE IS A REPAIR NOW, NOT A RETRY, AND THE GATE HAD TO STOP
+    // ASKING WHETHER THE LAST PARSE SUCCEEDED.
+    //
+    // The gate this replaces admitted `parse_failed`, legacy
+    // `uploaded`, a dead `processing`, and a `parsed` row that
+    // extracted nothing — everything, that is, that had nothing to
+    // lose. Its reasoning for excluding a `parsed` row that DID extract
+    // fields was that the source file has not changed. That was always
+    // half the sentence: the file has not changed and the parser has,
+    // and a row that extracted fields FROM A PARSER THAT WAS WRONG is
+    // not a success to protect, it is the precise case a parser fix
+    // invalidates.
+    //
+    // What that half-sentence cost, measured against this deployment's
+    // own archive: seven documents carry an LDH the laboratory never
+    // printed — five of them the CK value off the same report, two a
+    // table row index — and FOUR of the seven are `parsed` with fields,
+    // belonging to four different patients. The endpoint whose comment
+    // already reasoned that the parser changes could not be pointed at
+    // any of them.
+    //
+    // So the question is no longer 「did this parse succeed」 but 「is
+    // there a job running that this would collide with」. A `processing`
+    // row young enough that its job is plausibly alive is refused, and
+    // that is the whole of it — the same test `inFlightOcrJobs` makes
+    // for this process, widened to cover a job that died with an
+    // earlier one. Every settled status is admitted, including the
+    // legacy `processed` / `failed` spellings migration 011 still
+    // validates.
+    //
+    // Everything that made refusing 「a good parse」 feel safe now lives
+    // where it belongs — on the LANDING, in `startOcrJob`, which
+    // refuses to replace a payload holding readings with one holding
+    // none. Refusing to press the button was never the protection;
+    // refusing to overwrite is.
+    if (status === 'processing' && !isStuckProcessing) {
+      throw new AppError('该报告正在识别中，请稍候', 409);
+    }
 
-    // Eligible: failed parses, legacy 'uploaded' rows (written before
-    // the async pipeline / with OCR disabled), processing rows whose
-    // job evidently died, and empty parses. Fresh 'processing' waits
-    // for its job.
-    const eligible =
-      status === 'parse_failed' || status === 'uploaded' || isStuckProcessing || parsedButEmpty;
-    if (!eligible) {
-      throw new AppError('该报告当前状态不支持重新识别', 409);
+    // THE ONE THING A RE-RUN CANNOT REPRODUCE. `patchDocumentOcrFields`
+    // is the patient correcting their own report by hand, and it stamps
+    // `manuallyEditedAt` — but not WHICH cells they touched, so there
+    // is no way to carry the corrections across a fresh parse and no
+    // way to tell a corrected value from an extracted one afterwards.
+    // A parse can be re-run; a patient's reading of their own paper
+    // report cannot. Refused with the alternative named, rather than
+    // silently overwritten.
+    const existingFields = isRecord(document.ocr_payload)
+      ? isRecord(document.ocr_payload.fields)
+        ? document.ocr_payload.fields
+        : null
+      : null;
+    if (existingFields && (existingFields.manuallyEditedAt ?? existingFields.manually_edited_at)) {
+      throw new AppError(
+        '这份报告的识别结果被手动修正过，重新识别会覆盖你填的内容。如需重新识别，请删除后重新上传。',
+        409,
+      );
     }
 
     // Before the storage read, not after: the buffer we're about to
     // materialise is the thing the queue cap is protecting.
     this.assertOcrQueueHasRoom(res);
+
+    // READ THE DECLARATION BEFORE THE PAYLOAD IS NULLED, because the
+    // payload is where it lives. `updateDocumentOcrResult` on the next
+    // line clears `ocr_payload`, and with it the stamped
+    // `fields.documentType`; the new parse then stamps whatever this
+    // hands it. Passing `document.document_type` — which is what stood
+    // here — puts the classifier's label into the declaration's cell on
+    // any row a previous parse classified, so the gate's fourth
+    // question would start corroborating its first one. The column is
+    // still the fallback, and on the four statuses reparse admits
+    // (`parse_failed`, legacy `uploaded`, a dead `processing`, and a
+    // `parsed` row that extracted nothing) it is nearly always the
+    // declaration untouched — a parse that landed no fields classified
+    // nothing worth preferring either.
+    //
+    // AND WHERE NEITHER SURVIVES, `other` — not the column. This is
+    // reachable only by a payload some path outside this pipeline's
+    // three providers wrote, carrying a classifier label and no stamp,
+    // and it is a fabrication either way: the honest answer is 「this
+    // row cannot say」 and the field has no spelling for it. `other`
+    // spends the cheap mistake. The value keeps printing with
+    // 转录自非基因报告文件 beside it and loses only its grade, where the
+    // column would spend the expensive one — a laboratory's sentence
+    // with no laboratory behind it. The patient can restore the true
+    // answer by re-uploading; nothing can restore it the other way.
+    const declaredDocumentType =
+      readUploaderDeclaredType({
+        id: document.id,
+        documentType: document.document_type,
+        status: document.status,
+        uploadedAt: null,
+        ocrPayload: document.ocr_payload,
+      }) ?? uploaderDeclaredTypeFromUploadForm('other');
 
     const loaded = await this.storage.load(document.storage_uri);
     const chunks: Buffer[] = [];
@@ -1012,12 +1523,28 @@ export class PatientProfileController {
       documentId,
       buffer,
       mimeType: document.mime_type,
-      documentType: document.document_type,
+      documentType: declaredDocumentType,
       fileName: document.file_name ?? undefined,
       reportName: document.title ?? document.file_name ?? undefined,
+      // THE ROW STILL GOES TO `processing` WITH A NULL PAYLOAD — that
+      // contract is load-bearing elsewhere (the genetic-evidence picker
+      // and the report screen both read「no payload」as「this parse has
+      // not landed」, which is what stops a re-run from emptying a
+      // passport while it runs). What changes is that the payload it
+      // nulls is now carried into the job, so the landing has something
+      // to compare its result against and something to put back.
+      previousPayload: document.ocr_payload ?? null,
+      previousStatus: status,
     });
 
-    res.status(202).json({ documentId, status: 'processing' });
+    res.status(202).json({
+      documentId,
+      status: 'processing',
+      // What the patient is promised before the button does anything:
+      // a re-run that comes back empty does not cost them the reading
+      // they already had. `startOcrJob` is what keeps the promise.
+      previousResultRestoredIfWorse: countClinicalReadings(document.ocr_payload) > 0,
+    });
   };
 
   addMedication = async (req: AuthenticatedRequest, res: Response) => {
@@ -1384,15 +1911,20 @@ export class PatientProfileController {
 
   getDocumentOcr = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
-    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+    // `getDocumentOcrForUser`, not `getDocumentForUser`: this is a read
+    // for display, so it goes through the same guard the profile
+    // projection does. Reading the row raw here is what made this
+    // endpoint the one door into `fields` that printed a withheld
+    // reading anyway.
+    const document = await this.service.getDocumentOcrForUser(req.user.id, documentId);
 
     res.status(200).json({
       documentId,
       // The async pipeline keeps ocr_payload null while the job runs,
       // so the row status is the only way a poller can distinguish
       // "still parsing" from "never parsed" / "failed".
-      status: document.status ?? null,
-      ocrPayload: document.ocr_payload ?? null,
+      status: document.status,
+      ocrPayload: document.ocrPayload ?? null,
     });
   };
 
@@ -1445,20 +1977,81 @@ export class PatientProfileController {
     // and projects clinical fields into a per-mode allowlist. Anything
     // off the allowlist is dropped — this is the only sanctioned path
     // for OCR fields to reach an LLM in this codebase.
-    const redacted = redactFields({ fields }, { scope: 'reports', mode: redactionMode });
-    // The `extractedText` / `rawFreeText` / `fullText` family is in
-    // HARD_DELETE_KEYS — we deliberately do NOT send the OCR full-text
-    // dump. It always carries the patient's name and the issuing
-    // physician's name; the structured fields the redactor passes
-    // through carry enough for the model to summarise. The legacy
-    // 2000-char slice was not a fix; it was a half-measure.
+    //
+    // THE SAME EVIDENCE THE ASSISTANT PATH PASSES, because the redactor
+    // asks a question of this projection that only the projection can
+    // answer. `chunkIsLaboratoryGeneticReport` decides whether a repeat
+    // count off this document may be read against the FSHD1 range, and
+    // it reads the document's own page, the parser's classification and
+    // the type the uploader declared. This call passed the `fields` blob
+    // alone: no page, no declared type, no status — so the laboratory
+    // gate had nothing to satisfy itself with and the uploader fallback
+    // read `null`. Every genetics cell on a GENUINE Southern-blot report
+    // came back `not_read_off_a_laboratory_report` in the summary the
+    // patient reads on the report-detail screen, while /api/ai/ask over
+    // the SAME ROW answered `within_fshd1_repeat_range` /
+    // `permissive_haplotype`. One document, two answers, one product.
+    //
+    // `documentType` here is `document.document_type` AND THAT IS NOT
+    // THE UPLOADER'S DECLARATION — this comment claimed it was, for two
+    // rounds, and the value has been the classifier's label on every
+    // parsed row the whole time, because `updateDocumentOcrResult`
+    // writes `resolveDocumentTypeFromPayload`'s answer back into the
+    // column. It is passed for what it actually is: the row's stored
+    // type, which is what the gate's FIRST question falls through to on
+    // a row no parse ever labelled.
+    //
+    // The gate's fourth question does not read it. It reads
+    // `fields.documentType`, which every provider stamps with the
+    // upload form's own value and no classifier touches, and `fields`
+    // is on this projection already — see `readUploaderDeclaredType`.
+    // That is what stops a classifier label agreeing with itself here:
+    // a 病历摘要 the old keyword classifier scored `genetic_report`
+    // carries `documentType: other` in the same blob and is refused.
+    //
+    // `extractedText` is on HARD_DELETE_KEYS, so layer 1 deletes it in
+    // both modes at any depth. The redactor asks the gate of its INPUT,
+    // ahead of layer 1, precisely so the page can be read and then
+    // removed — see the note on `chunkIsLaboratoryGeneticReport`. No
+    // prompt below ever contains it: it is the OCR full-text dump and
+    // carries the patient's name, the issuing physician's name and every
+    // identifier the page printed. Its absence is asserted by the
+    // fixture run in the summary tests, not just intended here.
+    const page = payloadObj.extractedText ?? payloadObj.extracted_text;
+    const redacted = redactFields(
+      {
+        fields,
+        documentType: document.document_type,
+        status: document.status,
+        ...(typeof page === 'string' && page.trim() ? { extractedText: page } : {}),
+      },
+      { scope: 'reports', mode: redactionMode },
+    );
+    // ONE NAME, ONE VALUE. `documentType` used to sit here as well,
+    // holding `resolveDocumentTypeFromPayload`'s answer — the parser's
+    // label canonicalised onto the four-value enum. Now that the
+    // uploader's declared type is on the projection, the redactor emits
+    // its own `documentType` inside `report`, and the two disagree
+    // whenever the patient picked the wrong entry from the dropdown: a
+    // genetics report uploaded as 「MRI」 would have printed
+    //「documentType: genetic_report」 above 「documentType: mri」 with
+    // nothing to say which was which. So the derived one is gone from
+    // the prompt and the two labels the assistant path already prints
+    // side by side are what is left: `documentType` (what the uploader
+    // declared) and, inside the OCR blob, `classifiedType` (what the
+    // parser read, ungrouped and more specific than the enum). The
+    // resolved value is still computed — `buildFallbackDocumentSummary`
+    // below needs it when the LLM call fails.
     const promptPayload = {
       documentId,
-      documentType,
-      // Keep reportName + reportTime only if they survived redaction
-      // (they should — neither is in HARD_DELETE_KEYS). Pull from the
-      // redacted shape so unknown future keys can't sneak back in via
-      // a typo here.
+      // Whatever survived the allowlist, verbatim. Pulled from the
+      // redacted shape rather than re-picked by name so no key can be
+      // reintroduced here that the redactor did not pass — and so this
+      // block states no expectation about WHICH keys those are. It used
+      // to promise `reportName` + `reportTime` 「if they survived」; both
+      // are unreachable (`reportName` is named as denied on the reports
+      // allowlist, `reportTime` appears on it nowhere), so the promise
+      // named two fields no summary has ever contained.
       report: redacted.fields,
     };
 

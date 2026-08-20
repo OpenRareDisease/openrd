@@ -3,6 +3,18 @@ import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
+// The pack and the FHIR bundle are built from one profile in one run
+// below, because the milestone-date defect was invisible to either
+// side's own suite: each document was self-consistent and they
+// disagreed with each other.
+import { FIXTURE_GENERATED_AT } from './export/__fixtures__/profile.fixture.js';
+import { normaliseSource } from './export/export-source.js';
+import { buildFhirExport } from './export/fhir-r4.js';
+// The pack's own source for the two sentences below: these tests assert
+// the pack carries the passport's wording rather than a copy of it, so
+// a change to either has to move both.
+import { buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 import {
   REFERRAL_MAX_POINTS_PER_SERIES,
@@ -150,7 +162,24 @@ const geneticReport = (fields: Record<string, string>) =>
     uploadedAt: '2026-02-01T12:00:00.000Z',
     checksum: null,
     submissionId: null,
-    ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+    // BOTH LABELS, BECAUSE THE PIPELINE STORES BOTH. `classifiedType`
+    // is the parser's; `documentType` inside `fields` is the uploader's
+    // own declaration, stamped there by every OCR provider before any
+    // classification exists and overwritten by nothing — unlike the
+    // column above, which `updateDocumentOcrResult` replaces with the
+    // classification. `isLaboratoryGeneticReport` reads the cell as the
+    // declaration, and it is what separates this fixture from an
+    // archived 门诊病历摘要 the old keyword classifier scored
+    // `genetic_report`: that row carries `documentType: other` in the
+    // same blob.
+    //
+    // This briefly carried `geneticTestMethod: southern_blot` for the
+    // same job. That was the wrong witness: a stated 检测方法 is graded,
+    // so it changes the clinical state the fixture describes, and a
+    // real laboratory report very often has none read off it.
+    ocrPayload: {
+      fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+    },
   }) as unknown as PatientProfileDTO['documents'][number];
 
 /** A report of a class the passport recognises, with nothing readable
@@ -204,22 +233,277 @@ describe('转诊包 — the document itself', () => {
 
 describe('诊断依据 — a claim must never be typeset as evidence', () => {
   it('marks a self-reported diagnosis as such, in the printed line', () => {
-    // `geneticMutation` is the free-text box on the baseline form. The
-    // passport calls that `self_reported`; the pack must not upgrade it.
+    // `geneticMutation` is `patient_profiles.genetic_mutation`, a
+    // free-text column. The passport calls a profile with no genetic
+    // measurement `self_reported`; the pack must not upgrade it.
     const result = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(result.diagnosis.confirmation).toBe('self_reported');
     expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
     expect(result.markdown).toContain('请勿按已确诊处理');
   });
 
-  it('says there is no basis at all when nothing was recorded', () => {
+  it('speaks about this document, not about every report the patient uploaded', () => {
+    // `buildReportInsights` opens ONE genetic document — the one
+    // `pickGeneticEvidenceDocument` names — so a repeat count that only
+    // a lower-ranked document carries is never read. That residue is
+    // inherent to reading one report rather than merging several, and
+    // it is why 「未从任何上传的报告里读到 D4Z4 重复数」 would be false
+    // about exactly this patient. It is the sentence a neurologist
+    // decides on.
+    //
+    // THE LOWER-RANKED DOCUMENT HERE IS A 病历摘要, which is the tier
+    // that produces this residue: the laboratory's own report outranks a
+    // document quoting one, ahead of dates and ahead of how much either
+    // carries. The count on the clinic letter is therefore held and not
+    // read, and 转录自非基因报告文件 is what it would be labelled if it
+    // were.
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4' }),
+            id: 'doc-summary',
+            documentType: 'medical_record',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_summary',
+                documentType: 'other',
+                d4z4Repeats: '4',
+              },
+            },
+            uploadedAt: '2019-05-03T12:00:00.000Z',
+          },
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1', diagnosisDate: '2026-01-09' }),
+            id: 'doc-new',
+          },
+        ],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.diagnosis.d4z4Repeats).toBe('—');
+    expect(result.diagnosis.statement).not.toContain('任何上传的报告');
+    expect(result.diagnosis.statement).toContain(
+      '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果',
+    );
+    // And it hands the reader the question this document cannot answer.
+    expect(result.markdown).toContain('患者手里可能还有本平台没有读过的报告');
+  });
+
+  /**
+   * THE DATE UNDER THE DIAGNOSIS BLOCK BELONGS TO THE DOCUMENT THE
+   * VALUES WERE READ OFF, AND THAT IS NOT ALWAYS THE NEWEST ONE.
+   *
+   * `pickGeneticEvidenceDocument` puts a report that states a D4Z4
+   * length above one that does not, so a 2026 methylation workup that
+   * never sized the array loses to the 2019 assay that did. The line was
+   * labelled 「最近一份诊断相关报告」 and fed that older date — printing,
+   * in the section a 协作网 neurologist uses to decide whether the
+   * workup is current, that this patient has brought nothing since 2019.
+   */
+  it('dates the report the values were read off, and does not call it the most recent', () => {
+    const result = pack(
+      base({
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4', haplotype: '4qA', methylationValue: '32%' }),
+            id: 'doc-full',
+            uploadedAt: '2019-05-03T12:00:00.000Z',
+          },
+          {
+            ...geneticReport({ methylationValue: '25%' }),
+            id: 'doc-later-workup',
+            uploadedAt: '2026-02-01T12:00:00.000Z',
+          },
+        ],
+      } as never),
+    );
+
+    // The premise: the picked document is the older one, because it is
+    // the one that sized the array.
+    expect(result.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('doc-full');
+    expect(result.markdown).toContain('本平台读作基因证据的报告：2019-05-03');
+    expect(result.markdown).not.toContain('最近一份诊断相关报告');
+  });
+
+  /**
+   * AND THAT ROW MAY NOT CALL A 病历摘要 A REPORT.
+   *
+   * 报告 was hardcoded into the label. `pickGeneticEvidenceDocument`
+   * takes a 病历摘要 quoting the results when the genetics report read
+   * out nothing — for this patient there is no genetics report at all —
+   * so the last line of 诊断依据 dated a laboratory report that was
+   * never uploaded, in the row a neurologist reads to decide whether
+   * the workup is current, three lines under a 结论 saying no genetic
+   * reading exists.
+   */
+  it('把病历摘要写成文件而不是报告，并带上它的来源', () => {
+    const transcription = {
+      ...geneticReport({ d4z4Repeats: '3', haplotype: '4qA' }),
+      id: 'doc-summary',
+      documentType: 'medical_record',
+      uploadedAt: '2026-03-01T12:00:00.000Z',
+      ocrPayload: {
+        fields: { classifiedType: 'medical_record', d4z4Repeats: '3', haplotype: '4qA' },
+      },
+    };
+    const result = pack(base({ documents: [transcription] } as never));
+
+    // The premise: this is the document the values come off, and it is
+    // not the laboratory's.
+    expect(result.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('doc-summary');
+    expect(result.diagnosis.latestSourceKind).toBe('transcribed');
+
+    expect(result.markdown).toContain(
+      '本平台读作基因证据的文件（转录自非基因报告文件）：2026-03-01',
+    );
+    expect(result.markdown).not.toContain('本平台读作基因证据的报告');
+    // The date is still printed — refusing to call the document a report
+    // is not the same as withholding when it arrived.
+    expect(result.markdown).toContain('2026-03-01');
+  });
+
+  it('没有任何可读作基因证据的文件时，那一行也不承诺一份报告', () => {
+    const result = pack(base());
+    expect(result.diagnosis.latestSourceKind).toBe('none');
+    expect(result.markdown).toContain('本平台读作基因证据的文件：本平台无记录');
+    expect(result.markdown).not.toContain('本平台读作基因证据的报告');
+  });
+
+  it('says what is missing, not that nothing was ever uploaded', () => {
     const result = pack(base());
     expect(result.diagnosis.confirmation).toBe('none');
-    expect(result.diagnosis.statement).toContain('本平台尚无任何诊断依据记录');
+    expect(result.diagnosis.statement).toContain('没有可展示的分型或诊断日期');
+  });
+
+  it('a methylation-only report still lands in none — so the line may not claim nothing was uploaded', () => {
+    // 甲基化 is in none of the three tests that earn 基因确诊, and it is
+    // neither 分型 nor 诊断日期, so this profile is `none` with a value
+    // from an uploaded report printed three lines below the 结论. The
+    // old line said 「本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述
+    // 与自测」 over exactly that.
+    const result = pack(base({ documents: [geneticReport({ methylationValue: '32%' })] } as never));
+
+    expect(result.diagnosis.confirmation).toBe('none');
+    expect(result.diagnosis.statement).not.toContain('仅为患者自述与自测');
+    expect(result.markdown).toContain('- 甲基化：32%（报告读取）');
+    // AND THE 结论 MAY NOT DENY THE ROW UNDER IT. The flat 「也没有从基因
+    // 报告里读出来的基因结果」 was printed over exactly this pack: a
+    // 甲基化 this platform read off the genetics report, three lines
+    // below, carrying 报告读取 as its source. What is missing is a
+    // result that earns a confirmation, and 甲基化 is not one.
+    expect(result.diagnosis.statement).toContain('可作确诊依据的基因结果');
+    expect(result.markdown).not.toContain('也没有从基因报告里读出来的基因结果 ——');
+  });
+
+  /**
+   * THE 结论 DOES NOT KEEP ITS OWN COPY OF THE CONFIRMATION RULE.
+   *
+   * These lines named the three tests that earn 基因确诊. That is
+   * `confirmation`'s definition restated in prose, on a page that gets
+   * printed and read weeks later, and it drifts the moment the rule
+   * moves — a report that names both probes rather than stating a
+   * haplotype has a 4q 单倍型 on it and confirms nothing, so a pack
+   * promising the neurologist those three names tells them a report
+   * they can see was never read.
+   */
+  it('未确诊的结论不复述「哪三项能构成确诊」', () => {
+    (['self_reported', 'admin_entered', 'none'] as const).forEach((expected) => {
+      const profile =
+        expected === 'self_reported'
+          ? base({ geneticMutation: 'FSHD1' } as never)
+          : expected === 'none'
+            ? base()
+            : base({
+                diagnosisDate: '2014-01-01',
+                baseline: applyAdminBaselineWrite(
+                  { foundation: { fullName: '张三' } },
+                  { foundation: { fullName: '张三', diagnosisYear: 2014 } },
+                  {
+                    adminUserId: '11111111-2222-3333-4444-555555555555',
+                    at: new Date('2026-08-13T04:11:07.912Z'),
+                  },
+                ),
+              } as never);
+      const result = pack(profile);
+      expect(result.diagnosis.confirmation).toBe(expected);
+      expect(result.diagnosis.statement).not.toContain('EcoRI 片段');
+      expect(result.diagnosis.statement).not.toContain('4q 单倍型');
+      expect(result.diagnosis.statement).toContain('可作确诊依据的基因结果');
+    });
+  });
+
+  it('prints each diagnosis value with its own source, not one sentence for the block', () => {
+    // The report carries 分型 and nothing else, so 分型 is the report's
+    // and 诊断日期 is the patient's — two sources, one section. The
+    // 结论 line used to say 「本人填报」 about both.
+    const result = pack(
+      base({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ diagnosisType: 'FSHD1' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.diagnosis.statement).not.toContain('本人填报');
+    // A genetic report IS on file — it just carried nothing that
+    // confirms — so the line may not say none was received.
+    expect(result.diagnosis.statement).not.toContain('本平台未收到基因报告');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
+    // Two sources on one section, and neither of them is the patient by
+    // name: the column behind 诊断日期 is written by the patient's own
+    // endpoint and by the read-time autofill alike, with nothing
+    // recording which.
+    expect(result.markdown).toContain('- 诊断日期：2019-05-03（来源无法确定）');
+  });
+
+  it('an administrator marker lands on 诊断日期 alone and names the field it is on', () => {
+    const result = pack(
+      base({
+        diagnosisDate: '2014-01-01',
+        baseline: applyAdminBaselineWrite(
+          { foundation: { fullName: '张三' } },
+          { foundation: { fullName: '张三', diagnosisYear: 2014 } },
+          {
+            adminUserId: '11111111-2222-3333-4444-555555555555',
+            at: new Date('2026-08-13T04:11:07.912Z'),
+          },
+        ),
+        documents: [geneticReport({ diagnosisType: 'FSHD1' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    expect(result.diagnosis.statement).toContain('「确诊年份」不是患者本人填写的');
+    // 2014 年, not 2014-01-01: `upsertBaseline` mirrors the
+    // questionnaire's four-digit 确诊年份 into the `date` column as
+    // `${year}-01-01`, and no report on this profile states that day.
+    // profile.passport.ts reduces the pin back to the year before any
+    // document renders it — see `diagnosisDateYearOnly` there.
+    expect(result.markdown).toContain('- 诊断日期：2014 年（管理员代填）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
+  });
+
+  it('says 来源无法确定 when the column and an uploaded report both carry the date', () => {
+    // profile.autofill.ts writes an empty `patient_profiles.diagnosis_date`
+    // from a report at read time without recording that it did, so this
+    // value is equally consistent with either source.
+    const result = pack(
+      base({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ diagnosisDate: '2019-05-03' })],
+      } as never),
+    );
+
+    expect(result.markdown).toContain('- 诊断日期：2019-05-03（来源无法确定）');
   });
 
   it('states the genetic result when there is one, and drops the warning', () => {
-    const result = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
+    const result = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
 
     expect(result.diagnosis.confirmation).toBe('genetic');
     expect(result.diagnosis.statement).toContain('基因确诊');
@@ -230,10 +514,547 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
   it('puts the confirmation question at the top of the sheet only when unconfirmed', () => {
     const unconfirmed = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(unconfirmed.questions[0]?.id).toBe('confirm-diagnosis');
-    expect(unconfirmed.questions[0]?.hint).toContain('本平台没有收到你的基因报告');
+    expect(unconfirmed.questions[0]?.hint).toContain(
+      '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果',
+    );
 
-    const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
+    const confirmed = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
+  });
+
+  /**
+   * A LABORATORY DID READ THIS PATIENT'S SAMPLE, so the unconfirmed
+   * copy next door is false for them in both directions: it offers a
+   * report this platform has not seen, and it asks them to upload the
+   * one it has already read.
+   */
+  it('单倍型非允许型时，结论和提示都不当作「还没做过检测」来写', () => {
+    const result = pack(
+      base({
+        documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qB' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('genetic_non_permissive');
+    expect(result.diagnosis.statement).toContain('不是允许型 4qA');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // Not a confirmation, and the repeat count is not set bare after the
+    // diagnosis name where it would read as one.
+    expect(result.diagnosis.statement).not.toContain('基因确诊；');
+    // The row below still prints it, with the report named as its
+    // source — refusing the confirmation is not withholding the result.
+    expect(result.markdown).toContain('- D4Z4 重复数：3（报告读取）');
+
+    const hint = result.questions.find((question) => question.id === 'confirm-diagnosis')?.hint;
+    expect(hint).toContain('不是允许型 4qA');
+    expect(hint).not.toContain('把报告带上或上传，这一行就会改');
+  });
+
+  /**
+   * 这张纸印着一个读数，又在两行之上说本资料里没有可作确诊依据的基因
+   * 结果 —— 拿着它的是罕见病诊疗协作网的神经内科医生，十秒钟之内没法
+   * 跟患者核对任何一行。护照那一段已经把这句话写好了，这张纸此前只从
+   * 那一段里取了「来源是哪一类文件」。
+   */
+  it.each([
+    ['以 kb 写的长度', { d4z4Repeats: '18kb' }, '18kb', '本平台不在 kb 和重复单元数之间做换算'],
+    ['读到 0 的重复数', { d4z4Repeats: '0' }, '0', '本平台读不通这个数'],
+  ])('结论下面就写着那个数为什么什么都没换来：%s', (_name, fields, cell, sentence) => {
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport(fields as Record<string, string>)],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.markdown).toContain(`- D4Z4 重复数：${cell}（报告读取）`);
+    expect(result.diagnosis.readingsNotJudged).toContain(sentence);
+    expect(result.markdown).toContain(`- ${result.diagnosis.readingsNotJudged}`);
+    // 紧接着它要解释的那一句，而不是排在四行值的后面。
+    const noteIndex = result.markdown.indexOf(result.diagnosis.readingsNotJudged ?? '');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('确诊那一档没有这一行 —— 那一档什么都没扣下', () => {
+    const result = pack(
+      base({
+        documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA', ecoRIFragment: '18kb' })],
+      } as never),
+    );
+    expect(result.diagnosis.confirmation).toBe('genetic');
+    expect(result.diagnosis.readingsNotJudged).toBeNull();
+    expect(result.markdown).not.toContain('本平台不在 kb 和重复单元数之间做换算');
+  });
+
+  /**
+   * 上面那一行只管本平台什么都没拿来衡量的读数 —— 以 kb 写的长度、读到
+   * 0 的那一格。一个 30 不是这两种：它解析得出来，是实验室自己的数，而且
+   * 本平台确实拿指南写的界限衡量过它，是它没过。于是这张纸印着 「本资料
+   * 里没有从基因报告里读出来的、可作确诊依据的基因结果」，四行之下印着
+   * 「D4Z4 重复数：30（报告读取）」，中间照旧没有一句话。
+   */
+  it.each([
+    ['大于指南所说的 10', { d4z4Repeats: '30', haplotype: '4qA' }, '30'],
+    ['报告没写单倍型', { d4z4Repeats: '6' }, '6'],
+  ])('结论否认的那个重复数，下面就写着它为什么没换来确诊：%s', (_name, fields, cell) => {
+    const profile = base({
+      geneticMutation: 'FSHD1',
+      documents: [geneticReport(fields as Record<string, string>)],
+    } as never);
+    const result = pack(profile);
+    const evidence = buildClinicalPassportSummary(profile).diagnosis.geneticEvidence;
+
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.markdown).toContain(`- D4Z4 重复数：${cell}（报告读取）`);
+    // 护照自己写好的那一句，原样搬过来 —— 不另起一套措辞。
+    expect(result.diagnosis.repeatCountNotConfirming).toBe(evidence.headline);
+    expect(result.markdown).toContain(`- ${result.diagnosis.repeatCountNotConfirming}`);
+    const noteIndex = result.markdown.indexOf(result.diagnosis.repeatCountNotConfirming ?? '');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('一份报告同时欠两句话时，两句都印 —— 它们不是二选一', () => {
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '30', ecoRIFragment: '18kb' })],
+      } as never),
+    );
+    expect(result.diagnosis.repeatCountNotConfirming).toContain('大于指南所说的 10');
+    expect(result.diagnosis.readingsNotJudged).toContain('不在 kb 和重复单元数之间做换算');
+    expect(result.markdown).toContain(`- ${result.diagnosis.repeatCountNotConfirming}`);
+    expect(result.markdown).toContain(`- ${result.diagnosis.readingsNotJudged}`);
+  });
+
+  it.each([
+    ['确诊那一档', { d4z4Repeats: '6', haplotype: '4qA' }],
+    ['单倍型非允许型那一档 —— 结论开头就是这句话', { d4z4Repeats: '6', haplotype: '4qB' }],
+  ])('结论自己已经说清楚的，不再复读一遍：%s', (_name, fields) => {
+    const result = pack(
+      base({ documents: [geneticReport(fields as Record<string, string>)] } as never),
+    );
+    expect(result.diagnosis.repeatCountNotConfirming).toBeNull();
+  });
+
+  /**
+   * 灰区那一段护照屏幕印、待办里印、导出的 markdown 里也印，唯独这张纸
+   * 不印 —— 而这张纸是罕见病诊疗协作网的神经内科医生手里那一份。一份读
+   * 到 D4Z4 9 / 4qA 的报告，患者自己那份护照上带着「这一项结果本身带着
+   * 不确定性」，递到医生手里的这份只有「基因确诊；D4Z4 重复数 9」。
+   */
+  it.each([
+    ['确诊那一档', { d4z4Repeats: '9', haplotype: '4qA' }, 'genetic'],
+    ['报告没写单倍型', { d4z4Repeats: '9' }, 'self_reported'],
+  ])('灰区里的重复数，两份材料说的是同一句话：%s', (_name, fields, confirmation) => {
+    const profile = base({
+      geneticMutation: 'FSHD1',
+      documents: [geneticReport(fields as Record<string, string>)],
+    } as never);
+    const result = pack(profile);
+    const evidence = buildClinicalPassportSummary(profile).diagnosis.geneticEvidence;
+
+    expect(result.diagnosis.confirmation).toBe(confirmation);
+    expect(result.diagnosis.greyZoneNote).toBe(evidence.greyZoneNote);
+    // 导出的 markdown 给这一段的前缀，一模一样地照用。
+    expect(result.markdown).toContain(`- 灰区提示：${evidence.greyZoneNote}`);
+    const noteIndex = result.markdown.indexOf('- 灰区提示：');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('不在灰区就不提灰区', () => {
+    const result = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
+    expect(result.diagnosis.greyZoneNote).toBeNull();
+    expect(result.markdown).not.toContain('灰区提示');
+  });
+
+  /**
+   * 「做过基因检测的话，把报告带上或上传」对着一个报告已经传上来、也已经
+   * 被读过的人是一句假话 —— 4qB 那一档早就因为这个理由把它去掉了，而
+   * `confirmation` 分不出这两种人：以 kb 写的长度、读到 0 的重复数、缺
+   * 单倍型的重复数，落到的都是 self_reported。
+   */
+  it('报告已经在平台上读过时，不再让人去传一份已经传过的报告', () => {
+    const readAlready = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '18kb' })],
+      } as never),
+    );
+    const hint = readAlready.questions.find((q) => q.id === 'confirm-diagnosis')?.hint;
+    expect(readAlready.diagnosis.confirmation).toBe('self_reported');
+    expect(hint).toContain('本资料里没有从基因报告里读出来的、可作确诊依据的基因结果');
+    expect(hint).not.toContain('把报告带上或上传');
+
+    // 转录件和「一份都没有」这两种人照旧要被问一句 —— 对他们这句话是真的。
+    const transcribed = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '6', haplotype: '4qA' }),
+            documentType: 'medical_record',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_record',
+                d4z4Repeats: '6',
+                haplotype: '4qA',
+              },
+            },
+          },
+        ],
+      } as never),
+    );
+    expect(transcribed.questions.find((q) => q.id === 'confirm-diagnosis')?.hint).toContain(
+      '把报告带上或上传',
+    );
+    expect(
+      pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>)).questions.find(
+        (q) => q.id === 'confirm-diagnosis',
+      )?.hint,
+    ).toContain('把报告带上或上传');
+  });
+});
+
+/**
+ * 基线里的基因数值，落在这张纸上。
+ *
+ * 拿着这张纸的是罕见病诊疗协作网的神经内科医生，他十秒钟之内没有办法
+ * 跟患者核对任何一行。只读上传报告的话，这一节会同时印着 「结论：…… 本
+ * 资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段」 和四行之下的 「D4Z4
+ * 重复数：—」，而同一份档案的 TREAT-NMD 导出里带着 6 和 4qA —— 确诊
+ * FSHD1 的那一对。国内能做长片段检测的中心只有几家，那句假话的代价是
+ * 一次重测或一次错过的入组转诊。
+ */
+describe('基线里的基因数值印在转诊资料上', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-01T02:03:04.000Z');
+
+  /** 三个基因数值上都压着后台的来源记录。`applyAdminBaselineWrite` 不收
+   *  这几条路径，所以这个块是照着盘上的样子写死的 —— 而这张纸仍然要把
+   *  记录上的名字印出来。 */
+  const storedMarkers = (
+    baseline: Record<string, unknown>,
+    paths: readonly string[],
+  ): Record<string, unknown> => ({
+    ...baseline,
+    [BASELINE_PROVENANCE_KEY]: Object.fromEntries(
+      paths.map((path) => [
+        path,
+        { source: 'admin_entered', adminUserId: ADMIN_ID, at: AT.toISOString() },
+      ]),
+    ),
+  });
+
+  const markedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
+    base({
+      diagnosisDate: '2019-01-01',
+      baseline: storedMarkers(
+        {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: {
+            d4z4: '6',
+            haplotype: '4qA',
+            methylation: '25%',
+            diagnosisType: 'FSHD1',
+          },
+        },
+        [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.methylation',
+          'diseaseBackground.diagnosisType',
+        ],
+      ),
+      ...over,
+    } as Partial<PatientProfileDTO>);
+
+  it('值印出来，每一行后面写着是谁填的', () => {
+    const result = pack(markedGenetics());
+
+    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(result.markdown).toContain('- 甲基化：25%（管理员代填）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（管理员代填）');
+    expect(result.markdown).not.toContain('- D4Z4 重复数：—');
+  });
+
+  it('结论说的是没有报告可读，不是「这份资料里没有这个数」', () => {
+    const result = pack(markedGenetics());
+
+    // `confirmation` 只看 确诊年份 那一个标记，这份档案上它没有。
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.diagnosis.statement).toContain('没有从基因报告里读出来的');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // 这句话与三行之下的 「D4Z4 重复数：6（管理员代填）」 直接矛盾。
+    expect(result.diagnosis.statement).not.toContain('本资料里没有 D4Z4 重复数、');
+  });
+
+  /**
+   * §B3 那份清单和上面那几行说的是同一批字段。清单里出现 「D4Z4 重复数」
+   * 而值那一行印着 「—」，是同一页纸自己跟自己打架。
+   */
+  it('§B3 清单里点名的字段，上面都印着值', () => {
+    const result = pack(markedGenetics());
+    const section = result.markdown.split('## 二、')[0];
+
+    expect(section).toContain('### 这些字段不是本人填写的');
+    expect(section).toContain('D4Z4 重复数：本平台管理员');
+    expect(section).toContain('甲基化：本平台管理员');
+    expect(section).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(section).toContain('- 甲基化：25%（管理员代填）');
+  });
+
+  it('没有来源记录时，每一行都标「来源无法确定」', () => {
+    const result = pack(
+      base({
+        diagnosisDate: '2019-01-01',
+        baseline: {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: { d4z4: '6', methylation: '25%', diagnosisType: 'FSHD1' },
+        },
+      } as Partial<PatientProfileDTO>),
+    );
+
+    // 这份资料是递到接诊医生手上的。「没有来源记录」说的是本平台没记，
+    // 不是这些值由患者本人录入 —— 档案里的基因数值也可能是读取时由报告
+    // 自动补进去的，那份报告事后还可以被删掉。
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（来源无法确定）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（来源无法确定）');
+    expect(result.markdown).toContain('- 甲基化：25%（来源无法确定）');
+  });
+
+  it('报告里有数时印报告那个，标「报告读取」', () => {
+    const result = pack(
+      markedGenetics({
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.markdown).toContain('- D4Z4 重复数：4（报告读取）');
+    expect(result.markdown).not.toContain('- D4Z4 重复数：6');
+  });
+
+  /**
+   * 报告里只有单倍型时 `confirmation` 已经是 `genetic`，而 「D4Z4 重复数」
+   * 那一行印的仍是后台代填的数字。把那个数字接在 「基因确诊；」 后面，等于
+   * 把实验室的分量借给了一个电话里念来的数 —— 那一行自己带着括号，结论
+   * 不再重复它。
+   */
+  /**
+   * 后台只代填了基因数值、没碰确诊年份时，`confirmation` 落在
+   * `self_reported` —— 它只看 确诊年份 那一个标记。而这一档给患者的那句
+   * 提示要是把来源列成「要么你自己填的，要么你上传的报告」，就等于当着
+   * 患者的面否掉了同一页上那几行 「管理员代填」。
+   */
+  it('给患者的提示不把来源列成一张漏项的单子', () => {
+    const result = pack(
+      base({
+        baseline: storedMarkers({ diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.diagnosisType',
+        ]),
+      } as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(result.questions[0]?.hint).not.toContain(
+      '有的是你自己填的，有的是系统从你上传的报告里读出来的',
+    );
+  });
+
+  it('结论里的重复数只写实验室报告自己写明的那一个', () => {
+    const result = pack(
+      markedGenetics({
+        documents: [geneticReport({ haplotype: '4qA', d4z4Repeats: '4' })],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('genetic');
+    expect(result.diagnosis.statement).toBe(
+      '面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 4',
+    );
+    // 后台代填的那个数没有接在「基因确诊；」后面 —— 它在下面那一行，
+    // 带着自己的括号。
+    expect(result.diagnosis.statement).not.toContain('6');
+    expect(result.markdown).toContain('- D4Z4 重复数：4（报告读取）');
+  });
+
+  /**
+   * 「结论」那一句问的是这一格写着什么，不是这一行是从哪来的。
+   *
+   * 这里以前问的是 `valueOrigins.d4z4Repeats.kind === 'report'` —— 那是
+   * 在问「这一行是不是从某份文件里读出来的」。报告的重复数那一格写着区间
+   * 「1-10」、确诊是 EcoRI 片段挣来的时候，递到协作网神经内科医生手上的
+   * 那一句就是「面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数
+   * 1-10」。
+   */
+  it('报告那一格是区间时，结论里不带这个数', () => {
+    const result = pack(
+      base({
+        documents: [
+          geneticReport({ d4z4Repeats: '1-10', ecoRIFragment: '18kb', haplotype: '4qA' }),
+        ],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    // kb 不参与确诊，所以这一行根本到不了「基因确诊」。
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.diagnosis.statement).not.toContain('基因确诊；');
+    // 区间照旧印在它自己那一行上，带着「报告读取」。
+    expect(result.markdown).toContain('- D4Z4 重复数：1-10（报告读取）');
+  });
+});
+
+/**
+ * The fourth source (§B3, baseline-provenance.ts). It was added to
+ * `PassportDiagnosisConfirmation` without this file being told, and
+ * referral-pack.ts dropped it into the last arm of the branches that
+ * had only ever seen three: the 结论 printed 「本平台尚无任何诊断依据
+ * 记录 —— 以下内容仅为患者自述与自测」 four lines above the 诊断日期 an
+ * administrator had typed, and the 提问清单 told the patient 「本平台
+ * 没有任何诊断依据记录」 about lines the neurologist was reading on the
+ * same sheet.
+ *
+ * The `never` defaults that replaced those ternaries fail the build on
+ * a fifth state; these tests are the other half — they fail if someone
+ * adds the branch and gives it the `none` wording anyway.
+ */
+describe('第四种来源 — a value our own back office typed', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** Built with the real helper rather than a hand-written provenance
+   *  block, so a reshape of that block breaks this test instead of
+   *  passing it. */
+  const adminTypedDiagnosis = () =>
+    base({
+      // What makes the passport consider a diagnosis claimed at all.
+      diagnosisDate: '2014-01-01',
+      baseline: applyAdminBaselineWrite(
+        { foundation: { fullName: '张三' } },
+        {
+          foundation: { fullName: '张三', diagnosisYear: 2014 },
+          diseaseBackground: { familyHistory: '母亲也有类似症状' },
+        },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+    } as Partial<PatientProfileDTO>);
+
+  it('does not print 尚无任何诊断依据记录 over a diagnosis an administrator typed', () => {
+    const result = pack(adminTypedDiagnosis());
+
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    // The two sentences the old else arm printed, verbatim. Both were
+    // false about this patient, and the second attributed our own
+    // staff's transcription to them.
+    expect(result.diagnosis.statement).not.toContain('尚无任何诊断依据记录');
+    expect(result.diagnosis.statement).not.toContain('患者自述与自测');
+    expect(result.markdown).not.toContain('尚无任何诊断依据记录');
+
+    expect(result.diagnosis.statement).toContain('不是患者本人填写');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // Not 「管理员代为录入」: `confirmation` alone cannot prove who
+    // typed the value. Who and when is the 字段来源 list below.
+    expect(result.diagnosis.statement).not.toContain('管理员');
+    expect(result.markdown).toContain(result.diagnosis.statement);
+  });
+
+  it('tells the patient the diagnosis lines are there and are not theirs', () => {
+    const result = pack(adminTypedDiagnosis());
+    const hint = result.questions[0];
+
+    expect(hint?.id).toBe('confirm-diagnosis');
+    // 「本平台没有任何诊断依据记录」 would hide from the patient the very
+    // lines the neurologist is reading on the same sheet.
+    expect(hint?.hint).not.toContain('本平台没有任何诊断依据记录');
+    expect(hint?.hint).toContain('不是你自己填的');
+    expect(hint?.hint).not.toContain('管理员');
+    // The hint sends the patient to a list. It has to be on the page —
+    // and it must not promise a name or a time, because this state also
+    // covers a marker that is present and unparseable, where the list
+    // says 来源记录读不出来 and no name exists to find.
+    expect(hint?.hint).toContain('第一节末尾');
+    expect(hint?.hint).not.toContain('是谁');
+    expect(hint?.hint).not.toContain('什么时候');
+    expect(result.markdown).toContain('### 这些字段不是本人填写的');
+  });
+
+  it('lists the marked fields in 一、诊断依据, with who and when', () => {
+    const result = pack(adminTypedDiagnosis());
+
+    expect(result.markdown).toContain('### 这些字段不是本人填写的');
+    expect(result.markdown).toContain('确诊年份');
+    // 家族史 has no row of its own anywhere in 一、诊断依据, so the list
+    // is the only place a reader meets it — which is the entry that
+    // would go missing if the section were derived from the printed
+    // rows instead of from the provenance block.
+    expect(result.markdown).toContain('家族史');
+    expect(result.markdown).toContain(ADMIN_ID);
+    // THE DAY, NOT THE INSTANT. This line asserted `AT.toISOString()`,
+    // which is what the pack printed: 「本平台管理员于
+    // 2026-08-13T04:11:07.912Z 代为录入」, a machine timestamp on a sheet
+    // a neurologist reads, while the markdown export, the share page
+    // and the mobile PDF each printed a calendar day for the same
+    // event. See formatFieldOriginLine in referral-pack.ts and the
+    // four-document comparison in profile.passport.dates.test.ts.
+    expect(result.markdown).toContain('本平台管理员于 2026-08-13 代为录入');
+    expect(result.markdown).not.toContain(AT.toISOString());
+
+    // The note at the top promises the list is 「在第一节末尾」. It has to
+    // be there, not after 功能测试.
+    const listIndex = result.markdown.indexOf('### 这些字段不是本人填写的');
+    expect(listIndex).toBeGreaterThan(result.markdown.indexOf('## 一、诊断依据'));
+    expect(listIndex).toBeLessThan(result.markdown.indexOf('## 二、功能测试'));
+  });
+
+  /**
+   * The other half of `admin_entered`: a marker that is there and does
+   * not parse. `applyAdminBaselineWrite` cannot produce one, so this
+   * fixture writes the block by hand — the only way it happens in
+   * production too (a hand-written UPDATE, a half-applied shape).
+   */
+  const unreadableDiagnosisMarker = () =>
+    base({
+      diagnosisDate: '2014-01-01',
+      baseline: {
+        foundation: { fullName: '张三', diagnosisYear: 2014 },
+        [BASELINE_PROVENANCE_KEY]: {
+          'foundation.diagnosisYear': {
+            source: 'admin_entered',
+            adminUserId: 'not-a-user-id',
+            at: AT.toISOString(),
+          },
+        },
+      },
+    } as Partial<PatientProfileDTO>);
+
+  it('names nobody when the marker is there and cannot be read', () => {
+    const result = pack(unreadableDiagnosisMarker());
+
+    // Same state — the one thing it may never fall back to is 「本人填写」.
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    // And here the platform cannot say who typed it. The 字段来源 list
+    // at the end of the same section says 「读不出来」 about this very
+    // field, so a 结论 naming an administrator would contradict it
+    // across one sheet of paper handed to one neurologist.
+    expect(result.diagnosis.statement).not.toContain('管理员');
+    expect(result.questions[0]?.hint).not.toContain('管理员');
+    expect(result.markdown).toContain('确诊年份：来源记录读不出来');
+  });
+
+  it('prints no such heading for a patient whose baseline nobody else touched', () => {
+    const result = pack(base({ baseline: { foundation: { diagnosisYear: 2014 } } } as never));
+
+    expect(result.markdown).not.toContain('这些字段不是本人填写的');
+    expect(result.markdown).not.toContain(ADMIN_ID);
   });
 });
 
@@ -404,6 +1225,104 @@ describe('辅具 — three record states, none of them 「无辅具」', () => {
     expect(result.markdown).toContain('不代表目前的使用情况');
   });
 
+  /**
+   * A YEAR-ONLY ANSWER IS NOT A 1 JANUARY OBSERVATION.
+   *
+   * `patient_followup_events.occurred_at` is TIMESTAMPTZ NOT NULL and
+   * has no precision column beside it, so a patient who says they
+   * started using a wheelchair 「2019 年」 produces the first instant of
+   * 2019. This pack used to put that instant through `formatDate` and
+   * print a calendar day — and, formatting a UTC instant through
+   * local-time accessors, print a day in the WRONG YEAR on any host
+   * behind Greenwich — and then assert underneath it that the record is
+   * of 「某一天发生过的转变」. The portable exports resolve the same
+   * column through `resolveOccurrenceDate` and tell their receiver
+   * `pinnedToYearStart: true` and 「请不要把它当作精确到天的观察」; the
+   * FHIR bundle emits the bare year. One profile, one run, and the two
+   * documents disagreed about when this person started using a
+   * wheelchair — in front of the 协作网 neurologist least able to check
+   * which was right.
+   */
+  it('只知道年份的起始事件，只印年份 —— 不印 1 月 1 日，也不说某一天', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({
+            eventType: 'started_wheelchair',
+            occurredAt: '2019-01-01T00:00:00.000Z',
+          }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.devices.startEvents[0]?.occurrence).toMatchObject({
+      timestamp: '2019-01-01T00:00:00.000Z',
+      precision: 'unrecorded',
+      pinnedToYearStart: true,
+      storedYear: 2019,
+    });
+    expect(result.markdown).toContain('开始使用轮椅：2019 年');
+    expect(result.markdown).not.toContain('2019-01-01');
+    expect(result.markdown).not.toContain('2018-12-31');
+    // The tail no longer asserts a precision the column cannot carry.
+    expect(result.markdown).not.toContain('某一天发生过的转变');
+    expect(result.markdown).toContain('请不要当作精确到天的观察');
+    expect(result.markdown).toContain('不写 1 月 1 日');
+  });
+
+  /**
+   * AND A REAL MID-YEAR INSTANT KEEPS ITS DAY. `pinnedToYearStart` is a
+   * fact about the stored value, not a guess at what the patient meant;
+   * rounding an unpinned row down would throw away precision this
+   * platform actually has, and the marker would then be on a row it is
+   * false of.
+   */
+  it('真正落在年中的起始事件，照常印日期，且不标「仅到年份」', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({ eventType: 'started_afo', occurredAt: '2021-06-09T02:00:00.000Z' }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.devices.startEvents[0]?.occurrence.pinnedToYearStart).toBe(false);
+    expect(result.markdown).not.toContain('仅到年份');
+    expect(result.markdown).not.toContain('不写 1 月 1 日');
+    // Still says the precision is unrecorded, because it is: the
+    // column has no precision for ANY row.
+    expect(result.markdown).toContain('请不要当作精确到天的观察');
+  });
+
+  /**
+   * ONE PROFILE, ONE RUN, TWO READERS — the check the per-file suites
+   * on either side could not make. The pack's answer and the FHIR
+   * bundle's answer come off the same `occurred_at`, and the whole
+   * defect was that they were computed by two different renderers.
+   * They share a resolver now, so this asserts the outputs agree rather
+   * than that the call was made.
+   */
+  it('同一份档案同一次运行里，转诊资料和 FHIR 说的是同一个时间', () => {
+    const profile = base({
+      followupEvents: [
+        followupEvent({ eventType: 'started_wheelchair', occurredAt: '2019-01-01T00:00:00.000Z' }),
+      ] as unknown as PatientProfileDTO['followupEvents'],
+    });
+    const result = pack(profile);
+    const wheelchair = buildFhirExport(
+      normaliseSource(profile, { includeLocalOnly: false, generatedAt: FIXTURE_GENERATED_AT }),
+    )
+      .document.entry.map((entry) => entry.resource)
+      .find(
+        (resource) => (resource.code as { text?: string } | undefined)?.text === '开始使用轮椅',
+      );
+
+    // FHIR reduces a year-pinned instant to a bare 「2019」; the pack
+    // prints 「2019 年」. Same year, same claim, neither a day.
+    expect(wheelchair?.effectiveDateTime).toBe('2019');
+    expect(result.markdown).toContain(`开始使用轮椅：${wheelchair?.effectiveDateTime} 年`);
+  });
+
   it('warns that a migrated 「需要辅助」 may mean 「走不了」', () => {
     const assisted = pack(
       base({
@@ -446,7 +1365,7 @@ describe('呼吸支持', () => {
       }),
     );
 
-    expect(result.respiratory.nivStartedAt).toBe('2025-09-15T12:00:00.000Z');
+    expect(result.respiratory.nivStart?.timestamp).toBe('2025-09-15T12:00:00.000Z');
     expect(result.respiratory.statement).toContain('2025-09-15');
     expect(result.respiratory.statement).toContain('请当面核实');
     // The NIV event is respiratory support, not an assistive device.
@@ -455,8 +1374,33 @@ describe('呼吸支持', () => {
 
   it('does not read a missing NIV record as「不需要通气」', () => {
     const result = pack(base());
-    expect(result.respiratory.nivStartedAt).toBeNull();
+    expect(result.respiratory.nivStart).toBeNull();
     expect(result.respiratory.statement).toContain('不等于没有使用');
+  });
+
+  /** The NIV start reads off the same column as the device milestones
+   *  and was printed by the same `formatDate`, so it carried the same
+   *  fabricated day. 呼吸支持 and 辅具 must not answer this differently:
+   *  they are one kind of record. */
+  it('只知道年份的无创通气起始时间，也只印年份', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({ eventType: 'started_niv', occurredAt: '2022-01-01T00:00:00.000Z' }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.respiratory.nivStart).toMatchObject({
+      timestamp: '2022-01-01T00:00:00.000Z',
+      precision: 'unrecorded',
+      pinnedToYearStart: true,
+    });
+    expect(result.respiratory.statement).toContain('时间 2022 年');
+    expect(result.respiratory.statement).not.toContain('2022-01-01');
+    expect(result.respiratory.statement).not.toContain('2021-12-31');
+    expect(result.respiratory.statement).toContain('请不要当作精确到天的观察');
+    expect(result.respiratory.statement).toContain('请当面核实');
   });
 
   it('carries the patient-reported breathing symptom answer as three states', () => {
@@ -528,6 +1472,65 @@ describe('系统监测三项 — present / unreadable / absent survive to the pa
     // pack silently reverting to a to-do list.
     expect(cardiac?.note).toBeTruthy();
     expect(result.markdown).toContain(cardiac?.note ?? '');
+  });
+
+  it('prints how old the result is, not just when it was taken', () => {
+    // The freshness verdict was carried on every slot of this DTO and
+    // printed nowhere: 过期 occurred ZERO times in a pack whose newest
+    // result was 251 days old, while the passport markdown and the
+    // mobile PDF built from the same summary object both said so. This
+    // is the one document in the product that is physically handed to
+    // the neurologist deciding whether the workup is current.
+    const result = pack(base({ documents: [unreadablePulmonaryReport()] } as never));
+    const respiratory = result.monitoring.find((slot) => slot.key === 'respiratory');
+    expect(respiratory?.freshnessLabel).toBe('待更新');
+    // Inside the date bracket, in the shape and with the words
+    // `buildClinicalPassportExport` uses — one claim, not two wordings.
+    expect(respiratory?.statement).toContain('（2026-02-10，待更新）');
+    expect(result.markdown).toContain('（2026-02-10，待更新）');
+    // 呼吸支持 reads the same slot object, so 最近肺功能 carries it too.
+    expect(result.respiratory.pulmonary.statement).toContain('待更新');
+  });
+
+  it('没有日期的那一格不写「缺失」—— 那读起来像在评价患者，不是在说本平台', () => {
+    const result = pack(base());
+    const cardiac = result.monitoring.find((slot) => slot.key === 'cardiac');
+    expect(cardiac?.freshnessLabel).toBe('缺失');
+    // The sentence already says 本平台没有该类报告的记录 —— 不等于没有做
+    // 过. Appending 缺失 to that adds nothing and turns a statement about
+    // this platform's records into what reads as a verdict.
+    expect(cardiac?.statement).not.toContain('缺失');
+  });
+});
+
+describe('新鲜度算在调用方的时钟上，不是墙上时钟', () => {
+  it('11 天前的报告不会被这份资料说成「过期」', () => {
+    // `buildReferralPack` stamped 生成时间 from the clock it was handed
+    // and then called `buildClinicalPassportSummary` with NONE, so every
+    // freshness label, every 最新/过期 judgement and the age gate on the
+    // guideline steps inside the pack were computed against the wall
+    // clock instead. The system time below is years away from the
+    // caller's clock; if the clock stops being threaded through, this
+    // pack calls an eleven-day-old lung-function report 过期.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2031-01-01T00:00:00.000Z'));
+      const caller = new Date('2026-02-21T00:00:00.000Z');
+      const result = buildReferralPack(
+        base({ documents: [unreadablePulmonaryReport()] } as never),
+        caller,
+      );
+      const respiratory = result.monitoring.find((slot) => slot.key === 'respiratory');
+      expect(respiratory?.latestDate).toBe('2026-02-10');
+      expect(respiratory?.freshnessLabel).toBe('最新');
+      expect(result.markdown).toContain('（2026-02-10，最新）');
+      // And 生成时间 is the same clock it judged against — the whole
+      // reason the parameter exists.
+      expect(result.generatedAt).toBe(caller.toISOString());
+      expect(result.markdown).toContain('- 生成时间：2026-02-21');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

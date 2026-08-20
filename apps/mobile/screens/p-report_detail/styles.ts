@@ -239,6 +239,41 @@ export default StyleSheet.create({
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
+  /** THE SAME VALUE TYPE WITHOUT THE `flex`, for the stacked row below.
+   *  `flex: 1` on a child of a COLUMN stretches it vertically, so the
+   *  wrapper owns the placement there and this owns only the type.
+   *  Spelled out rather than shared with a const: `StyleSheet.create`
+   *  infers each entry from its own object literal, and an entry built
+   *  by spreading a variable collapses the whole sheet to one union. */
+  fieldValueStacked: {
+    ...TYPE.bodyStrong,
+    fontSize: 14.5,
+    lineHeight: 21,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  /** The value column of a row that carries a mark under its value.
+   *  `fieldValue` owns the `flex: 1` on an unmarked row, so the wrapper
+   *  has to take it over or the mark and the number both collapse. */
+  fieldValueColumn: {
+    flex: 1,
+    gap: 2,
+  },
+  /** WHAT THIS PLATFORM SAID ABOUT THE CELL ABOVE IT — never part of
+   *  the value. Caption weight and muted ink, because the number is the
+   *  report's and this line is ours; giving it the value's weight would
+   *  read as the laboratory having printed it. */
+  fieldMark: {
+    ...TYPE.caption,
+    color: COLOR.inkMuted,
+  },
+  /** A sentence in the value column rather than a reading. Same column,
+   *  none of `fieldValue`'s number typography — tabular figures and 600
+   *  weight on a sentence make it look like a result. */
+  fieldNote: {
+    flex: 1,
+    ...TYPE.caption,
+  },
 
   /* Actions -------------------------------------------------------- */
   button: {

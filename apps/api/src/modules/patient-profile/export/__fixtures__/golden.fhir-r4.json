@@ -24,7 +24,7 @@
           "author": [
             {
               "reference": "urn:uuid:11111111-1111-4111-8111-111111111111",
-              "display": "患者本人（本记录由患者自行采集与自述）"
+              "display": "患者本人"
             }
           ],
           "title": "肌愈通 患者自持记录导出",
@@ -139,7 +139,7 @@
                 "code": "confirmed"
               }
             ],
-            "text": "患者已上传基因检测报告（报告内容未经本平台人工复核）"
+            "text": "本平台把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，且报告上有可作确诊依据的基因结果。文件类型以解析器的判定为准，解析未落地时按上传时声明的类型；报告内容未经本平台人工复核。本平台读作这份档案基因证据的那一份是基因检测报告。"
           },
           "code": {
             "text": "面肩肱型肌营养不良 1 型（FSHD1）（OMIM 158900）"
@@ -147,7 +147,12 @@
           "subject": {
             "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
           },
-          "recordedDate": "2014"
+          "recordedDate": "2014",
+          "note": [
+            {
+              "text": "本文件的 FSHD 分型由档案里记录的「FSHD1」归一而来；本平台读作这份档案基因证据的那一份上没有这一项。"
+            }
+          ]
         }
       },
       {
@@ -743,8 +748,36 @@
   },
   "omissions": [
     {
-      "field": "Patient.name / Patient.telecom / Patient.address",
-      "reasonZh": "直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。姓名等只出现在 TREAT-NMD 对齐导出的 localOnly 节。"
+      "field": "Patient.name / Patient.telecom / Patient.address / Patient.identifier / Condition.asserter",
+      "reasonZh": "直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。这里说的是：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（那是第三人的姓名，本 Bundle 不写 Condition.asserter，也不建 Practitioner 资源）、联系电话与邮箱、常住地区，以及本平台内部的患者编号。前三项只出现在 TREAT-NMD 对齐导出的 localOnly 节，且只在明确请求本地留存版本时出现；联系方式、常住地区与患者编号三份可携带导出都不承载，需要请直接向患者索取。"
+    },
+    {
+      "field": "Observation（只存在于档案里、报告上没有的基因读数）",
+      "reasonZh": "本 Bundle 里的基因结果 Observation 只来自本平台读作这份档案基因证据的那一份上传件：报告上有那一项，才有对应的 Observation。基线问卷另外为D4Z4 重复单元数、4q 单倍型、甲基化各留了输入框，患者或本平台工作人员填进去的值存在档案里；这类值本 Bundle 一律不承载，因为它没有可指向的 derivedFrom——本平台没有记录它当初是从哪一份报告抄来的，甚至没有记录它是不是抄来的，而把一个来源不明的值写成 Observation 会被登记方当作实验室结果导入。本次导出没有处在这种状态的项目：档案里填了值的那几项，报告上也都有，因此它们都以 Observation 出现在本 Bundle 里。请不要把这类项目在本 Bundle 里的缺席读成患者没有做过对应的检测。"
+    },
+    {
+      "field": "Condition（临床护照的基因证据分级、检测方法与诊断进度）",
+      "reasonZh": "本 Bundle 承载报告上的读数与「是否基因确诊」这一判定，不承载临床护照上围绕它的其余内容：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法（FHIR 的 Observation.method 是它的位置，本导出尚未填写），以及患者在基线问卷上自己勾选的「诊断进度」。判定本身在 Condition.verificationStatus 上，它的 text 与 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh、Phenopacket 导出中对应的 omission 是同一句话。verificationStatus 只有 confirmed / unconfirmed 两个取值，「实验室读到的单倍型不是允许型」与「什么都没读到」都落在 unconfirmed 上——这两种情况的区别写在同一元素的 text 里，请读它，不要只读编码。"
+    },
+    {
+      "field": "FamilyMemberHistory（家族史）",
+      "reasonZh": "本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，而本平台持有的是一段中文自述，把它拆成结构化条目等于替患者的亲属编造结构化病史。"
+    },
+    {
+      "field": "MedicationStatement / MedicationRequest（用药记录）",
+      "reasonZh": "本 Bundle 不承载用药记录。本次导出持有 0 条用药记录（药名、剂量、频次、给药途径、起止日期、状态与备注），R4 的 MedicationStatement 是它的位置，本导出尚未接入。这些记录三份可携带导出都不承载，需要请直接向患者索取，或改用不带 format 参数的数据导出。本 Bundle 里没有用药记录，不表示患者没有在用药。"
+    },
+    {
+      "field": "Observation / DeviceUseStatement（基线问卷记录的身体状况与困难程度自评）",
+      "reasonZh": "本 Bundle 不承载基线问卷里的这几项：抬臂困难、面部肌无力、足下垂、呼吸相关症状（都是是 / 否），正在使用的辅助器具（R4 的 DeviceUseStatement 是它的位置，本导出尚未接入），起病部位，以及基线问卷的困难程度自评（本次导出持有 4 项，与本 Bundle 里那些带日期的自评 Observation 不是同一批数据——那些是随访中反复记录的，这一批是建档时一次性填的）。以上各项在 TREAT-NMD 对齐导出里都有对应条目（患者答了的才会出现，没答的那一项就不出现）。它们在本 Bundle 里没有对应资源，不表示患者没有这些表现。"
+    },
+    {
+      "field": "Observation（身高 / 体重 / 血型）/ Composition.section（日常记录、档案备注与基线备注）",
+      "reasonZh": "本 Bundle 不承载身高、体重与血型：R4 有这三项的写法（体格测量为 Observation，血型为一条实验室 Observation），本导出尚未接入，也不会拿它们去算 BMI 之类的派生值。同样不承载的还有 0 条患者自己写的日常记录（含心情评分），以及两处不同的自由文本备注——「档案备注」与基线问卷自己的「基线备注」（后台也能编辑），哪一个都不承载：那是自由文本，没有可核对的编码，把它塞进 Observation 的 valueString 会让接收系统把一段随笔当成一次测量的结果。这些内容三份可携带导出都不承载，需要请改用不带 format 参数的数据导出，或直接向患者索取。"
+    },
+    {
+      "field": "Observation（跌倒日记的结构化明细）",
+      "reasonZh": "本平台采集结构化的跌倒日记（见 /me/falls）：每一次跌倒除日期外还记录当时在做什么、在室内还是室外、手里是否拿着东西、能否自行起身、是否受伤这五项。这五项尚未接入本导出所读取的档案结构，因此本次导出不含其中任何一项。这是导出管线的缺口，不表示患者的跌倒没有细节可查。请特别注意：这五项在本平台的记录里空值一律表示「患者没有填」，绝不表示「否」——所以即便日后拿到这些数据，也不能把空的「是否受伤」读成没有受伤。跌倒是本病最危险的事件，其中「能否自行起身」不能由任何其他数据推出，需要请直接向患者索取。本 Bundle 确实承载跌倒本身：每一次跌倒有一条 code.text 为「跌倒」的 Observation，valueBoolean 为 true，note 上带日期精度说明与患者自评的严重程度。缺的是上面那五项结构化明细——R4 本身有位置放它们（例如挂在同一条 Observation 的 component 上，受伤另可写成 Condition），本导出尚未接入，所以这是本导出管线的缺口，不是 FHIR 放不下。请不要把一条只有日期的跌倒 Observation 读成这次跌倒本平台只记了日期。"
     },
     {
       "field": "CodeableConcept.coding (LOINC)",
@@ -755,7 +788,9 @@
       "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。本 Bundle 不含基线记录的行走状态（ambulation）：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本 Bundle 的任何位置。本 Bundle 里凡是与走路有关的 Observation，都不是行走状态本身——「10 米步行计时」「6 分钟步行距离」「起立行走计时（TUG）」是某一天的一次计时，「户外行走困难程度」是一项自评，「开始使用轮椅」等随访事件记录的是一个时点，把其中任何一项读作基线行走状态都会读错。基线行走状态不在本 Bundle 中；需要它请向患者索取，或改用 TREAT-NMD 对齐导出。"
     }
   ],
+  "fieldOrigins": [],
   "notes": {
+    "字段来源": "本次导出的基线字段没有本平台工作人员代填的记录。",
     "编码": "本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。",
     "文件": "DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。",
     "日期": "里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。报告自动解析出的项目只在报告本身写明日期时才带 effectiveDateTime；没写明的一律不给日期，也不用上传时间顶替。"

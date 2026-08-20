@@ -1,5 +1,10 @@
 import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
-import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
+import {
+  NO_STRENGTH_REPORT_SUMMARY_ZH,
+  formatProductDate,
+  type ClinicalPassportSummaryDTO,
+  type PassportValueOriginDTO,
+} from './profile.passport.js';
 
 /**
  * The page a clinician opens.
@@ -50,15 +55,71 @@ const dash = (value: string | null | undefined): string => {
   return text && text !== '—' ? esc(text) : '—';
 };
 
+/** A calendar date that is already a calendar date, and an instant
+ *  resolved on the ONE calendar this product prints dates in.
+ *
+ *  Several of the values below have been through `formatProductDate` in
+ *  profile.passport.ts and arrive as `YYYY-MM-DD` — a monitoring slot's
+ *  `latestDate`, the imaging date. `new Date('2026-02-10')` is UTC
+ *  midnight and every accessor under it reads local, so re-parsing one
+ *  of those on a host west of Greenwich printed the day before the one
+ *  the passport itself carries.
+ *
+ *  The rest are instants: `generatedAt`, a timeline row's `timestamp`,
+ *  the moment an administrator typed a baseline field. Those had a
+ *  private copy of the accessor chain here, which resolved them in the
+ *  SERVER's zone — so this page and the mobile PDF of the same passport
+ *  dated one report two different days in front of one clinician.
+ *  `formatProductDate` is the single answer; see PRODUCT_TIME_ZONE.
+ *
+ *  A string that is neither a calendar date nor a parseable instant
+ *  still prints as 「—」 and never as itself: `formatProductDate` hands
+ *  such a value back for callers that would rather show what they have
+ *  than nothing, and a public share link is not one of them. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 const day = (value: string | null | undefined): string => {
-  if (!value) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate(),
-  ).padStart(2, '0')}`;
+  const formatted = formatProductDate(value);
+  return formatted && DATE_ONLY.test(formatted) ? formatted : '—';
 };
 
+/**
+ * THE BANNER STATES THE EVIDENCE. IT DOES NOT NAME AN AUTHOR.
+ *
+ * `confirmation` is an evidence grade — see its doc comment in
+ * profile.passport.ts — and a sentence about who typed the 诊断信息
+ * block cannot be read off it. 基因确诊 is earned by the laboratory's
+ * report carrying a D4Z4 length and a permissive 4qA haplotype, so it
+ * sits over a 分型 that may be the patient's own free text; and a
+ * report parsed to nothing but `diagnosisType` lands in
+ * `self_reported`, whose name says the patient wrote a value OCR read
+ * off a report. Authorship is per value, in `diagnosis.valueOrigins`,
+ * printed in brackets on the row itself.
+ *
+ * NOR DOES IT QUANTIFY OVER UPLOADED REPORTS. `buildReportInsights`
+ * takes its genetic values out of ONE document, so a repeat count in an
+ * earlier report is never read and 「没有从任何上传的报告里读到」 would be
+ * a claim about reports this page has not opened. These sentences say
+ * what the page holds, which is what its reader can check against the
+ * report in the patient's hands.
+ *
+ * 「从基因报告里读出来的」 IS NOT PADDING. The 诊断信息 rows below can
+ * carry a D4Z4 重复数 or a 甲基化 the patient typed into the
+ * registration form, each with its own source in brackets, and the bare
+ * 「没有可作确诊依据的基因结果」 would then sit above a number the
+ * clinician can read. The qualifier is still a claim about this page
+ * and not about the patient's other reports.
+ *
+ * AND 「可作确诊依据的」 IS NOT PADDING EITHER. These banners named the
+ * readings — 「D4Z4 重复数、4q 单倍型或 EcoRI 片段」 — which restated the
+ * grade's own definition in prose, on a page a clinician opens on a
+ * phone at a desk. The definition is now a conjunction, so a laboratory
+ * report stating a repeat count and no haplotype reaches the
+ * unconfirmed banners with that count printed under them in a row
+ * whose bracket reads 报告读取. Same wording as
+ * `buildDiagnosisStatement` in referral-pack.ts, which is where it was
+ * settled: one patient can be carrying both documents.
+ */
 const CONFIRMATION_BANNER: Record<
   ClinicalPassportSummaryDTO['diagnosis']['confirmation'],
   { tone: string; title: string; body: string }
@@ -66,19 +127,70 @@ const CONFIRMATION_BANNER: Record<
   genetic: {
     tone: 'ok',
     title: '基因确诊',
-    body: '以下诊断信息来自患者上传的基因检测报告，由系统自动读取。原始报告以患者手中的报告单为准。',
+    body: '本平台已从患者上传的报告里读到可作确诊依据的基因结果。下面「诊断信息」里，括号写在哪一行后面就只说那一行。原始报告以患者手中的报告单为准。',
+  },
+  /**
+   * The laboratory's own report, carrying a 4qB.
+   *
+   * TONE IS `warn` AND NOT `ok`, and the title does not say 未经基因确诊
+   * either. Both of the two banners that existed would have been read
+   * as a statement about how much evidence there is; this one is about
+   * what the evidence says, and it is the banner most likely to be the
+   * first time anybody has told this patient. It names the reading,
+   * gives the guideline's rule for reading it, and refuses the two
+   * conclusions a hurried reader would otherwise draw — that the
+   * platform has confirmed FSHD1, and that it has excluded FSHD.
+   */
+  genetic_non_permissive: {
+    tone: 'warn',
+    title: '基因报告读到的 4q 单倍型不是允许型',
+    body: '本平台从患者上传的基因报告里读到的 4q 单倍型是 4qB。指南把 FSHD 的基因分析定义为 D4Z4 重复序列的长度与它的 4qA / 4qB 单倍型两项，其中只有 4qA 是允许型 —— FSHD1 指的是 D4Z4 在允许型 4qA 等位基因上的缩短。因此本平台没有把这份报告当作已确认的分子遗传学诊断，也没有据它去套指南里按重复数分组的建议。这不是排除诊断：报告写的是它所检测的那条等位基因，结论请以报告原件与临床判断为准。下面「诊断信息」里，括号写在哪一行后面就只说那一行。',
   },
   self_reported: {
     tone: 'warn',
-    title: '未经基因确诊 —— 以下诊断为患者本人填写',
-    body: '本平台尚未收到该患者的基因检测报告。下面的分型和日期是患者自己在应用里填的，不构成诊断依据。FSHD 的误诊率很高，请勿据此锚定。',
+    title: '未经基因确诊',
+    body: '这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果，下面的诊断信息不构成诊断依据。括号写在哪一行后面就只说那一行 —— 每一行的来源写在它自己的括号里，本平台说不上来的那几行也照实写着。FSHD 的误诊率很高，请勿据此锚定。患者手里可能还有本平台没有读过的报告，值得当面问一句。',
+  },
+  // The fourth source (baseline-provenance.ts). The title names the
+  // FIELD, because the field is all the marker covers: this state is
+  // derived from 确诊年份's provenance entry alone, and the 分型, D4Z4
+  // 重复数 and 甲基化 rows below each carry their own source in their
+  // own bracket.
+  admin_entered: {
+    tone: 'warn',
+    title: '未经基因确诊 —— 档案里的「确诊年份」由本平台工作人员代填',
+    body: '这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条本平台管理员代为录入的记录：那是我们的工作人员根据患者的电话或消息转述录入的，患者本人可能没有看过，也没有核对过。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
   },
   none: {
     tone: 'warn',
-    title: '本平台尚无诊断依据记录',
-    body: '该患者既未上传基因报告，也未填写诊断信息。这份记录只包含他们自己录入的症状与功能数据。',
+    title: '这份摘要里没有诊断依据',
+    // Not 「该患者既未上传基因报告，也未填写诊断信息」. This state means no
+    // 分型 and no 诊断日期. 甲基化 is in neither test, and neither is a
+    // D4Z4 重复数 that reached the record without one of those two, so
+    // both can be printed below with their own source in brackets while
+    // this banner stands.
+    body: '这份摘要里没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。下面的括号写在哪一行后面，就只说那一行。',
   },
 };
+
+/**
+ * `admin_entered` is also the state for a marker this platform could
+ * not parse (PassportDiagnosisConfirmation, profile.passport.ts), and
+ * for those we know only that the value is not the patient's own. The
+ * banner above names an administrator and their phone call, which
+ * would be invented for such a profile — and the 字段来源 list further
+ * down the same page would say 「读不出来」 about the same field.
+ */
+const UNREADABLE_ORIGIN_BANNER = {
+  tone: 'warn',
+  title: '未经基因确诊 —— 档案里的「确诊年份」不是患者本人填写的，来源记录读不出来',
+  body: '这份摘要里没有可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条「非本人填写」的来源记录，但那条记录本平台读不出来（原因见下方「字段来源」），所以只能确定它不是患者自己填的，无法说明是谁录入、什么时候录入的。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
+};
+
+/** The baseline field `confirmation` is derived from
+ *  (profile.passport.ts). A marker on any OTHER field says nothing
+ *  about who entered this one. */
+const DIAGNOSIS_ORIGIN_PATH = 'foundation.diagnosisYear';
 
 export const buildPassportSharePage = (
   summary: ClinicalPassportSummaryDTO,
@@ -88,27 +200,94 @@ export const buildPassportSharePage = (
    * the caller invent one. */
   meta: { viaPickup: true } | { viaPickup?: false; expiresAt: string },
 ): string => {
-  const banner = CONFIRMATION_BANNER[summary.diagnosis.confirmation];
+  /** True when the only thing this page can prove about the diagnosis
+   *  is that the patient did not type it: the marker `confirmation` was
+   *  derived from does not name anybody. The 字段来源 section below
+   *  prints that field's own state, which is what the banner points
+   *  at. */
+  const diagnosisOriginUnreadable =
+    summary.diagnosis.confirmation === 'admin_entered' &&
+    summary.fieldOrigins.find((origin) => origin.path === DIAGNOSIS_ORIGIN_PATH)?.state !==
+      'admin_entered';
+  const banner = diagnosisOriginUnreadable
+    ? UNREADABLE_ORIGIN_BANNER
+    : CONFIRMATION_BANNER[summary.diagnosis.confirmation];
 
   const rows = (pairs: Array<[string, string]>): string =>
     pairs.map(([k, v]) => `<div class="row"><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('');
 
-  /** A diagnosis field that may have been typed rather than extracted.
-   *  Marked at the value, not only in the banner above it. */
-  const selfReported = (field: 'geneticType' | 'diagnosisDate'): string => {
-    const value = dash(summary.diagnosis[field]);
-    if (value === '—') return value;
-    if (summary.diagnosis.confirmation === 'genetic') return value;
-    return `<span class="reported">${value}（本人填写）</span>`;
+  /**
+   * One diagnosis row: the value, its own source in brackets, and the
+   * typographic register that source has earned.
+   *
+   * NOTHING HERE IS INFERRED. Absence from `fieldOrigins` means 「no
+   * administrator wrote this baseline field」 and never 「the patient
+   * typed this value」, so authorship cannot be worked out on this page.
+   * `diagnosis.valueOrigins` answers it per value, at the point in
+   * profile.passport.ts where the source is still known, and this
+   * function prints what it is handed.
+   *
+   * The bracket is on the value and not only in the banner because a
+   * clinician who scrolled past the banner, or printed page two on its
+   * own, still has to be able to tell a laboratory's number from a
+   * patient's account of themselves.
+   */
+  const diagnosisRow = (value: string, origin: PassportValueOriginDTO): string => {
+    const text = dash(value);
+    if (text === '—' || origin.kind === 'absent') return text;
+    const marked = `${text}（${esc(origin.labelZh)}）`;
+    // Only a value this platform read off a report gets the tabular,
+    // weighted treatment a lab value gets. Everything else — including
+    // 「来源无法确定」 — reads as an account, because it may be one.
+    return origin.kind === 'report' ? marked : `<span class="reported">${marked}</span>`;
   };
 
+  /** §B3 in the document a clinician reads: every baseline field on
+   *  this page that somebody other than the patient entered, named,
+   *  with when. Rendered only when there is something to render — an
+   *  empty section reading 「无」 would train readers to skip the
+   *  heading. */
+  const origins = summary.fieldOrigins
+    .map(
+      (origin) => `
+      <li>
+        <strong>${esc(origin.labelZh)}</strong>
+        <span>${
+          origin.state === 'admin_entered'
+            ? `本平台管理员于 ${day(origin.at)} 代为录入，不是患者本人填写。`
+            : `这一项的来源记录读不出来（${esc(origin.detail ?? '原因未记录')}），只能确定它不是患者本人填写的。`
+        }</span>
+      </li>`,
+    )
+    .join('');
+
+  /**
+   * The three monitoring slots, each with the freshness verdict beside
+   * its date.
+   *
+   * The date alone was the whole 最近日期 line, and this page is opened
+   * by a clinician on a phone from a link: 「最近日期：2025-05-09」 asks
+   * them to work out how old that is against today, which is exactly
+   * the arithmetic `getFreshness` already did on this generation's
+   * clock. The markdown export and the mobile PDF, built from the same
+   * summary object, have always printed the verdict; this page dropped
+   * it, so the same profile read 过期 on one document and undated-but-
+   * fine on another.
+   *
+   * Only where there IS a date. The 缺失 label on a slot with no report
+   * would sit under a value that already says 暂无可自动读取的…结果, and
+   * repeating it there turns a statement about this platform's records
+   * into what looks like a verdict on the patient.
+   */
   const monitoring = summary.monitoring.items
     .map(
       (item) => `
       <section class="slot">
         <h3>${esc(item.title)}</h3>
         <p class="val">${dash(item.summary)}</p>
-        <p class="meta">最近日期：${day(item.latestDate)}</p>
+        <p class="meta">最近日期：${day(item.latestDate)}${
+          item.latestDate ? ` · ${esc(item.freshness.label)}` : ''
+        }</p>
         ${item.note ? `<p class="note">${esc(item.note)}</p>` : ''}
       </section>`,
     )
@@ -171,14 +350,15 @@ export const buildPassportSharePage = (
   .row{display:flex;gap:14px;padding:7px 0;border-bottom:1px solid var(--line)}
   dt{flex:0 0 6.5em;margin:0;color:var(--mute);font-size:13px}
   dd{margin:0;flex:1;font-size:14.5px;font-variant-numeric:tabular-nums;word-break:break-word}
-  /* Self-reported values do not get the tabular, weighted treatment a
-     lab value gets — the difference has to be visible, not just stated
-     in the banner.
+  /* Values this platform did not read off a report do not get the
+     tabular, weighted treatment a lab value gets — the difference has
+     to be visible, not just stated in the banner.
      「.reported」, NOT 「dd.reported」: the class goes on a <span> inside
      the <dd>, so the compound selector matched nothing and a typed
-     value rendered exactly like a lab-extracted one. 运动功能's two rows
-     carry no inline 本人填写 marker either — this rule is their only
-     signal. */
+     value rendered exactly like a lab-extracted one. 运动功能's rows
+     carry no inline marker naming who entered them, so this rule is
+     their only signal; a 诊断信息 row with a source to name prints it
+     in brackets as well. */
   .reported{font-variant-numeric:normal;color:var(--soft)}
   .slots{display:grid;gap:10px}
   @media(min-width:620px){.slots{grid-template-columns:1fr 1fr 1fr}}
@@ -188,6 +368,10 @@ export const buildPassportSharePage = (
   .meta{margin:5px 0 0;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
   .note{margin:7px 0 0;padding-top:6px;border-top:1px solid var(--line);
     font-size:12px;color:var(--soft)}
+  /* Why a number in 诊断信息 earned nothing. Set directly under that
+     list rather than in the banner: the reader it is for is looking at
+     the row, and the banner is above every row on the page. */
+  .unjudged{margin:9px 0 0;font-size:13px;color:var(--soft)}
   ul.tl{list-style:none;margin:0;padding:0}
   /* 6.6em, not 5.6: an ISO date wrapped to 「2026-07-」/「31」 in the
      narrow column, which is unreadable at a glance and doubles the
@@ -230,23 +414,81 @@ export const buildPassportSharePage = (
 <h2 class="sec">诊断信息</h2>
 <dl>
 ${rows([
-  // Everything in this block except the repeat count can arrive from a
-  // text box the patient typed. When it did, it is marked inline as
-  // well as in the banner: a clinician who scrolled past the banner,
-  // or printed only page two, must still not read 「FSHD1」 here as
-  // something a laboratory said.
-  ['分型', selfReported('geneticType')],
-  ['D4Z4 重复数', dash(summary.diagnosis.d4z4Repeats)],
-  ['甲基化', dash(summary.diagnosis.methylationValue)],
-  ['诊断日期', selfReported('diagnosisDate')],
-  ['基因证据', dash(summary.diagnosis.geneEvidence)],
+  // The rows in this block do not share a source: 分型 and 诊断日期 can
+  // each come from a report or from a text box, D4Z4 and 甲基化 come only
+  // off a report, and 基因证据 joins several of them. A clinician who
+  // scrolled past the banner, or printed only page two, reads the
+  // bracket instead of guessing from the heading.
+  ['分型', diagnosisRow(summary.diagnosis.geneticType, summary.diagnosis.valueOrigins.geneticType)],
+  [
+    'D4Z4 重复数',
+    diagnosisRow(summary.diagnosis.d4z4Repeats, summary.diagnosis.valueOrigins.d4z4Repeats),
+  ],
+  [
+    '甲基化',
+    diagnosisRow(
+      summary.diagnosis.methylationValue,
+      summary.diagnosis.valueOrigins.methylationValue,
+    ),
+  ],
+  [
+    '诊断日期',
+    diagnosisRow(summary.diagnosis.diagnosisDate, summary.diagnosis.valueOrigins.diagnosisDate),
+  ],
+  // 基因证据 joins 分型 with 单倍型, EcoRI 片段 and D4Z4 重复数, which
+  // come off an uploaded report, so its bracket comes from
+  // `geneEvidenceOrigin` rather than from a `valueOrigins` entry —
+  // profile.passport.ts decides it beside the components. Same row
+  // renderer, so a mix of a laboratory number and a value of unproven
+  // origin is not set as a laboratory value, and a 基因证据 that is 分型
+  // by itself is set the way the 分型 row is.
+  ['基因证据', diagnosisRow(summary.diagnosis.geneEvidence, summary.diagnosis.geneEvidenceOrigin)],
 ])}
 </dl>
+${
+  // WHY A NUMBER IN THE LIST ABOVE EARNED NOTHING. This page prints
+  // 「D4Z4 重复数 18kb（报告读取）」 and, further down, a step reading
+  // 「「D4Z4 重复单元数」还没有确定的结果」 — the passport's own
+  // reconciling sentence lives in `geneticEvidence.reason`, which this
+  // page has never carried, so the two sat on one screen with nothing
+  // between them and the reader concludes the platform cannot read its
+  // own report. Same string on the referral pack and in the markdown
+  // export's 依据; see `readingsNotJudged`.
+  summary.diagnosis.geneticEvidence.readingsNotJudged
+    ? `<p class="unjudged">${esc(summary.diagnosis.geneticEvidence.readingsNotJudged)}</p>`
+    : ''
+}
 
 <h2 class="sec">运动功能（患者自测）</h2>
 <dl>
 ${rows([
-  ['概况', `<span class="reported">${dash(summary.motor.summary)}</span>`],
+  // 平均肌力 FIRST, off `motor.average`, which is the mean of the
+  // patient's own in-app MMT measurements whenever there are any.
+  //
+  // This block used to lead with `motor.summary` under a 概况 label and
+  // never print the average at all. `motor.summary` is built ONLY from
+  // an uploaded 肌力评估 report's OCR fields, so for the ordinary
+  // patient — measurements recorded in the app, no such report ever
+  // uploaded — it is the fallback string, and this page opened from the
+  // share link told the clinician 「暂无可用的肌力评估摘要」 while the
+  // markdown export built from THE SAME summary object printed
+  // 平均 3.5 级, and the 受累部位 row immediately below listed the
+  // regions derived from those very measurements. (The mobile PDF reads
+  // neither field — of this whole block it takes only the dates and
+  // `activitySummary` — so this page and the export are the only two
+  // documents that can disagree about it, and they did.)
+  //
+  // Wrapped in `.reported` like every other row in this section: it is
+  // the patient's own MMT, not an examination finding, and this page
+  // has no inline marker saying so — the typographic register is the
+  // only signal that separates it from the MRI summary two sections
+  // below.
+  [
+    '平均肌力',
+    summary.motor.average === '—'
+      ? '—'
+      : `<span class="reported">${esc(summary.motor.average)} 级</span>`,
+  ],
   ['最近测量', day(summary.motor.latestMeasurementAt)],
   [
     '受累部位',
@@ -254,6 +496,14 @@ ${rows([
       ? `<span class="reported">${esc(summary.motor.highlights.join('、'))}</span>`
       : '—',
   ],
+  // The report summary keeps its row, and only when a report supplied
+  // one. Rendered unconditionally it is the sentence above: an absence
+  // of one KIND of source printed as an absence of strength data.
+  ...(summary.motor.summary === NO_STRENGTH_REPORT_SUMMARY_ZH
+    ? []
+    : ([['肌力报告摘要', `<span class="reported">${dash(summary.motor.summary)}</span>`]] as Array<
+        [string, string]
+      >)),
 ])}
 </dl>
 
@@ -261,12 +511,43 @@ ${rows([
 <dl>
 ${rows([
   ['MRI 摘要', dash(summary.imaging.summary)],
-  ['最近 MRI', day(summary.imaging.latestMriDate)],
+  // Same bracket the monitoring slots get, and for the same reader: a
+  // clinician on a phone should not have to date-subtract to find out
+  // whether 「最近 MRI 2019-03-04」 is a current picture of this patient.
+  // `imaging.freshness` was computed on this generation's clock and then
+  // consumed by NOTHING — not this page, not the markdown export, not
+  // the mobile PDF. Printed here it is a fact the reader needs; left
+  // unprinted it was a dead field.
+  [
+    '最近 MRI',
+    `${day(summary.imaging.latestMriDate)}${
+      summary.imaging.latestMriDate ? ` · ${esc(summary.imaging.freshness.label)}` : ''
+    }`,
+  ],
+  // 重点区域, which the markdown export and the mobile PDF both print off
+  // this same array and this page silently dropped. It is the only place
+  // the inferred DISTRIBUTION reaches this reader — the 摘要 row above is
+  // the report's own prose, and a distribution is the thing that makes
+  // an MRI say FSHD rather than something else.
+  //
+  // Not marked `.reported`: unlike 运动功能, these come off an uploaded
+  // radiology report rather than from the patient.
+  [
+    'MRI 重点区域',
+    summary.imaging.highlights.length ? esc(summary.imaging.highlights.join('、')) : '—',
+  ],
 ])}
 </dl>
 
 <h2 class="sec">检查结果</h2>
 <div class="slots">${monitoring}</div>
+
+${
+  origins
+    ? `<h2 class="sec">这些字段不是患者本人填的</h2>
+<ul class="adv">${origins}</ul>`
+    : ''
+}
 
 ${
   clinical
@@ -283,7 +564,12 @@ ${
 }
 
 <footer>
-  <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录，
+  <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录${
+    // Tied to the 「这些字段不是患者本人填的」 section above: this clause
+    // is emitted on the same condition, and has to go if that section
+    // ever does.
+    origins ? '，以及上方「这些字段不是患者本人填的」一节逐条列出的字段' : ''
+  }，
      未经医疗机构核验，不构成诊断或诊疗意见。运动功能一栏为患者自测，不是查体所得。</p>
   <p>生成时间 ${day(summary.generatedAt)} · ${
     // A pickup code lives fifteen minutes, so printing its expiry as a

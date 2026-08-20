@@ -266,6 +266,13 @@ export default StyleSheet.create({
     color: COLOR.accent,
     ...TABULAR,
   },
+  /** The note under a card's rows — today, the one that says the server
+   *  did not send the per-value sources. Caption weight: it is about
+   *  the values above it, not another value. */
+  consoleCardNote: {
+    marginTop: SPACE.sm,
+    ...TYPE.caption,
+  },
 
   /* Cross-link to 病程 ---------------------------------------------- */
 
