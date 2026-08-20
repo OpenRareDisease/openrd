@@ -7,6 +7,7 @@ import {
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   diagnosisTypeSourceZh,
+  fallsDiaryOmission,
   familyHistoryOmission,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
@@ -496,8 +497,26 @@ export const buildPhenopacketExport = (
   // disease look like a straight line.
   omissions.push({
     field: 'phenotypicFeatures / medicalActions（随访事件）',
-    reasonZh: `本文件不承载随访事件。本次导出持有 ${source.followupEvents.length} 条非里程碑的随访事件（跌倒、新出现的足下垂、新出现的抬臂困难、新出现的呼吸不适等，各自带患者自评的严重程度）。它们要写进本格式，同样需要 HPO 本体项或本体化的 MedicalAction，本导出两者都没有。完整内容见 TREAT-NMD 对齐导出的 followupEvents 与 FHIR 导出的 Observation。本文件里没有这些事件，不表示这些事件没有发生过。`,
+    // 「完整内容见 …」 WAS FALSE AND IS GONE. It sent a receiver to the
+    // other two documents for the whole of a fall, and neither of them
+    // holds the falls diary's five structured answers either — nothing
+    // does. A cross-reference that promises completeness the referenced
+    // document does not have is the same class of error as an empty
+    // omissions array: it tells the receiver to stop asking. What those
+    // two documents actually carry is now stated, and the diary gets
+    // its own entry below.
+    reasonZh: `本文件不承载随访事件。本次导出持有 ${source.followupEvents.length} 条非里程碑的随访事件（跌倒、新出现的足下垂、新出现的抬臂困难、新出现的呼吸不适等，各自带患者自评的严重程度）。它们要写进本格式，同样需要 HPO 本体项或本体化的 MedicalAction，本导出两者都没有。这些事件本身见 TREAT-NMD 对齐导出的 followupEvents 与 FHIR 导出的 Observation——但那两份也只有日期、事件类型与患者自评的严重程度；跌倒另有五项结构化明细，三份可携带导出都不承载，见下一条。本文件里没有这些事件，不表示这些事件没有发生过。`,
   });
+  omissions.push(
+    fallsDiaryOmission(
+      'phenotypicFeatures / medicalActions（跌倒日记的结构化明细）',
+      // This packet is id / subject / diseases / files / metaData. It
+      // carries no follow-up event of any kind, so there is no sibling
+      // item in this document to point at, and the sentence must not
+      // sound as though there is.
+      '本文件连跌倒这件事本身都不承载（见上一条），因此这里没有可供参照的条目；跌倒的日期与严重程度见 TREAT-NMD 对齐导出的 followupEvents 与 FHIR 导出的 Observation，上面那五项则哪一份都没有。',
+    ),
+  );
   // The remainder, in one entry because they share one reason: this
   // packet is deliberately id / subject / diseases / files / metaData,
   // and none of these has a slot on any of those five messages. Listed
@@ -505,7 +524,7 @@ export const buildPhenopacketExport = (
   // declaration a receiver can act on.
   omissions.push({
     field: 'subject / measurements（身份信息、体格测量、地区与日常记录）',
-    reasonZh: `本文件只写 id、subject、diseases、files 与 metaData。本平台为下列内容各留了栏位，这份档案上填没填是另一回事，本次导出一概不承载：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（第三人的姓名）、联系电话与邮箱、常住地区、本平台内部的患者编号、身高、体重、血型（Measurement 同样要求本体项，本导出没有可核对的映射）、档案备注，以及 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）。其中姓名、称呼与确诊医生姓名只出现在明确请求本地留存版本的 TREAT-NMD 对齐导出的 localOnly 节；联系方式、常住地区、患者编号、身高、体重、血型与日常记录三份可携带导出都不写，需要请直接向患者索取。subject.id 是本平台内部的标识，不是患者编号，也不含姓名。`,
+    reasonZh: `本文件只写 id、subject、diseases、files 与 metaData。本平台为下列内容各留了栏位，这份档案上填没填是另一回事，本次导出一概不承载：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（第三人的姓名）、联系电话与邮箱、常住地区、本平台内部的患者编号、身高、体重、血型（Measurement 同样要求本体项，本导出没有可核对的映射）、档案备注与基线问卷自己的基线备注（这是两处不同的自由文本存储，都不承载），以及 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）。其中姓名、称呼与确诊医生姓名只出现在明确请求本地留存版本的 TREAT-NMD 对齐导出的 localOnly 节；联系方式、常住地区、患者编号、身高、体重、血型与日常记录三份可携带导出都不写，需要请直接向患者索取。subject.id 是本平台内部的标识，不是患者编号，也不含姓名。`,
   });
 
   const emittedCodingKeys = diseaseEntry && diseaseKey ? [diseaseKey] : [];

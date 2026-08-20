@@ -5,6 +5,7 @@ import {
   diagnosisTypeMarkerPath,
   diagnosisTypeSourceZh,
   diagnosisYearMarkerPath,
+  fallsDiaryOmission,
   familyHistoryOmission,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
@@ -1169,9 +1170,23 @@ export const buildFhirExport = (
   // one instruction to the receiver, listed by name because 「some other
   // things」 is not a declaration anybody can act on.
   omissions.push({
-    field: 'Observation（身高 / 体重 / 血型）/ Composition.section（日常记录与档案备注）',
-    reasonZh: `本 Bundle 不承载身高、体重与血型：R4 有这三项的写法（体格测量为 Observation，血型为一条实验室 Observation），本导出尚未接入，也不会拿它们去算 BMI 之类的派生值。同样不承载的还有 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）与档案备注：那是自由文本，没有可核对的编码，把它塞进 Observation 的 valueString 会让接收系统把一段随笔当成一次测量的结果。这些内容三份可携带导出都不承载，需要请改用不带 format 参数的数据导出，或直接向患者索取。`,
+    field: 'Observation（身高 / 体重 / 血型）/ Composition.section（日常记录、档案备注与基线备注）',
+    reasonZh: `本 Bundle 不承载身高、体重与血型：R4 有这三项的写法（体格测量为 Observation，血型为一条实验室 Observation），本导出尚未接入，也不会拿它们去算 BMI 之类的派生值。同样不承载的还有 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分），以及两处不同的自由文本备注——「档案备注」与基线问卷自己的「基线备注」（后台也能编辑），哪一个都不承载：那是自由文本，没有可核对的编码，把它塞进 Observation 的 valueString 会让接收系统把一段随笔当成一次测量的结果。这些内容三份可携带导出都不承载，需要请改用不带 format 参数的数据导出，或直接向患者索取。`,
   });
+
+  omissions.push(
+    fallsDiaryOmission(
+      'Observation（跌倒日记的结构化明细）',
+      // THIS is the bundle the entry matters most in. It emits one
+      // 跌倒 Observation per fall event, `valueBoolean: true`, with the
+      // date and the severity self-rating on `note` — which is exactly
+      // enough to look like the complete record of that fall. R4 has
+      // homes for all five answers (`component`, or a `bodySite` /
+      // `Condition` for the injury), so this is a pipeline gap and not
+      // a format limit, and the sentence has to say which.
+      '本 Bundle 确实承载跌倒本身：每一次跌倒有一条 code.text 为「跌倒」的 Observation，valueBoolean 为 true，note 上带日期精度说明与患者自评的严重程度。缺的是上面那五项结构化明细——R4 本身有位置放它们（例如挂在同一条 Observation 的 component 上，受伤另可写成 Condition），本导出尚未接入，所以这是本导出管线的缺口，不是 FHIR 放不下。请不要把一条只有日期的跌倒 Observation 读成这次跌倒本平台只记了日期。',
+    ),
+  );
 
   // The three statements this bundle makes about external terminology
   // — this omission, `conformanceZh` and `notes.编码` — are derived

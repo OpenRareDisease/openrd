@@ -9,6 +9,7 @@ import {
   geneticEvidenceResultValue,
   geneticResultValue,
   geneticValueProvenanceZh,
+  fallsDiaryOmission,
   heldDatePrecision,
   instrumentOmission,
   withOriginNote,
@@ -805,9 +806,27 @@ export const buildTreatNmdExport = (
       },
       provenanceZh: '患者自行记录的随访事件；日期精度限制同里程碑事件',
     })),
+    // 跌倒 is the event type this section most often carries, and this
+    // section is where a reader would go looking for what the patient
+    // recorded ABOUT a fall. Saying nothing here while the diary's five
+    // answers sit un-exported is what let a dated 跌倒 item read as the
+    // whole record; the full reason is in `omissions`, and this line
+    // makes sure the reader gets to it. Same discipline as the 运动功能
+    // section's Brooke / Vignos line.
     noteZh:
-      '本节不属于该核心数据集列出的强制性内容，作为附加信息提供。已撤回（软删除）的事件不会出现在这里。',
+      '本节不属于该核心数据集列出的强制性内容，作为附加信息提供。已撤回（软删除）的事件不会出现在这里。本节的跌倒条目只有日期与患者自评的严重程度，不含本平台跌倒日记里的当时活动、室内外、手里是否拿着东西、能否自行起身、是否受伤这五项。详见 omissions 中的 sections.followupEvents.fallsDiary。',
   };
+
+  omissions.push(
+    fallsDiaryOmission(
+      'sections.followupEvents.fallsDiary',
+      // This format DOES carry the fall, in a section of its own, with
+      // the patient's severity self-rating and their free-text note on
+      // it. Naming the section is what keeps the entry from reading as
+      // 「no falls in this document」.
+      '本文件确实承载跌倒本身：每一次跌倒在 sections.followupEvents 里有一条对应条目，带日期（精度说明随条目）、患者自评的严重程度与患者自己写的说明；缺的是上面那五项结构化明细。',
+    ),
+  );
 
   // ------------------------------------------------------- 妊娠史
   const pregnancyHistory = NOT_COLLECTED_SECTION(
@@ -894,8 +913,8 @@ export const buildTreatNmdExport = (
     reasonZh: `本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：${BIRTH_FIELD_ZH[birthPrecision]}、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。出生时间与性别在 FHIR 导出里各有对应字段（Patient.birthDate 与 Patient.gender），本文件两个都没有；${BIRTH_IN_FHIR_ZH[birthPrecision]}联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。`,
   });
   omissions.push({
-    field: 'sections（用药记录、日常记录与档案备注）',
-    reasonZh: `本文件不承载三类内容：${profile.medications.length} 条用药记录（药名、剂量、频次、给药途径、起止日期与状态）、${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分），以及档案备注。该核心数据集列出的强制性领域里没有这三类，本导出也没有为它们建立对齐位置；自由文本尤其不适合塞进带 provenanceZh 的条目里当作一次记录来读。三份可携带导出都不承载它们——本文件里没有用药记录，不表示患者没有在用药。完整内容请改用不带 format 参数的数据导出。`,
+    field: 'sections（用药记录、日常记录、档案备注与基线备注）',
+    reasonZh: `本文件不承载三类内容：${profile.medications.length} 条用药记录（药名、剂量、频次、给药途径、起止日期与状态）、${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分），以及两处自由文本备注——「档案备注」（档案上的备注栏）与「基线备注」（基线问卷自己的备注栏，后台也能编辑）。这是两个不同的存储，本文件哪一个都不承载。该核心数据集列出的强制性领域里没有这三类，本导出也没有为它们建立对齐位置；自由文本尤其不适合塞进带 provenanceZh 的条目里当作一次记录来读。三份可携带导出都不承载它们——本文件里没有用药记录，不表示患者没有在用药。完整内容请改用不带 format 参数的数据导出。`,
   });
 
   return {

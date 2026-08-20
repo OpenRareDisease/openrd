@@ -216,10 +216,45 @@ const FACTS: readonly FactRow[] = [
     fhir: emitted('开始使用轮椅'),
   },
   {
-    factZh: '其他随访事件（跌倒等）',
+    // THE EVENT. `patient_followup_events` with `event_type = 'fall'` —
+    // a date, an optional severity band, a free-text description. This
+    // row was already here and was already passing, and that is exactly
+    // how the row below went missing for so long: 「跌倒」 appears in two
+    // of the three documents, so every probe anybody thought to write
+    // was green while the diary underneath reached nothing.
+    factZh: '其他随访事件（跌倒等）——事件本身',
     treatNmd: emitted('followupEvents'),
     phenopacket: declared('随访事件'),
     fhir: emitted('跌倒'),
+  },
+  {
+    /**
+     * THE DIARY. A DIFFERENT STORE AND A DIFFERENT ROW.
+     *
+     * `patient_falls` (migration 023) holds five structured answers per
+     * fall — 当时在做什么 / 室内还是室外 / 手里是否拿着东西 / 能否自行起身
+     * / 是否受伤 — none of which is on `PatientProfileDTO`, which is the
+     * only thing `normaliseSource` reads.
+     *
+     * WHY IT NEEDS ITS OWN ROW rather than being folded into the one
+     * above. Every diary entry writes a `patient_followup_events` twin
+     * in the same transaction (`origin_event_id`), so the row above is
+     * satisfied by the twin: TREAT-NMD emits the fall, FHIR emits a
+     * 跌倒 Observation, and neither carries one of the five answers.
+     * The table said 「跌倒 is carried」 and was telling the truth about
+     * a different fact — which is the failure mode this whole file
+     * exists to catch, arriving through the one gap a fact-per-row
+     * table has: two facts sharing a name.
+     *
+     * A neurologist reading a bundle with a dated 跌倒 Observation and
+     * no omission naming the diary reads 「that is everything they
+     * recorded」. Falls are the dangerous event in FSHD and 能否自行起身
+     * is not derivable from anything else in these documents.
+     */
+    factZh: '跌倒日记的五项结构化明细（活动 / 室内外 / 手是否占用 / 能否自行起身 / 是否受伤）',
+    treatNmd: declared('跌倒日记'),
+    phenopacket: declared('跌倒日记'),
+    fhir: declared('跌倒日记'),
   },
   // ------------------------------------------------- 文件与用药
   {
@@ -241,10 +276,34 @@ const FACTS: readonly FactRow[] = [
     fhir: declared('日常记录'),
   },
   {
-    factZh: '档案备注',
+    factZh: '档案备注（patient_profiles.notes）',
     treatNmd: declared('档案备注'),
     phenopacket: declared('档案备注'),
     fhir: declared('档案备注'),
+  },
+  {
+    /**
+     * A SECOND FREE-TEXT NOTES STORE, AND THE THREE DECLARATIONS USED
+     * TO NAME ONLY THE FIRST.
+     *
+     * `baseline_payload.notes` is not `patient_profiles.notes`. The
+     * product itself treats them as two things: the full-cohort CSV
+     * emits `baseline_notes` and `profile_notes` as separate columns,
+     * and admin.controller.ts labels them 「基线备注」 and 「档案备注」
+     * separately. The back office's baseline editor writes the first
+     * one; nothing there writes the second.
+     *
+     * All three exports declared 「档案备注」 and stopped, so the
+     * receiver of a document containing neither was told about one
+     * withheld free-text field and had a second withheld free-text
+     * field they had no way to ask for. Same shape as the row above
+     * this block's neighbour: the declaration was true about a
+     * different store that shares a name.
+     */
+    factZh: '基线备注（baseline_payload.notes）',
+    treatNmd: declared('基线备注'),
+    phenopacket: declared('基线备注'),
+    fhir: declared('基线备注'),
   },
   // -------------------------------------- 人口学、体格与身份信息
   {

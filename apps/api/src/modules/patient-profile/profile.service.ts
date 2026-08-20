@@ -1936,8 +1936,6 @@ export class PatientProfileService {
     const foundation = payload.foundation ?? {};
     const diagnosisYear =
       typeof foundation.diagnosisYear === 'number' ? `${foundation.diagnosisYear}-01-01` : null;
-    const regionLabel =
-      typeof foundation.regionLabel === 'string' ? foundation.regionLabel.trim() : '';
 
     // 「The key is absent」 and 「the key is present and null」 are
     // different writes, and only the second one is an erase. COALESCE
@@ -1957,7 +1955,6 @@ export class PatientProfileService {
     const setsFullName = foundation.fullName !== undefined;
     const setsPreferredName = foundation.preferredName !== undefined;
     const setsDiagnosisYear = foundation.diagnosisYear !== undefined;
-    const setsRegionLabel = foundation.regionLabel !== undefined;
 
     /**
      * ══════════════════════════════════════════════════════════════════
@@ -2024,6 +2021,83 @@ export class PatientProfileService {
      * already print as a bare year everywhere a human reads them, so
      * no reader is being shown a false day today; they are being shown
      * a year, which is now also all the column claims to know.
+     *
+     * ══════════════════════════════════════════════════════════════════
+     * AND THE SAME STATEMENT USED TO DO IT AGAIN, ONE LINE LOWER, TO
+     * THE CITY.
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * `region_city = CASE WHEN $8 THEN NULLIF($9,'') ELSE region_city
+     * END` mirrored `foundation.regionLabel` into the city column. That
+     * write is gone, and this is why.
+     *
+     * THE TWO STORES HOLD DIFFERENT THINGS, exactly as above.
+     * `region_province` / `region_city` / `region_district` are three
+     * separate answers off a CLOSED-LIST picker (`RegionPickers`, over
+     * `CHINA_REGIONS` in apps/mobile/lib/demographics-options.ts),
+     * written by `createProfile` / `updateProfile`.
+     * `foundation.regionLabel` is the questionnaire's single free-text
+     * 所在地区 box — 「省 / 市 / 区县」 in one string, at whatever
+     * granularity whoever typed it felt like: 「上海市 浦东新区」,
+     * 「广东 深圳」, 「四川 成都」.
+     *
+     * SO THE MIRROR HAD NO TRUE FORM. Unlike 确诊年份, which is the same
+     * fact as `diagnosis_date` said less precisely, a whole-region label
+     * is not a coarser city — it is a DIFFERENT field, and there is no
+     * rule under which 「上海市 浦东新区」 is a better `region_city` than
+     * 「成都市」. It could not refine the column, so it could only
+     * destroy it.
+     *
+     * AND IT DID, ON THE ORDINARY PATH, EVERY TIME. The patient's own
+     * profile screen (apps/mobile/screens/p-register_profile/index.tsx)
+     * saves twice in one tap: `upsertPatientProfile` writes the three
+     * picker columns correctly, and then `updateMyBaseline` posts
+     * `regionLabel: buildRegionLabel({province, city, district})` — the
+     * three joined by spaces — and landed here milliseconds later to
+     * overwrite `region_city` with the join. A patient who picked
+     * 四川省 / 成都市 / 武侯区 ended the save with:
+     *
+     *     region_province  四川省
+     *     region_city      四川省 成都市 武侯区   ← was 成都市
+     *     region_district  武侯区
+     *
+     * The back office did the same thing with an arbitrary string: an
+     * operator transcribing a phone intake types 所在地区「上海市
+     * 浦东新区」 and `region_city` came out holding a province and a
+     * district while `region_province` still said 四川省.
+     *
+     * IT ALSO FED ITSELF. On the next load the form fills the CITY
+     * picker from `profile.regionCity`, which is now a string no option
+     * in `CHINA_REGIONS` matches, so the picker shows nothing selected
+     * — and the next `upsertPatientProfile` writes that same corrupted
+     * string straight back into `region_city` through `updateProfile`.
+     * The corruption became self-sustaining and the real city was gone
+     * with no copy anywhere.
+     *
+     * WHY NOTHING NEEDS THE MIRROR. The label's authoritative home is
+     * `baseline_payload.foundation.regionLabel`, which the `$1` write
+     * at the top of this same statement stores, and every reader that
+     * wants the LABEL either reads it there already or prefers it:
+     * the full-cohort CSV has its own `baseline_region_label` column
+     * off the payload (admin.csv.ts), 病程管理 reads
+     * `foundation?.regionLabel ?? profile.regionCity`, and 我的档案
+     * reads `baseline?.foundation?.regionLabel` first and only falls
+     * back to joining the three columns.
+     *
+     * THE ONE READER THAT STILL GOES THROUGH THE COLUMN is
+     * `AdminService.getStoredProfile`, which maps `region_city` to
+     * `AdminStoredProfile.regionLabel` and renders it as the back
+     * office record header's 所在地区. That is not this module's file
+     * and is not changed here. Its own query already selects
+     * `baseline_payload` beside `region_city`, so the fix there is to
+     * read `foundation.regionLabel` out of the payload — the same place
+     * the editable 所在地区 field two blocks down that screen already
+     * reads. Until it does, that ONE header line shows the patient's
+     * picked city (or 未填 for a patient who only ever had a
+     * transcribed label) while the authoritative, editable value sits
+     * correct on the same screen. That is a stale duplicate label; what
+     * it replaces was the permanent destruction of a patient's own
+     * answer on every save, and those are not the same size of wrong.
      */
     await this.pool.query(
       `UPDATE patient_profiles
@@ -2040,9 +2114,12 @@ export class PatientProfileService {
                THEN diagnosis_date
              ELSE $7::date
            END,
-           region_city = CASE WHEN $8::boolean THEN NULLIF($9::text, '') ELSE region_city END,
+           -- region_city IS NOT WRITTEN HERE. 所在地区 is a whole-region
+           -- free-text label and this column means a city off a closed
+           -- list; the label lives in 「baseline_payload」 ($1) and
+           -- nowhere else. See the block above the statement.
            updated_at = NOW()
-       WHERE id = $10`,
+       WHERE id = $8`,
       [
         payload,
         setsFullName,
@@ -2051,8 +2128,6 @@ export class PatientProfileService {
         foundation.preferredName ?? null,
         setsDiagnosisYear,
         diagnosisYear,
-        setsRegionLabel,
-        regionLabel,
         profileId,
       ],
     );

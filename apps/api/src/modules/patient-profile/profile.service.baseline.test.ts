@@ -152,15 +152,22 @@ describe('getBaselineByUserId', () => {
 });
 
 /**
- * The four columns `upsertBaseline` mirrors out of `foundation`.
+ * The three columns `upsertBaseline` mirrors out of `foundation`.
  *
  * These pin the UPDATE's PARAMETERS, not its effect — there is no
  * database in this suite, so what is asserted is that a present-and-
  * null key is sent as an erase and an absent key is sent as「this write
  * says nothing about the column」. The two used to be indistinguishable
  * (COALESCE), which made the back office's 「会被清空」 confirmation
- * false for `full_name` / `preferred_name` / `diagnosis_date` /
- * `region_city`: only `baseline_payload` was actually cleared.
+ * false for `full_name` / `preferred_name` / `diagnosis_date`: only
+ * `baseline_payload` was actually cleared.
+ *
+ * THREE, NOT FOUR. `region_city` was the fourth and is not mirrored at
+ * all any more — see the block above the UPDATE in profile.service.ts.
+ * The erase/absent distinction never applied to it in the first place:
+ * a whole-region label is not a coarser city, so every write of it into
+ * that column was a destruction of a different field's answer, and the
+ * one below asserts the column is now untouched by this path.
  */
 describe('upsertBaseline mirrors the foundation fields', () => {
   const captureWrite = async (foundation: Record<string, unknown>) => {
@@ -185,16 +192,14 @@ describe('upsertBaseline mirrors the foundation fields', () => {
       regionLabel: null,
     });
     // [payload, setsFullName, fullName, setsPreferredName, preferredName,
-    //  setsDiagnosisYear, diagnosisYear, setsRegionLabel, regionLabel, id]
+    //  setsDiagnosisYear, diagnosisYear, id]
     expect(params[1]).toBe(true);
     expect(params[2]).toBeNull();
     expect(params[3]).toBe(true);
     expect(params[4]).toBeNull();
     expect(params[5]).toBe(true);
     expect(params[6]).toBeNull();
-    expect(params[7]).toBe(true);
-    // NULLIF turns the empty string into NULL inside the statement.
-    expect(params[8]).toBe('');
+    expect(params[7]).toBe('profile-1');
     expect(sql).not.toContain('COALESCE');
   });
 
@@ -204,7 +209,58 @@ describe('upsertBaseline mirrors the foundation fields', () => {
     expect(params[2]).toBe('张三');
     expect(params[3]).toBe(false);
     expect(params[5]).toBe(false);
-    expect(params[7]).toBe(false);
+  });
+
+  /**
+   * 所在地区 IS NOT A CITY, AND THIS PATH NO LONGER PRETENDS IT IS.
+   *
+   * The questionnaire's 所在地区 box is one free-text string holding a
+   * province, a city and a district at whatever granularity the person
+   * typing felt like. `region_city` is a city off a closed picker list.
+   * Mirroring the first into the second overwrote the patient's own
+   * picked city with a string no picker option matches, left
+   * `region_province` and `region_district` standing beside it, and
+   * happened on the ordinary save — the profile screen posts the
+   * profile columns and the baseline in one tap, in that order.
+   *
+   * Asserted on the SQL rather than on a parameter, because the fix is
+   * the absence of a write: a regression would reintroduce the column
+   * on the left of an assignment, whatever it chose to put there.
+   *
+   * `--` comments are stripped first. The statement now carries a
+   * comment SAYING the column is not written, and a check that only
+   * looked for the column name would be satisfied by that sentence —
+   * which is the shape of a test that passes on its own documentation.
+   */
+  const withoutSqlComments = (sql: string) => sql.replace(/--[^\n]*/g, '');
+
+  it('never writes region_city, whatever 所在地区 says', async () => {
+    for (const foundation of [
+      { regionLabel: '四川省 成都市 武侯区' },
+      { regionLabel: '上海市 浦东新区' },
+      { regionLabel: null },
+      { regionLabel: '' },
+      { fullName: '张三' },
+    ]) {
+      const { sql, params } = await captureWrite(foundation);
+      expect(withoutSqlComments(sql)).not.toContain('region_city');
+      expect(params).not.toContain('四川省 成都市 武侯区');
+      expect(params).not.toContain('上海市 浦东新区');
+    }
+  });
+
+  /**
+   * And the label still reaches its own store on the same write, so
+   * this is a relocation rather than a drop: `baseline_payload` ($1) is
+   * where 所在地区 lives, and the back office's editable 所在地区 field
+   * and the full-cohort CSV's `baseline_region_label` column both read
+   * it from there.
+   */
+  it('still stores 所在地区 in baseline_payload', async () => {
+    const { params } = await captureWrite({ regionLabel: '四川省 成都市 武侯区' });
+    expect((params[0] as { foundation: { regionLabel: string } }).foundation.regionLabel).toBe(
+      '四川省 成都市 武侯区',
+    );
   });
 
   /**

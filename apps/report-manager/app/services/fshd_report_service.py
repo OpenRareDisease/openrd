@@ -1513,8 +1513,12 @@ _NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明"
 #: above them: `plt: 20` off 「温馨提示: 血小板计数低于 20 为危急值」 —
 #: the panic threshold published as this patient's platelet count, on
 #: the panel a clinician scans for exactly that number.
+#: 特别提示 IS HERE AND NOT IN `_NOTE_LEAD_HEADS` for the reason written
+#: down there: 提示 is also the head of 检查提示, which is a study's
+#: CONCLUSION and not a footnote, so the two qualified footnote
+#: spellings a page prints are named whole.
 _NOTE_ROW_PREFIXES: Tuple[str, ...] = (
-    "附注", "备注", "注释", "说明", "注意事项", "温馨提示",
+    "附注", "备注", "注释", "说明", "注意事项", "温馨提示", "特别提示",
     "危急值", "警戒值", "单位换算", "换算", "折算", "计算公式",
 )
 
@@ -1548,10 +1552,82 @@ _NOTE_ROW_SHORT_PREFIXES: Tuple[str, ...] = ("注意", "注", "提示")
 #: would make 注 a footnote lead in front of punctuation this file has
 #: never measured. Decoration is stripped from the front of a line and
 #: can only refuse a note; a lead separator ADMITS one.
-_NOTE_LEAD_SEPARATOR = r"[)）\]】、.。,，:：\s]"
+_NOTE_LEAD_SEPARATOR_CHARS = r")）\]】、.。,，:：\s"
+_NOTE_LEAD_SEPARATOR = rf"[{_NOTE_LEAD_SEPARATOR_CHARS}]"
 
 _NOTE_ROW_LEAD = re.compile(
     rf"^(?:{'|'.join(_NOTE_ROW_SHORT_PREFIXES)})(?:{_NOTE_LEAD_SEPARATOR}|$)"
+)
+
+#: THE LEAD ITSELF — whatever stands in front of the first separator.
+#:
+#: A lead is a position on the line, not an entry in a list, and this is
+#: the half of that sentence the file could already state: the lead is
+#: what the page prints before it starts saying anything. Digits are
+#: excluded because a row that opens with its own reading is not
+#: introducing a footnote, and the length cap is `_is_bare_header`'s,
+#: for the same reason it has one.
+_NOTE_LEAD = re.compile(
+    rf"^(?P<lead>[^{_NOTE_LEAD_SEPARATOR_CHARS}\d]{{1,8}})(?={_NOTE_LEAD_SEPARATOR}|$)"
+)
+
+#: WHAT MAKES A LEAD A NOTE LEAD — READ FROM ITS END, NOT ITS START.
+#:
+#: THE WHITELIST WAS STILL A WHITELIST, and it was missing the leads a
+#: Chinese genetics or laboratory report prints most: 结果说明, 结果解释,
+#: 临床意义, 结果注释, 特别提示, 报告说明, 注解. Every one of them was
+#: labelled PLAIN — the row kind that may carry a reading — so the
+#: paragraph under it was read as this patient's results. Measured on a
+#: synthetic 生化 whose only potassium figure is a panic threshold:
+#: 「结果说明 / 血清钾低于 2.8 为危急值」 published `potassium: 2.8`, and
+#: on a synthetic genetics page whose own conclusion reads 「未见 4q35
+#: D4Z4 阵列缩短」 over a printed count of 18: 「临床意义 / D4Z4 重复单元数
+#: 低于 10 个即为缩短, 符合 FSHD1 分子诊断标准」 published
+#: `diagnosis_type: FSHD1`, onto the passport, the exports and
+#: `patient_profiles` via `applyGeneticReportAutofill`.
+#:
+#: AND EVERY ONE OF THEM IS THE SAME WORD WITH A QUALIFIER IN FRONT.
+#: 结果说明 is 说明 about the 结果, 报告说明 is 说明 about the 报告,
+#: 特别提示 is a 提示 that is 特别, 结果注释 is 注释 of the 结果. A
+#: Chinese compound is HEAD-FINAL: the last word says what kind of thing
+#: it is and everything before it says which one. `startswith` asks the
+#: question from the wrong end, which is why the list had to grow by one
+#: entry per qualifier a page happened to print — 注意事项 and 温馨提示
+#: were added last round for exactly this reason and are 事项 and 提示
+#: with a qualifier in front.
+#:
+#: So the lead is taken as a whole (`_NOTE_LEAD`) and its HEAD is asked.
+#: Nothing has to be added when the next page prints 检验说明 or 送检提示.
+#:
+#: THIS LIST IS STILL A VOCABULARY AND IT IS STILL INCOMPLETE. The
+#: head-final rule generalises the QUALIFIER and says nothing about the
+#: head, and the head cannot be recognised by shape: 说明 and 注释 look
+#: exactly like 血糖 and 尿酸 to a reader that has only characters to go
+#: on. What bounds the damage is the other half of this round — a note
+#: region now ends at the first row that prints a reading beside its
+#: interval (`_ends_a_note_region`), so a head this list does not carry
+#: costs a footnote read as prose, and a head it carries wrongly costs a
+#: line, not a panel. Add to it; do not expect to finish it.
+#:
+#: 提示 IS NOT A HEAD, AND THAT IS A DECISION AND NOT AN OMISSION. It is
+#: the head of the IMPRESSION header on every imaging and tracing report
+#: this file reads — 检查提示, 超声提示, 心电图提示 — and the impression
+#: is the sentence `_extract_diaphragm_ultrasound`, `_extract_echo` and
+#: `_extract_ecg` publish as the study's own conclusion. Measured with
+#: 提示 in this list: `diaphragm_motion_summary`, `echo_summary` and
+#: `abdominal_ultrasound_impression` all None on the three synthetic
+#: studies in `FshdReportServiceCoverageTest` — the conclusion erased on
+#: every report that heads it the ordinary way. The exact word still
+#: leads a note through `_NOTE_ROW_SHORT_PREFIXES`, where a separator has
+#: to follow it, and the two footnote spellings a page actually prints
+#: with a qualifier — 温馨提示, 特别提示 — are named in
+#: `_NOTE_ROW_PREFIXES`. 注 and 注意 are left out for the same reason
+#: from the other side: both are already exact leads there, and neither
+#: has a qualifier in front of it on any page this file has read.
+_NOTE_LEAD_HEADS: Tuple[str, ...] = (
+    "注释", "注解", "附注", "备注",
+    "说明", "解释", "意义", "事项",
+    "危急值", "警戒值", "换算", "折算", "公式",
 )
 
 #: Decoration a page puts in front of a footnote — 「★危急值:…」,
@@ -1676,11 +1752,21 @@ def _leads_a_note(line: str) -> bool:
 
     One question, asked of the undecorated line, so that every spelling
     of 「which footnote this is」 reaches the same answer.
+
+    TWO READINGS, AND THE SECOND IS THE ONE THAT GENERALISES. The prefix
+    lists are kept because a page prints 「备注本次检测…」 with no
+    separator at all and a head-final rule cannot see a lead that never
+    ends; `_NOTE_LEAD_HEADS` is what covers 结果说明, 临床意义 and every
+    other qualifier a page puts in front of the same word. See
+    `_NOTE_LEAD_HEADS`.
     """
     undecorated = _note_undecorated(line)
     if any(undecorated.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
         return True
-    return bool(_NOTE_ROW_LEAD.match(undecorated))
+    if _NOTE_ROW_LEAD.match(undecorated):
+        return True
+    lead = _NOTE_LEAD.match(undecorated)
+    return bool(lead and lead.group("lead").endswith(_NOTE_LEAD_HEADS))
 
 
 #: Labels that name WHAT WAS ORDERED. What a test was ordered to look
@@ -1778,6 +1864,34 @@ _SCOPE_BLOCK = "block"
 #: once, here. Both halves stay deliberately small: what a misread
 #: heading costs is still a handful of rows, and a block longer than
 #: four items of four lines was never a footnote block.
+#:
+#: AND A FUSE IS NOT AN END. This bound was the ONLY thing that ever
+#: closed a note region, and a region that is closed only by a fuse is a
+#: region that runs for sixteen lines whenever the page does not hand it
+#: a labelled row — which is exactly the shape of a Chinese laboratory
+#: that prints 「说明」 above its results table with no column-header row
+#: between them:
+#:
+#:     示例市第一人民医院检验报告单
+#:     检验目的: 血常规
+#:     说明
+#:     白细胞计数(WBC) 6.69 3.5-9.5 10^9/L
+#:     血红蛋白量(HGB) 155 130-175 g/L
+#:     …
+#:
+#: Measured on a synthetic 血常规 of sixteen ordinary rows laid out that
+#: way: `lab_panel: {}` — every reading on the page labelled NOTE and
+#: refused, with an empty `review_queue` reporting nothing amiss. That is
+#: the whole panel a clinician reads, lost to one heading.
+#:
+#: THE FUSE ALSO POINTED THE WRONG WAY. Sixteen lines is a bound chosen
+#: so that a REAL footnote block always fits inside it, which makes every
+#: ambiguous line fall on the swallowing side; the two errors are not
+#: symmetric. Admitting one footnote costs one threshold in the review
+#: queue, and swallowing a panel costs every number on the page. So the
+#: region now ends at what this file can OBSERVE — see
+#: `_ends_a_note_region` — and the fuse is what is left when nothing was
+#: observed at all, rather than the boundary itself.
 _NOTE_BLOCK_MAX_ITEMS = 4
 _NOTE_BLOCK_MAX_ITEM_LINES = 4
 _NOTE_BLOCK_MAX_ROWS = _NOTE_BLOCK_MAX_ITEMS * _NOTE_BLOCK_MAX_ITEM_LINES
@@ -2066,6 +2180,12 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
     own line refused the one row on the block that asserts nothing and
     admitted every row that states a threshold. It is bounded instead of
     switched off — see `_SCOPE_BLOCK` and `_NOTE_BLOCK_MAX_ROWS`.
+
+    AND IT IS BOUNDED BY THE PAGE FIRST AND BY THE FUSE ONLY AFTER. A
+    region ends at the next labelled row, at a blank line, and at the
+    first row that prints a reading beside its reference interval — see
+    `_ends_a_note_region`. The fuse is what is left when the page shows
+    none of those, not the boundary itself.
     """
     kinds: List[str] = [_KIND_PLAIN] * len(lines)
     section: Optional[str] = None
@@ -2076,11 +2196,22 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
     for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
+            # A BLANK LINE CLOSES A FOOTNOTE REGION. It is the page's own
+            # paragraph break and the cheapest end this file can observe:
+            # a footnote block is contiguous prose, and what is printed
+            # after the gap is the next thing on the page. Nothing else
+            # about a blank line changes — it has no kind of its own and
+            # `_page_rows` drops it.
+            block = None
             continue
         label = _row_label(stripped, first_content_line=not seen_content)
         seen_content = True
         if label is None:
-            if block is not None and block_left > 0:
+            if (
+                block is not None
+                and block_left > 0
+                and not _ends_a_note_region(stripped)
+            ):
                 # Inside a footnote region, and it outranks the section
                 # because it is the nearer statement about this row: the
                 # region was opened BY a row that says so, while a
@@ -2903,15 +3034,64 @@ def _append_field(container: List[Dict[str, Any]], field: Optional[Dict[str, Any
         container.append(field)
 
 
+#: 左右 — THE WORD THAT IS NOT THE SIDE ITS FIRST CHARACTER NAMES.
+#:
+#: `SIDE_KEYWORDS["left"]` holds the bare character and the side test is
+#: a substring test, so every 左右 on a page answered 「left」. Two
+#: entirely ordinary pieces of examiner prose are 左右 and neither is a
+#: left-sided anything:
+#:
+#:   - 「三角肌肌力4级左右」 — an examiner writing APPROXIMATELY grade 4.
+#:     Measured: one `muscle_strength` entry, `side: left`,
+#:     `mrc_score: 4` typed 4.0, on a sentence that names no side at all
+#:     — a left deltoid grade on the 平均肌力 average and on the muscle
+#:     map the patient sees.
+#:   - 「三角肌左右对称, 未见萎缩」 — SYMMETRIC. Measured on the MRI
+#:     reader: a `mri_map` entry with `side: left`, which is a
+#:     left-sided finding published off the sentence saying the two
+#:     sides are alike.
+#:
+#: WHICH OF THE TWO IT IS, THE PAGE DOES SAY. 左右 after a QUANTITY is
+#: 「approximately」 — that is what 「4级左右」, 「155左右」 and 「2.5cm左右」
+#: all are — and 左右 anywhere else is the PAIR: 「左右对称」, 「左右上肢」,
+#: 「左右均为4级」. So an approximation asserts no side, and the pair
+#: asserts both.
+_SIDE_PAIR_WORD = "左右"
+_APPROXIMATE_PAIR = re.compile(
+    rf"\d[^\d\s{_SIDE_PAIR_WORD}]{{0,2}}{_SIDE_PAIR_WORD}"
+)
+
+
+def _read_side_pair(text: str) -> Tuple[str, bool]:
+    """`text` with every 左右 blanked out, and whether one named the PAIR.
+
+    Blanked rather than deleted, so that the offsets of everything else
+    on the line are the ones the caller's other readers see. See
+    `_SIDE_PAIR_WORD`.
+    """
+    blank = " " * len(_SIDE_PAIR_WORD)
+    without = _APPROXIMATE_PAIR.sub(
+        lambda match: match.group()[: -len(_SIDE_PAIR_WORD)] + blank, text
+    )
+    names_pair = _SIDE_PAIR_WORD in without
+    return without.replace(_SIDE_PAIR_WORD, blank), names_pair
+
+
 def _canonical_side(text: str) -> str:
-    lowered = f" {text.lower()} "
+    without_pair, names_pair = _read_side_pair(text)
+    lowered = f" {without_pair.lower()} "
     if any(keyword in lowered for keyword in SIDE_KEYWORDS["bilateral"]):
         return "bilateral"
     if any(keyword in lowered for keyword in SIDE_KEYWORDS["left"]):
         return "left"
     if any(keyword in lowered for keyword in SIDE_KEYWORDS["right"]):
         return "right"
-    return "unspecified"
+    # THE PAIR IS THE WEAKEST CLAIM ON THE LINE, deliberately. A sentence
+    # that names one side explicitly has named it; 左右 is consulted only
+    # where nothing else did, so 「左右对称」 is bilateral and
+    # 「肌力4级左右」 — an approximation, where `names_pair` is False —
+    # stays unspecified rather than inventing a side out of a hedge.
+    return "bilateral" if names_pair else "unspecified"
 
 
 def _muscle_from_sentence(sentence: str) -> Optional[Tuple[str, str]]:
@@ -4984,6 +5164,28 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # only what is left: on 「1-10」 the single pattern matches nothing
     # (the gap cannot cross a digit, so there is no other number at that
     # anchor to fall back to) and the range still answers.
+    #
+    # AND THE REFUSAL WAS DEFEATED BY BACKTRACKING THE MOMENT THE LOWER
+    # BOUND HAD TWO DIGITS. A lookahead placed behind `\d+` is not a
+    # statement about the NUMBER, it is a statement about wherever the
+    # engine last stopped consuming digits — so on 「D4Z4重复单元数
+    # 10－20」 `\d+` took 「10」, the lookahead refused it, the engine gave
+    # a digit back and tried 「1」, and the lookahead then looked at 「0」,
+    # saw no separator, and ACCEPTED. The interval was published as a
+    # determinate count of 1: `d4z4_repeat_pathogenic: 1` with
+    # `normalized_value: 1` at 0.97 — the confidence of a cell read off a
+    # result row — an empty `review_queue`, and a `source_text` rewritten
+    # to the fragment 「D4Z4重复单元数 1」 that the report never printed,
+    # so the reviewer's own trace agrees with the wrong number. A count of
+    # 1 sits inside the 1–4 window that gates this platform's
+    # ophthalmology recommendation, on a report that pinned nothing down.
+    # Measured for every lower bound from 10 to 99 and every separator in
+    # `_RANGE_SEPARATOR`.
+    #
+    # So the value is read WHOLE: `(?!\d)` is what makes `\d+` mean the
+    # whole digit run rather than any prefix of it, and only then is the
+    # interval refusal asked. It has to stand FIRST — a lookahead cannot
+    # undo a backtrack that a later lookahead permits.
     d4z4_is_range = False
     if not d4z4_pathogenic:
         d4z4_single_match, d4z4_single_row = _read_cell(
@@ -4991,7 +5193,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             [
                 r"D4Z4(?P<gap>[^\d\n(]{0,16})"
                 + _NOT_INSIDE_A_LATIN_TOKEN
-                + rf"(?P<value>\d+)(?!\s*{_RANGE_SEPARATOR}\s*\d)"
+                + rf"(?P<value>\d+)(?!\d)(?!\s*{_RANGE_SEPARATOR}\s*\d)"
             ],
             analyte="repeat_count",
         )
@@ -5598,8 +5800,66 @@ _MRC_PLUS_SIGNS = "+＋"
 _MRC_MINUS_SIGNS = "-－"
 _MRC_MODIFIER = rf"[{re.escape(_MRC_PLUS_SIGNS + _MRC_MINUS_SIGNS)}]"
 
+#: AN EXAMINER DECLINING TO CHOOSE DOES NOT ALWAYS WRITE A DASH.
+#:
+#: 「4-5级」 was the only spelling of 「between two grades」 this reader
+#: could see, because the refusal was written as `_RANGE_SEPARATOR` — the
+#: class that spells an INTERVAL. An alternation is not an interval, and
+#: it is at least as common in Chinese examiner prose: 「肌力4级或5级」,
+#: 「肌力4或5级」, 「肌力4级与5级之间」, 「肌力4级、5级不等」. On none of
+#: them was a range matched at all, so the pattern simply started again
+#: one grade later and published a DETERMINATE grade: measured,
+#: 「三角肌肌力4级或5级」 gave `mrc_score: 4` typed 4.0 and 「三角肌肌力4或
+#: 5级」 gave `mrc_score: 5` typed 5.0 — the SAME sentence read as two
+#: different grades depending on where the 级 fell, each at 0.88 with an
+#: empty review queue, onto `deltoid_strength`, onto the muscle map and
+#: into the 平均肌力 average this platform prints.
+#:
+#: SO THE JOIN IS TWO CLASSES AND NOT ONE. A separator states an
+#: interval (`_RANGE_SEPARATOR`, still the only place one is spelled);
+#: an alternation states a CHOICE. Both are the examiner refusing to pin
+#: a grade down, and this reader treats them alike — the cell is
+#: published as printed and `MRC_NORMALIZATION` types neither, which is
+#: what `NO_NORMALIZED_VALUE` exists for.
+#:
+#: IT IS STILL A VOCABULARY, AND STRUCTURE WAS TRIED FIRST. 「two grade
+#: digits with at most a character or two between them」 needs no list at
+#: all, and it refuses a grade the examiner DID state: 「三角肌肌力4级, 5
+#: 年前发病」 joins 4 and 5 with 「级, 」 and would publish no grade for a
+#: sentence that plainly records one. A duration, an age and a sibling
+#: count all sit one comma away from a grade in ordinary examiner prose,
+#: so the join has to be a word that means 「or」 rather than any gap of
+#: the right size. The ASCII and Chinese commas are deliberately absent
+#: for that reason; 、 is here because it enumerates and does not
+#: separate clauses.
+#:
+#: 和 AND 与 MEAN 「AND」 BEFORE THEY MEAN 「OR」, and that is what
+#: `_MRC_SECOND_GRADE` is for rather than a reason to leave them out.
+#: 「肌力4级与5级之间」 is the examiner declining to choose and
+#: 「肌力4级和5年前相比无变化」 is a grade beside a duration, and the two
+#: are told apart by what the SECOND digit is wearing, not by the word
+#: joining them.
+_ALTERNATION_WORDS: Tuple[str, ...] = ("或者", "或", "、", "和", "与")
+
+_MRC_INDETERMINATE_JOIN = (
+    rf"(?:{_RANGE_SEPARATOR}|{'|'.join(_ALTERNATION_WORDS)})"
+)
+
+#: THE SECOND HALF OF AN INDETERMINATE PAIR HAS TO BE A GRADE.
+#:
+#: 「4级和5级之间」 and 「4级和5年前相比」 have the same shape up to the
+#: second digit, and only the character after it says which one this is:
+#: a grade wears 级 or stands at a boundary, and 5年 / 5个 / 5岁 is the
+#: head of another quantity entirely. So the second digit is refused
+#: where a Chinese counter or noun follows it — and the pattern then
+#: BACKTRACKS to the single grade, which is the reading the examiner
+#: really did record. Without this, adding 和 to the join above would
+#: have traded one silently-wrong grade for one silently-missing one.
+_MRC_SECOND_GRADE = rf"[0-5](?!\s*(?!{_MRC_UNIT})[一-龥])"
+
 _MRC_GRADE = (
-    rf"[0-5](?:(?:\s*{_MRC_UNIT})?\s*{_RANGE_SEPARATOR}\s*[0-5]|{_MRC_MODIFIER})?"
+    rf"[0-5](?:(?:\s*{_MRC_UNIT})?\s*{_MRC_INDETERMINATE_JOIN}"
+    rf"\s*{_MRC_SECOND_GRADE}|{_MRC_MODIFIER})?"
 )
 
 
@@ -5687,11 +5947,20 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         canonical_name, body_region = muscle
         side = _canonical_side(sentence)
 
+        # THE SIDE ANCHORS READ THE SENTENCE WITHOUT ITS 左右, for the
+        # same reason `_canonical_side` does. 「三角肌肌力左右均为4级」 put
+        # a 左 twelve characters in front of the grade and a 右 the same
+        # distance behind it, so ONE grade was published TWICE — once as
+        # the left deltoid and once as the right — off a sentence that
+        # measured the two together. `source_text` stays the sentence the
+        # examiner wrote. See `_SIDE_PAIR_WORD`.
+        sided, _ = _read_side_pair(sentence)
+
         left_match, _ = _find_regex(
-            sentence, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
+            sided, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
         )
         right_match, _ = _find_regex(
-            sentence, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
+            sided, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
         )
 
         if left_match or right_match:
@@ -5723,7 +5992,7 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
                 )
             continue
 
-        generic_match, _ = _find_regex(sentence, _mrc_grade_patterns())
+        generic_match, _ = _find_regex(sided, _mrc_grade_patterns())
         if generic_match:
             score = _mrc_grade_cell(generic_match.group(1))
             muscle_strength.append(
@@ -7579,6 +7848,66 @@ _LAB_NUMBER = re.compile(rf"({_COMPARATOR}?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/
 #: what a CKMB or a cholesterol row prints, and dropping it leaves the
 #: reading with nothing to be abnormal against.
 _ROW_BOUND = re.compile(rf"({_COMPARATOR})\s*({_NUMBER_SOURCE})(?![\d.])")
+
+#: A number that could be a READING — not a digit inside a Latin name.
+#: 「D4Z4」, 「FSHD1」 and 「4qA」 are names with digits in them, and a scan
+#: that counts those as numbers finds a reading on every genetics
+#: sentence ever printed. `_unit_digit_spans` takes out the other half —
+#: the 10 in 「10^9/L」. See `_prints_a_reading_beside_an_interval`.
+_ROW_READING_NUMBER = re.compile(
+    rf"(?<![\d.]){_NOT_INSIDE_A_LATIN_TOKEN}{_NUMBER_SOURCE}(?![\d.])"
+)
+
+
+def _prints_a_reading_beside_an_interval(line: str) -> bool:
+    """Is `line` a RESULTS ROW — a reading printed beside its interval?
+
+    THE ONE PIECE OF TABLE FURNITURE A FOOTNOTE NEVER PRINTS, and that
+    is the whole of why this is the test. A footnote states ONE
+    threshold — 「血红蛋白量低于 60 g/L 为危急值」, 「D4Z4 重复单元数低于
+    10 个即为缩短」 — and a results row states a measurement AND the
+    interval it is to be read against: 「白细胞计数(WBC) 6.69 3.5-9.5
+    10^9/L」. Both shapes name an analyte and print a number, so neither
+    「it names an analyte」 nor 「it carries a number」 separates them;
+    「reading AND interval」 does.
+
+    IT IS DELIBERATELY NOT 「the line quotes an interval」. A footnote
+    quotes one as often as a table prints one — 「备注: D4Z4 重复单元数
+    1-10 为缩短范围」 is the grey zone restated, and the interval is the
+    only number on it. So a second number, outside the interval and
+    outside any unit that spells itself with digits, is required: that
+    second number is the READING, and a footnote has none.
+    """
+    interval = _ROW_RANGE.search(line)
+    if interval is None:
+        return False
+    reserved = ((interval.start(), interval.end()), *_unit_digit_spans(line))
+    return any(
+        not any(
+            start < number.end() and number.start() < end
+            for start, end in reserved
+        )
+        for number in _ROW_READING_NUMBER.finditer(line)
+    )
+
+
+def _ends_a_note_region(line: str) -> bool:
+    """Does `line` END the footnote region opened above it?
+
+    A NOTE REGION HAS AN END, AND `_NOTE_BLOCK_MAX_ROWS` WAS NOT IT.
+    A fuse is what is left when nothing was observed; this is what the
+    page can actually be observed to say. The other two ends are
+    structural and live in `_row_kinds`: a row carrying a label of its
+    own closes the region (a column heading, a section header and a
+    table header row all do), and so does a blank line.
+
+    THE FUSE DIRECTION IS REVERSED HERE, and that is the point. A line
+    this file is unsure about is READ, not swallowed: admitting one
+    footnote costs one threshold in the review queue, and swallowing a
+    results table costs every number a clinician came to the report for.
+    See `_NOTE_BLOCK_MAX_ITEMS`.
+    """
+    return _prints_a_reading_beside_an_interval(line.strip())
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:

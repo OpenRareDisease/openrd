@@ -2315,6 +2315,67 @@ export const instrumentOmission = (field: string, ambulationNoteZh: string): Exp
 });
 
 /**
+ * The falls diary is collected and is not exported.
+ *
+ * SAME PIPELINE GAP AS BROOKE / VIGNOS, DIFFERENT AND WORSE READING.
+ * `patient_falls` (migration 023) holds five structured answers per
+ * fall — what the patient was doing, indoor or outdoor, whether their
+ * hands were full, whether they got up unaided, whether they were hurt
+ * — served at /me/falls. None of them is on `PatientProfileDTO`, which
+ * is the only thing this normaliser reads, so no serialiser downstream
+ * can see them.
+ *
+ * WHY THIS ONE COULD NOT STAY UNDECLARED. The instruments gap at least
+ * leaves nothing fall-shaped in the document. This one does the
+ * opposite: two of the three formats DO emit the fall, because every
+ * diary entry writes a `patient_followup_events` twin in the same
+ * transaction (migration 023, `origin_event_id`) and the twin is what
+ * `followupEvents` carries. So a receiver opens a TREAT-NMD document
+ * or a FHIR bundle, finds 跌倒 with a date on it, finds no mechanism,
+ * no injury and no ability to rise — and reads that as the whole of
+ * what this patient recorded. It is the 家族史 failure exactly:
+ * 「asked, and nothing further」 rather than 「held, and not sent」.
+ *
+ * And falls are the dangerous event in this disease. Roughly 65% of
+ * adults with FSHD fall at least once a year; 「能不能自己起来」 is the
+ * single answer that changes what a patient needs, is not derivable
+ * from any other column, and is the first thing a neurologist asks
+ * after 「摔过几次」.
+ *
+ * DECLARED RATHER THAN CARRIED, and the reason is not that the facts
+ * are unsafe to send — unlike 家族史, every one of these is the
+ * patient's own answer about their own body, drawn from a closed value
+ * set this repository chose (falls.schema.ts admits no free text at
+ * all). It is that carrying them means putting the diary on
+ * `PatientProfileDTO`, which is a shape read by every profile surface
+ * in the product, and a fabricated placement in a strict format is
+ * worse than a declared gap. Until the normaliser is given the diary,
+ * all three formats declare it, and the paragraph is shared so they
+ * cannot drift into describing the same hole differently.
+ *
+ * NULL MEANS 「没填」. The sentence has to say so, because the diary's
+ * own contract turns on it (migration 023): a receiver who later gets
+ * these columns must not read a blank `injured` as 「没有受伤」.
+ */
+export const FALLS_DIARY_OMISSION_REASON_ZH =
+  '本平台采集结构化的跌倒日记（见 /me/falls）：每一次跌倒除日期外还记录当时在做什么、在室内还是室外、手里是否拿着东西、能否自行起身、是否受伤这五项。这五项尚未接入本导出所读取的档案结构，因此本次导出不含其中任何一项。这是导出管线的缺口，不表示患者的跌倒没有细节可查。请特别注意：这五项在本平台的记录里空值一律表示「患者没有填」，绝不表示「否」——所以即便日后拿到这些数据，也不能把空的「是否受伤」读成没有受伤。跌倒是本病最危险的事件，其中「能否自行起身」不能由任何其他数据推出，需要请直接向患者索取。';
+
+/**
+ * @param eventNoteZh What THIS format does emit about the falls
+ *   themselves, stated in that format's own vocabulary (envelope.ts:24).
+ *   Required rather than optional, for the reason `instrumentOmission`'s
+ *   argument is: a fourth serialiser must not inherit another format's
+ *   answer by leaving it out. And it is the half that stops this entry
+ *   being a false denial — two of the three formats carry the fall
+ *   event, and an omission that read 「本导出不含跌倒」 would send a
+ *   receiver back to the patient for dates the document already has.
+ */
+export const fallsDiaryOmission = (field: string, eventNoteZh: string): ExportOmission => ({
+  field,
+  reasonZh: `${FALLS_DIARY_OMISSION_REASON_ZH}${eventNoteZh}`,
+});
+
+/**
  * The family-history statement is held, and two of the three portable
  * exports do not send it.
  *
