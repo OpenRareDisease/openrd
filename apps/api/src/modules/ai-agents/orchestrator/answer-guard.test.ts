@@ -73,12 +73,16 @@ const evidenceFor = (
   payloads: readonly Record<string, unknown>[] = [REPORT_PAYLOAD, PROFILE_PAYLOAD],
   corpusTexts: readonly string[] = [],
   conversationTexts: readonly string[] = [],
+  /** Which retriever each payload came from, when the default 「the
+   *  first one is a report」 is not the turn being described. A
+   *  profile-only turn is the shape a self-entered record arrives in. */
+  sources?: readonly string[],
 ): GuardEvidence => {
   const fields = new Set<string>();
   const ocrKeys = new Set<string>();
   const renderedTexts: string[] = [];
   for (const [index, payload] of payloads.entries()) {
-    const source = index === 0 ? 'patient_reports' : 'patient_profile';
+    const source = sources?.[index] ?? (index === 0 ? 'patient_reports' : 'patient_profile');
     const rendered = renderChunkForPrompt(
       {
         id: `chunk-${index}`,
@@ -3394,5 +3398,217 @@ describe('...and it must still tell the patient what this platform DOES say', ()
     ]) {
       expect(confirmationHits(sentence, evidence)).toHaveLength(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// THE BANDING REGISTERS A CHINESE CLINICAL ANSWER ACTUALLY USES.
+//
+// `SEVERITY_WORD` carried the 型 register (轻型 / 重型) and the
+// 严重 / 重症 pair and nothing else, so the registers a Chinese clinical
+// sentence delivers a verdict in — 度, 级, 期 — went past untouched on a
+// patient whose own count was in the sentence.
+describe('a severity claim written as a band rather than as a comparative', () => {
+  const evidence = evidenceFor('precise');
+  const hits = (answer: string): string[] =>
+    inspectAnswer(answer, evidence).map((violation) => violation.kind);
+
+  it('catches the 度 register', () => {
+    expect(hits('1–3 个重复单元的患者一般是中重度表型。')).toContain(
+      'severity_from_patient_number',
+    );
+    expect(hits('重复数 3 通常对应轻度到中度的肌无力。')).toContain('severity_from_patient_number');
+    expect(hits('你的 D4Z4 重复数是 3，属于重度这一类。')).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  it('catches the 级 register, in digits and in Roman numerals', () => {
+    expect(hits('重复数 3 的患者多数属于 2 级功能障碍。')).toContain(
+      'severity_from_patient_number',
+    );
+    expect(hits('你的 3 个重复单元大致对应 Ⅲ 级。')).toContain('severity_from_patient_number');
+  });
+
+  it('catches the 型 register beyond 轻型 / 重型', () => {
+    expect(hits('你的重复数 3 落在婴儿型这一档。')).toContain('severity_from_patient_number');
+    expect(hits('3 个重复单元多见于经典型 FSHD。')).toContain('severity_from_patient_number');
+  });
+
+  it('catches the 期 register', () => {
+    expect(hits('3 个重复单元的人一般在中期就会出现肩带无力。')).toContain(
+      'severity_from_patient_number',
+    );
+    expect(hits('你的重复数 3 说明已经进入进展期。')).toContain('severity_from_patient_number');
+  });
+
+  // THE THREE COLLISIONS THE REGISTERS BRING WITH THEM. Each one is a
+  // sentence this platform WANTS published, and each one carries the
+  // patient's own number, so the check would reach it.
+  it('leaves 一级亲属 alone, which is the commonest 级 in this product Chinese', () => {
+    expect(
+      hits(
+        '你的 D4Z4 重复数是 3；FSHD 是常染色体显性遗传，你的一级亲属有 50% 的可能携带同样的缺失。',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('leaves 三级医院 and 一级预防 alone', () => {
+    expect(hits('你的重复数 3 是在三级医院的实验室做的检测。')).toHaveLength(0);
+  });
+
+  it('leaves 早期 alone, on the document and on the advice', () => {
+    // 「比较早期的报告」 is a sentence about a DOCUMENT'S DATE — the
+    // collision `SEVERITY_AXIS` already spells out with 早(?!期).
+    expect(hits('你的重复数 3 是从一份比较早期的报告上读到的。')).toHaveLength(0);
+    // 早期干预 is advice this platform publishes.
+    expect(
+      hits('早期干预和康复训练对你有帮助，你的重复数是 3 这一点不改变这个建议。'),
+    ).toHaveLength(0);
+  });
+
+  it('leaves 程度 alone, which ends in 度 and is not a band', () => {
+    expect(hits('你的甲基化 95% 用的是甲基化程度分析这种方法。')).toHaveLength(0);
+  });
+
+  // The position rule the file already applies to every other severity
+  // word applies to the bands too.
+  it('still lets a refusal written in the band register through', () => {
+    expect(hits('我不能拿你的 3 个重复单元去判断你属于轻度还是重度。')).toHaveLength(0);
+  });
+
+  // WRITTEN BY THE MODEL, driven against the stack on the self-entered
+  // record, and excised by the first cut of the 度 band: it is the
+  // platform's own position in the model's voice, and none of the
+  // disclaimer markers that existed then stood in front of it.
+  it('lets the refusal-of-inference register through', () => {
+    expect(hits('重复数 3 不是「一定会重度」的判决书。')).toHaveLength(0);
+    expect(hits('重复数 3 不一定意味着病情更重。')).toHaveLength(0);
+    expect(hits('你的重复数 3 不代表你会进展得更快。')).toHaveLength(0);
+    expect(hits('你的重复数 3 不等于重度。')).toHaveLength(0);
+    // ...and the marker still has to stand IN FRONT of the claim.
+    expect(hits('你的重复数 3 属于重度这一档，不过每个人不一定一样。')).toContain(
+      'severity_from_patient_number',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// A REFUSAL IS NOT A GRADE.
+//
+// The projection mints a `_clinical` row for a genetics cell it DECLINED
+// to read as readily as for one it read: on a record this platform did
+// not take off a genetics laboratory's report, the row says
+// 「本平台没有把这一格当成化验报告上的读数」. `ungradedCells` was read off
+// the KEY, so both records produced the same set and check 2 stood down
+// on the one it exists for.
+describe('a cell whose platform reading is a refusal', () => {
+  /** The registration form's own boxes: a profile with no laboratory
+   *  flag on any cell, which is what `applyGeneticReportAutofill` leaves
+   *  when nothing was autofilled off a report. */
+  const selfEntered = () => evidenceFor('precise', [PROFILE_PAYLOAD], [], [], ['patient_profile']);
+  /** The same profile, with the flags the profile retriever computes
+   *  when the values DID come off the picked genetics report. */
+  const laboratoryRead = () =>
+    evidenceFor(
+      'precise',
+      [
+        {
+          ...PROFILE_PAYLOAD,
+          d4z4FromLaboratoryReport: true,
+          haplotypeFromLaboratoryReport: true,
+        },
+      ],
+      [],
+      [],
+      ['patient_profile'],
+    );
+
+  it('the projection really does print the refusal in both rows', () => {
+    const rendered = renderChunkForPrompt(
+      {
+        id: 'c',
+        source: 'patient_profile',
+        content: '',
+        metadata: { fields: PROFILE_PAYLOAD },
+        distance: null,
+      },
+      { mode: 'precise' },
+    );
+    // The wording is the one `WIRE_TOKEN_ZH` maps
+    // `not_read_off_a_laboratory_report` onto, so this fails loudly if
+    // either side is reworded.
+    expect(rendered.content).toContain(WIRE_TOKEN_ZH.not_read_off_a_laboratory_report);
+    expect(GENETIC_READING_REFUSALS.has('not_read_off_a_laboratory_report')).toBe(true);
+    // ...and the KEY the guard used to read is present all the same.
+    expect(rendered.fieldsUsed).toContain('d4z4_clinical');
+    expect(rendered.fieldsUsed).toContain('haplotype_clinical');
+  });
+
+  it('counts the two refused cells as ungraded', () => {
+    expect(selfEntered().ungradedCells).toEqual(
+      expect.arrayContaining(['d4z4', 'haplotype', 'methylation']),
+    );
+  });
+
+  it('still counts them as graded when this platform did read them off the report', () => {
+    const evidence = laboratoryRead();
+    expect(evidence.ungradedCells).not.toContain('d4z4');
+    expect(evidence.ungradedCells).not.toContain('haplotype');
+    expect(evidence.ungradedCells).toContain('methylation');
+  });
+
+  // THE TWO SENTENCES. Both are this platform's own readings — the
+  // Chinese `WIRE_TOKEN_ZH` maps `within_fshd1_repeat_range` and
+  // `permissive_haplotype` onto — published about the record where the
+  // projection printed the refusal instead.
+  it('catches this platform own reading published about a cell it refused', () => {
+    const evidence = selfEntered();
+    expect(
+      inspectAnswer('你的 D4Z4 重复数 3 落在 FSHD1 的范围里。', evidence).map((v) => v.kind),
+    ).toContain('ungraded_cell_graded');
+    expect(inspectAnswer('你的 4qA 是允许型。', evidence).map((v) => v.kind)).toContain(
+      'ungraded_cell_graded',
+    );
+  });
+
+  // THE SAME CLAIM WITH NO 你的 IN FRONT OF IT, which is the form the
+  // model actually publishes: `numbers` excludes 4qA on purpose, so
+  // before `cellIdentifiers` check 2 had nothing to attach this by.
+  it('catches the reading written without a possessive, off the cell value itself', () => {
+    const evidence = selfEntered();
+    expect(inspectAnswer('4qA 是允许型。', evidence).map((v) => v.kind)).toContain(
+      'ungraded_cell_graded',
+    );
+    // Verbatim from a run against the stack on the self-entered record.
+    expect(
+      inspectAnswer('单倍型：4qA 是「允许型单倍型」，是 FSHD1 致病所需要的类型。', evidence).map(
+        (v) => v.kind,
+      ),
+    ).toContain('ungraded_cell_graded');
+  });
+
+  // ...and the allele that is NOT this patient's stays a fact about the
+  // disease rather than a reading of their cell.
+  it('leaves the other allele alone', () => {
+    expect(inspectAnswer('4qB 上的收缩不会导致 FSHD1。', selfEntered())).toHaveLength(0);
+  });
+
+  it('leaves both sentences alone on the record this platform did read', () => {
+    const evidence = laboratoryRead();
+    expect(inspectAnswer('你的 D4Z4 重复数 3 落在 FSHD1 的范围里。', evidence)).toHaveLength(0);
+    expect(inspectAnswer('你的 4qA 是允许型。', evidence)).toHaveLength(0);
+  });
+
+  // The refusal said back to the patient is the sentence this platform
+  // asks for, and it must survive on the record it is true of.
+  it('leaves the refusal itself alone', () => {
+    const evidence = selfEntered();
+    expect(
+      inspectAnswer(
+        '本平台没有把你的 D4Z4 重复数 3 当成化验报告上的读数，所以没有拿它去对 FSHD1 的范围。',
+        evidence,
+      ),
+    ).toHaveLength(0);
   });
 });

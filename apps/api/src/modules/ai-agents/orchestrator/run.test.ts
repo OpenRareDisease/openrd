@@ -2805,6 +2805,76 @@ describe('the clinical output guard, through Orchestrator.run', () => {
     return { result, llm };
   };
 
+  /**
+   * THE SAME TWO CELLS ON A RECORD THIS PLATFORM DECLINED TO READ.
+   *
+   * A profile whose D4Z4 and 单倍型 are the registration form's own
+   * boxes: no laboratory flag on either, so `clinicaliseD4Z4` and
+   * `clinicaliseHaplotype` mint `not_read_off_a_laboratory_report` and
+   * the projection prints the refusal under both 判读 labels. The
+   * `_clinical` KEY is there either way, which is what
+   * `readEmission` reports and what the guard used to grade off.
+   */
+  const SELF_ENTERED_PROFILE = {
+    gender: '女',
+    diagnosisStage: '确诊',
+    diagnosisYear: 2019,
+    diagnosisType: 'FSHD1',
+    d4z4: '3',
+    haplotype: '4qA',
+    methylation: '95%',
+  };
+
+  const runProfile = async (answers: string[], profile: Record<string, unknown>) => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 't1', name: 'get_my_profile', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      ...answers.map((content) => ({ content, toolCalls: [], finishReason: 'stop' as const })),
+    ]);
+    const registry = new ToolRegistry().register(
+      mkTool('get_my_profile', stubResult('patient_profile', 1, profile)),
+    );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 1 },
+    );
+    return orch.run({
+      userId: 'u-synthetic',
+      question: '我的重复数落在 FSHD1 的范围里吗？4qA 是不是允许型？',
+      requestId: 'r-guard-refusal',
+      consentLevel: 'precise',
+    });
+  };
+
+  // BOTH READINGS ARE THIS PLATFORM'S OWN WORDING, published about the
+  // record where the projection printed the refusal instead of them.
+  const REFUSED_READINGS = '你的 D4Z4 重复数 3 落在 FSHD1 的范围里。你的 4qA 是允许型。';
+
+  it('catches this platform own reading published about a cell it refused to read', async () => {
+    const result = await runProfile([REFUSED_READINGS, REFUSED_READINGS], SELF_ENTERED_PROFILE);
+    expect(result.clinicalGuard?.violations.map((v) => v.kind)).toEqual([
+      'ungraded_cell_graded',
+      'ungraded_cell_graded',
+    ]);
+    expect(result.answer).not.toContain('落在 FSHD1 的范围里');
+    expect(result.answer).not.toContain('允许型');
+  });
+
+  it('leaves the same two sentences alone when this platform did read the cells', async () => {
+    const result = await runProfile([REFUSED_READINGS], {
+      ...SELF_ENTERED_PROFILE,
+      d4z4FromLaboratoryReport: true,
+      haplotypeFromLaboratoryReport: true,
+    });
+    expect(result.answer).toBe(REFUSED_READINGS);
+    expect(result.clinicalGuard).toBeUndefined();
+  });
+
   // The sentence is the model's own, from a run against the stack.
   const OFFENDING = '你的 D4Z4 重复数是 3，属于 1–3 这一档，是病情较严重的遗传基础。';
   const CLEAN =

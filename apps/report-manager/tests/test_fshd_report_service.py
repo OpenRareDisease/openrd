@@ -2370,11 +2370,14 @@ class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
         # the label: it names what was ordered and reaches its value.
         "送检项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
         # Note section header AND a footnote prefix. Both say NOTE, but
-        # the scopes differ, so it is decided too.
-        "附注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
-        "备注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
-        "注释": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
-        "说明": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
+        # the scopes differ, so it is decided too. Decided as the BLOCK:
+        # a bare note header states nothing on its own line, so what it
+        # labels is the footnote region under it — see `_SCOPE_BLOCK`.
+        # A footnote CARRYING content reaches only itself (rule 5).
+        "附注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "备注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "注释": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
+        "说明": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_BLOCK),
         # A HEADER STANDING AT THE TOP OF THE PAGE, which every one of
         # these can be. `_is_title_row` grew a first-line branch — the
         # document's name is the first thing printed on it — and every
@@ -2416,6 +2419,10 @@ class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
             claims.append("note_section_header")
         if any(value.startswith(p) for p in fshd_report_service._NOTE_ROW_PREFIXES):
             claims.append("note_row_prefix")
+        elif fshd_report_service._NOTE_ROW_LEAD.match(value):
+            # The one-character spelling, which needs a separator behind
+            # it — see `_NOTE_ROW_SHORT_PREFIXES`.
+            claims.append("note_row_prefix")
         if fshd_report_service._is_title_row(value, first_content_line=True):
             claims.append("title")
         return claims
@@ -2430,6 +2437,7 @@ class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
             fshd_report_service._METHOD_SECTION_HEADERS,
             fshd_report_service._NOTE_SECTION_HEADERS,
             fshd_report_service._NOTE_ROW_PREFIXES,
+            fshd_report_service._NOTE_ROW_SHORT_PREFIXES,
         ):
             for value in group:
                 yield value
@@ -6482,6 +6490,253 @@ class ARowThatIsNotAResultRowTest(unittest.TestCase):
         panel = result["fshd"]["normalized_summary"].get("lab_panel", {})
         self.assertNotEqual(panel.get("plt"), 20)
 
+
+class AFootnoteIsARegionNotALineTest(unittest.TestCase):
+    """A FOOTNOTE BLOCK IS A HEADER ON ONE LINE AND ITS CONTENT ON THE
+    NEXT, AND A CHINESE LABORATORY NUMBERS AND BRACKETS IT.
+
+    The note guard refused the header — which asserts nothing — and let
+    every line under it stand as a candidate result row; and it only
+    recognised a marker at the very start of a line after a few bullet
+    characters were stripped, so a numbered or bracketed footnote was not
+    a footnote at all. Both halves publish the laboratory's threshold as
+    the patient's reading. Every fixture below is synthetic.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_note_header_reaches_the_block_printed_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血小板计数(PLT) 249 125-350",
+            "备注",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("plt"), 249)
+
+    def test_a_critical_value_header_reaches_the_block_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "危急值提示",
+            "血小板计数 20",
+        )
+        self.assertNotEqual(panel.get("plt"), 20)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_unit_legend_header_reaches_the_block_under_it(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "单位换算",
+            "血红蛋白量 1 g/dL = 10 g/L",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_the_whole_block_is_refused_and_not_only_its_first_line(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "备注:",
+            "本结果仅对本次标本负责.",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_a_numbered_footnote_is_a_footnote(self):
+        for lead in ("1. 备注:", "2、备注:", "(1) 备注:", "一、备注:"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead} 血红蛋白量 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_bracketed_footnote_is_a_footnote(self):
+        for lead in ("【备注】", "[注]", "(附注)", "【危急值】"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead} 血红蛋白量 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_numbered_note_header_opens_its_block_too(self):
+        panel = self._panel(
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "1、备注",
+            "血红蛋白量 60 g/L 为危急值",
+        )
+        self.assertNotIn("hgb", panel)
+
+    def test_a_footnote_printed_above_the_table_does_not_refuse_the_table(self):
+        """THE REASON ONLY A BARE HEADER OPENS A REGION. A footnote that
+        carries its own content is a finished statement, and a Chinese
+        laboratory prints one above the rows as often as below them."""
+        panel = self._panel(
+            "注: 血红蛋白低于 60 g/L 为危急值, 请立即联系临床.",
+            "白细胞计数(WBC) 6.69 3.5-9.5",
+            "血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_row_number_is_not_a_footnote_ordinal(self):
+        """An ordinal is decoration only where a footnote marker follows
+        it. 「1 白细胞计数(WBC) 6.69」 is the table's own index."""
+        panel = self._panel(
+            "1 白细胞计数(WBC) 6.69 3.5-9.5",
+            "2. 血红蛋白量(HGB) 155 130-175",
+        )
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_a_note_region_is_fused_rather_than_unbounded(self):
+        """`_NOTE_BLOCK_MAX_ROWS` is what keeps a heading MISREAD as a
+        footnote from erasing a whole panel, the way a runaway method run
+        once did."""
+        rows = ("说明",) + tuple(
+            f"备用说明行 {index}" for index in range(fshd_report_service._NOTE_BLOCK_MAX_ROWS)
+        ) + ("血红蛋白量(HGB) 155 130-175",)
+        panel = self._panel(*rows)
+        self.assertEqual(panel.get("hgb"), 155)
+
+
+class AFootnoteIsNotThisPatientsConclusionTest(unittest.TestCase):
+    """THE READERS THAT DECIDE WHAT A REPORT *SAYS* ASK THE ROW MODEL.
+
+    `interpretation_summary` is the sentence the patient reads under
+    报告详情 → 来源追溯 and the sentence the assistant is handed as the
+    report's own words, and it was chosen by walking the raw lines for a
+    keyword. So a footnote that merely DEFINES the pathogenic threshold
+    became this patient's molecular diagnosis. Synthetic throughout.
+    """
+
+    NEGATIVE = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "检测方法: Southern blot",
+        "检测结果: D4Z4 重复单元数 18",
+        "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(self.NEGATIVE + rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_a_numbered_footnote_defining_the_threshold_is_not_a_diagnosis(self):
+        summary = self._genetic(
+            "1. 备注: D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        )
+        self.assertIsNone(summary["diagnosis_type"])
+        self.assertIn("未见", summary["interpretation_summary"])
+
+    def test_a_footnote_block_defining_the_threshold_is_not_a_diagnosis(self):
+        summary = self._genetic(
+            "备注",
+            "D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+        )
+        self.assertIsNone(summary["diagnosis_type"])
+        self.assertIn("未见", summary["interpretation_summary"])
+
+    def test_a_footnote_is_never_the_interpretation_summary(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例医学检验所 FSHD1 基因检测报告单",
+                "检测方法: Southern blot",
+                "检测结果:",
+                "D4Z4 重复单元数 18",
+                "备注:",
+                "提示: D4Z4 重复单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准。",
+            )),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        interpretation = summary["interpretation_summary"] or ""
+        self.assertNotIn("即为缩短", interpretation)
+        self.assertNotIn("符合", interpretation)
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_the_reports_own_conclusion_still_wins(self):
+        summary = self._genetic()
+        self.assertIn("未见", summary["interpretation_summary"])
+
+
+class ANegatedExclusionIsAHedgeInEverySpellingTest(unittest.TestCase):
+    """THE HEDGE SIDE, ON THE SAME GRAMMAR AS THE ABSENCE SIDE.
+
+    「不排除 FSHD2」 was three literal strings on a list while the absence
+    test was rebuilt out of a negator, its closed class of function words
+    and a verb — so every other spelling of the same clause published the
+    type the report says it CANNOT rule out as this patient's 分型.
+    """
+
+    HEDGES = (
+        "无法排除",
+        "不能排除",
+        "不排除",
+        "不能完全排除",
+        "不能彻底排除",
+        "未能排除",
+        "没有排除",
+        "不予排除",
+        "不除外",
+        "不能除外",
+        "不可完全除外",
+        "尚不能排除",
+    )
+
+    def _diagnosis_type(self, conclusion):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例医学检验所 基因检测报告单",
+                "检测方法: Southern blot",
+                f"检测结论: {conclusion}",
+            )),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]["diagnosis_type"]
+
+    def test_no_spelling_of_a_negated_exclusion_states_the_type(self):
+        for hedge in self.HEDGES:
+            with self.subTest(hedge=hedge):
+                self.assertIsNone(
+                    self._diagnosis_type(f"本次检测{hedge} FSHD2。"), hedge
+                )
+
+    def test_a_bare_exclusion_is_still_an_absence_and_not_a_hedge(self):
+        """The other branch of the same XOR: 「排除 FSHD2」 denies the
+        type rather than deferring it, and either way it is not stated."""
+        self.assertIsNone(self._diagnosis_type("本次检测排除 FSHD2。"))
+
+    def test_a_stated_diagnosis_is_still_stated(self):
+        self.assertEqual(
+            self._diagnosis_type("符合 FSHD1 分子诊断标准。"), "FSHD1"
+        )
+
+    def test_a_hedge_on_one_type_does_not_unpublish_the_other(self):
+        self.assertEqual(
+            self._diagnosis_type("符合 FSHD1 分子诊断标准, 不能完全排除 FSHD2。"),
+            "FSHD1",
+        )
+
+    def test_不见得_is_not_read_as_a_negation(self):
+        """A verb followed by 得 is not that verb — the same lookahead
+        the absence clause carries, on the same grammar."""
+        self.assertIsNotNone(fshd_report_service._HEDGED_EXCLUSION)
+        self.assertIsNone(
+            fshd_report_service._HEDGED_EXCLUSION.search("不见得")
+        )
 
 
 if __name__ == "__main__":

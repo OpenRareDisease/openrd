@@ -1501,19 +1501,91 @@ _NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明"
 #: a contains-test would refuse the very row the banner exists to draw
 #: attention to.
 _NOTE_ROW_PREFIXES: Tuple[str, ...] = (
-    "附注", "备注", "注释", "说明", "注:",
+    "附注", "备注", "注释", "说明",
     "危急值", "警戒值", "单位换算", "换算", "折算", "计算公式",
+)
+
+#: THE ONE-CHARACTER SPELLING, WHICH IS NOT A PREFIX ON ITS OWN. 注 opens
+#: 注意事项 and 注射用…, so a bare `startswith` on it would refuse rows
+#: that are neither footnotes nor anything like one. It is a footnote
+#: lead only where a SEPARATOR follows it, which is the same thing the
+#: colon in the old 「注:」 entry was standing in for — except that the
+#: colon was the only separator a laboratory was allowed to print, and
+#: 「1. 注、」「[注]」「※注 」 are the same word introduced the same way.
+_NOTE_ROW_SHORT_PREFIXES: Tuple[str, ...] = ("注",)
+
+#: What may stand between a one-character footnote lead and its content.
+#: The closing halves of `_NOTE_DECORATION_OPENERS` are here too, so that
+#: 「[注] …」 is read as the footnote it is rather than as a row whose
+#: first analyte is called 注].
+_NOTE_LEAD_SEPARATOR = r"[)）\]】、.。,，:：\s]"
+
+_NOTE_ROW_LEAD = re.compile(
+    rf"^(?:{'|'.join(_NOTE_ROW_SHORT_PREFIXES)})(?:{_NOTE_LEAD_SEPARATOR}|$)"
 )
 
 #: Decoration a page puts in front of a footnote — 「★危急值:…」,
 #: 「※注:…」. Stripped before the prefix test, because a bullet is not a
 #: different kind of row.
 #:
-#: NO DASH IN THE CLASS. A dash is a RANGE SEPARATOR in this file and it
-#: is spelled in exactly one place — `_RANGE_DASHES` — which
+#: AND A CHINESE LABORATORY NUMBERS ITS FOOTNOTES AND BRACKETS THEM. The
+#: class below held bullets and whitespace only, so the footnote block a
+#: real report actually prints —
+#:
+#:     1. 备注: 血红蛋白量 60 g/L 为危急值
+#:     2、注: 血小板计数 20 为危急值
+#:     【备注】血红蛋白量 60 g/L 为危急值
+#:     (1) 单位换算: 血红蛋白量 1 g/dL = 10 g/L
+#:
+#: — was not recognised as a footnote AT ALL. Measured on a synthetic
+#: 血常规 carrying each shape: `hgb: 60` on a patient whose haemoglobin
+#: is 155, and `hgb: 1` off the conversion factor. An ordinal and a
+#: bracket are decoration for exactly the same reason a bullet is: they
+#: say WHICH footnote this is, never that the line stopped being one.
+#:
+#: The ordinal must carry its own terminator — a digit run with nothing
+#: after it is a table's row index or a reading, and 「1 白细胞计数(WBC)
+#: 6.69」 must not lose its 1 here. Nothing downstream reads the stripped
+#: text: it exists only to answer 「does this line lead with a footnote
+#: marker」, so a strip that goes too far can refuse a note, never invent
+#: one.
+#:
+#: NO DASH IN EITHER CLASS. A dash is a RANGE SEPARATOR in this file and
+#: it is spelled in exactly one place — `_RANGE_DASHES` — which
 #: `test_no_reader_spells_a_separator_or_comparator_by_hand` enforces.
 #: A leading dash on a footnote is not worth an exception to that.
-_ROW_MARKER_PREFIX = re.compile(r"^[\s*※★☆#·•◆■]+")
+_NOTE_DECORATION_OPENERS = r"(（\[【"
+_ROW_MARKER_PREFIX = re.compile(
+    rf"^(?:[\s*※★☆#·•◆■{_NOTE_DECORATION_OPENERS}]"
+    r"|(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[)）\]】.。、,，:：])+"
+)
+
+#: The other half of the same decoration, on a line that is NOTHING but a
+#: bracketed header — 「【备注】」, 「(附注):」. Stripped only when the
+#: question being asked is 「is this a footnote header」.
+_ROW_MARKER_SUFFIX = re.compile(r"[)）\]】:：。.、,，\s]+$")
+
+
+def _note_undecorated(line: str) -> str:
+    """`line` with a page's footnote decoration taken off both ends.
+
+    Bullets, ordinals and brackets. See `_ROW_MARKER_PREFIX` for why an
+    ordinal is decoration and why it has to carry its own terminator.
+    """
+    return _ROW_MARKER_SUFFIX.sub("", _ROW_MARKER_PREFIX.sub("", line.strip()))
+
+
+def _leads_a_note(line: str) -> bool:
+    """Does `line` open with a footnote, banner or legend marker?
+
+    One question, asked of the undecorated line, so that every spelling
+    of 「which footnote this is」 reaches the same answer.
+    """
+    undecorated = _note_undecorated(line)
+    if any(undecorated.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
+        return True
+    return bool(_NOTE_ROW_LEAD.match(undecorated))
+
 
 #: Labels that name WHAT WAS ORDERED. What a test was ordered to look
 #: for says nothing about what was found — the same thing a TITLE says
@@ -1557,6 +1629,41 @@ _KIND_PLAIN = "plain"
 _SCOPE_SELF = "self"
 _SCOPE_RUN = "run"
 _SCOPE_NEXT = "next"
+
+#: A FOOTNOTE IS A REGION AND NOT A LINE, and its absence is the fourth
+#: version of the same defect.
+#:
+#: A footnote block is printed as a HEADER on one line and its CONTENT on
+#: the next — 「备注」 then the notes, 「危急值」 then the thresholds,
+#: 「单位换算」 then the factors — and a note label that reached only its
+#: own line refused the header, which asserts nothing, and let every line
+#: under it stand as a candidate result row. Measured on a synthetic
+#: 血常规 whose footnote block reads 「备注 / 血红蛋白量 60 g/L 为危急值」:
+#: `hgb: 60` on a patient whose haemoglobin is 155, and `hgb: 1` off a
+#: 「单位换算 / 血红蛋白量 1 g/dL = 10 g/L」 block. The same block on a
+#: genetics page — 「备注 / D4Z4 重复单元数低于 10 个即为缩短, 符合
+#: FSHD1 分子诊断标准」 — is the threshold DEFINITION read as this
+#: patient's molecular diagnosis.
+#:
+#: `_SCOPE_RUN` could not be it, because a run is switched off by
+#: `sections=False` — and `sections=False` is what stops one stray
+#: 检测方法 heading from labelling an entire laboratory table METHOD and
+#: erasing every reading on the page. A note region is the SAME risk
+#: pointed the same way, so it is bounded rather than switched off: it
+#: propagates in both modes, it is closed by the next row carrying a
+#: label of its own, and it is closed by `_NOTE_BLOCK_MAX_ROWS`
+#: regardless.
+_SCOPE_BLOCK = "block"
+
+#: How many unlabelled rows a footnote header may claim.
+#:
+#: A FUSE, NOT A RULE. What ends a footnote block is the next labelled
+#: row or the end of the page; this exists so that a heading MISREAD as a
+#: footnote — 说明 is an ordinary word and a report may print it above
+#: its table — costs a handful of rows instead of the whole panel. A
+#: Chinese laboratory footnote block is one to four numbered items, so a
+#: real one never reaches this; a block that does was never a block.
+_NOTE_BLOCK_MAX_ROWS = 8
 
 #: Kinds that ASSERT nothing about this patient, whatever they contain.
 #: A reading is never taken off one. A REFUSAL still is — the absence
@@ -1683,6 +1790,19 @@ def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple
     section header is a section; a document name is a title.
     """
     header = _is_bare_header(line)
+    if header is None:
+        # A BARE FOOTNOTE HEADER IS STILL BARE WHEN IT IS NUMBERED OR
+        # BRACKETED. 「1、备注」 and 「【备注】」 are the header a page
+        # prints above its footnote block, and neither survives
+        # `_is_bare_header` with its decoration on. Only the NOTE lists
+        # are read off the undecorated form: an ordinal is what a
+        # footnote block puts in front of its items, and nothing else on
+        # a laboratory page is numbered that way for that reason.
+        decorated = _is_bare_header(_note_undecorated(line))
+        if decorated is not None and (
+            decorated in _NOTE_SECTION_HEADERS or _leads_a_note(decorated)
+        ):
+            header = decorated
     if header is not None:
         # 1. A LABEL NAMING WHAT WAS ORDERED reaches its own value cell
         #    and no further. See `_SCOPE_NEXT`.
@@ -1715,8 +1835,19 @@ def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple
             return _KIND_CONCLUSION, _SCOPE_RUN
         if header in _METHOD_SECTION_HEADERS:
             return _KIND_METHOD, _SCOPE_RUN
-        if header in _NOTE_SECTION_HEADERS:
-            return _KIND_NOTE, _SCOPE_RUN
+        # A BARE NOTE HEADER STATES NOTHING, SO ITS CONTENT IS THE BLOCK
+        # UNDER IT — and that is the ONLY note row that opens a region.
+        # A footnote carrying its own content is a finished statement
+        # (rule 5), and giving THAT a region would refuse the results
+        # table on a page that prints its footnote above the rows, which
+        # a Chinese laboratory does. Bare-vs-carrying is the honest
+        # discriminator, and it is the one `_is_bare_header` already is.
+        #
+        # `_leads_a_note` as well as the section list, because 危急值提示
+        # and 单位换算 are printed bare above their block exactly as 备注
+        # is, and only 备注's family was ever named as a section.
+        if header in _NOTE_SECTION_HEADERS or _leads_a_note(header):
+            return _KIND_NOTE, _SCOPE_BLOCK
     # 4. A metadata label CARRYING its value — 「送检项目: FSHD1基因检测」
     #    — is the same statement on one line, and is refused the same
     #    way. It never reached `_is_bare_header`, and as a PLAIN row its
@@ -1725,8 +1856,12 @@ def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple
         return _KIND_METHOD, _SCOPE_SELF
     # 5. A footnote, a critical-value banner or a unit-conversion
     #    legend carrying its own content. See `_NOTE_ROW_PREFIXES`.
-    undecorated = _ROW_MARKER_PREFIX.sub("", line.strip())
-    if any(undecorated.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
+    #
+    #    IT REACHES ITS OWN LINE AND NO FURTHER, unlike the bare header
+    #    above: a footnote with content on it is a finished statement,
+    #    and a laboratory that prints one ABOVE its results table would
+    #    otherwise have the table refused. See `_SCOPE_BLOCK`.
+    if _leads_a_note(line):
         return _KIND_NOTE, _SCOPE_SELF
     # 6. The document's name.
     if _is_title_row(line, first_content_line=first_content_line):
@@ -1800,10 +1935,19 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
     and it cannot run away. What a laboratory page needs refused is a
     row that labels ITSELF — a title, a footnote, a critical-value
     banner, a unit-conversion legend — and each of those does.
+
+    `_SCOPE_BLOCK` IS EXEMPT FROM THE FLAG for the same reason, from the
+    other side: a footnote block labels itself with a HEADER and puts its
+    content on the following lines, so a note label that stopped at its
+    own line refused the one row on the block that asserts nothing and
+    admitted every row that states a threshold. It is bounded instead of
+    switched off — see `_SCOPE_BLOCK` and `_NOTE_BLOCK_MAX_ROWS`.
     """
     kinds: List[str] = [_KIND_PLAIN] * len(lines)
     section: Optional[str] = None
     pending: Optional[str] = None
+    block: Optional[str] = None
+    block_left = 0
     seen_content = False
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -1812,19 +1956,30 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
         label = _row_label(stripped, first_content_line=not seen_content)
         seen_content = True
         if label is None:
+            if block is not None and block_left > 0:
+                # Inside a footnote region, and it outranks the section
+                # because it is the nearer statement about this row: the
+                # region was opened BY a row that says so, while a
+                # section reaches down the page. See `_SCOPE_BLOCK`.
+                kinds[index] = block
+                block_left -= 1
+                pending = None
+                continue
+            block = None
             kinds[index] = pending or section or _KIND_PLAIN
             pending = None
             continue
         kind, scope = label
+        section = None
+        pending = None
+        block = None
         if scope == _SCOPE_RUN:
             section = kind if sections else None
-            pending = None
         elif scope == _SCOPE_NEXT:
-            section = None
             pending = kind
-        else:
-            section = None
-            pending = None
+        elif scope == _SCOPE_BLOCK:
+            block = kind
+            block_left = _NOTE_BLOCK_MAX_ROWS
         kinds[index] = kind
     return kinds
 
@@ -3681,11 +3836,26 @@ def _extract_summary_line(
     So a header that cleans to nothing hands off to the first line under
     it that says something, and a header with no sentence under it does
     not stop the scan.
+
+    AND IT ASKS THE ROW MODEL WHICH LINES MAY SPEAK FOR THE REPORT. This
+    walked the raw lines and took the first keyword hit, so a footnote
+    that merely DEFINES a threshold — 「备注: D4Z4 重复单元数低于 10 个
+    即为缩短, 符合 FSHD1 分子诊断标准」 — was published verbatim as
+    `interpretation_summary`, which is the sentence the patient reads
+    under 报告详情 → 来源追溯 and the sentence the assistant is handed as
+    the report's own words. A row that asserts nothing about this patient
+    cannot be this patient's conclusion either, and that is the SAME
+    question `_result_row_mask` already answers for every number on the
+    page — so it is asked once and here too, rather than re-derived from
+    the characters of the sentence.
     """
     lowered_keywords = [keyword.lower() for keyword in keywords]
     stripped_lines = [line.strip() for line in lines]
+    may_speak = _result_row_mask(lines)
     for index, stripped in enumerate(stripped_lines):
         if not stripped or _is_header_only(stripped):
+            continue
+        if not may_speak[index]:
             continue
         if require_digit and not re.search(r"\d", stripped):
             continue
@@ -3697,7 +3867,9 @@ def _extract_summary_line(
         value = _clean_free_text(stripped)
         if value:
             return value
-        value = _summary_line_under_header(stripped_lines, index, require_digit=require_digit)
+        value = _summary_line_under_header(
+            stripped_lines, index, may_speak, require_digit=require_digit
+        )
         if value:
             return value
     return None
@@ -3706,6 +3878,7 @@ def _extract_summary_line(
 def _summary_line_under_header(
     stripped_lines: List[str],
     header_index: int,
+    may_speak: List[bool],
     *,
     require_digit: bool = False,
 ) -> Optional[str]:
@@ -3713,11 +3886,16 @@ def _summary_line_under_header(
 
     Stops at the next header, at a disclaimer and at a signature, so a
     header with nothing under it answers None rather than reaching down
-    the page for someone else's sentence.
+    the page for someone else's sentence. It stops at a row the report
+    does not speak through either — `may_speak` is `_result_row_mask`,
+    and a bare 结论 header whose next line is a footnote has no sentence
+    under it at all.
     """
-    for stripped in stripped_lines[header_index + 1:]:
+    for offset, stripped in enumerate(stripped_lines[header_index + 1:]):
         if not stripped:
             continue
+        if not may_speak[header_index + 1 + offset]:
+            return None
         if _is_header_only(stripped) or _is_header_row(stripped):
             return None
         if _is_disclaimer(stripped) or _looks_like_signature(stripped):
@@ -3733,11 +3911,25 @@ def _extract_block_after_header(
     start_keywords: Iterable[str],
     stop_keywords: Iterable[str],
 ) -> Optional[str]:
+    """The block a header opens, in the report's own voice.
+
+    `may_speak` is `_result_row_mask` — see `_extract_summary_line`. A
+    title, a method row and a footnote neither OPEN this block nor go
+    into it, and a footnote CLOSES it: 「检测结果: / D4Z4 重复单元数 18 /
+    备注: …符合 FSHD1 分子诊断标准」 is the report's result followed by
+    the laboratory's definition of the threshold, and running through the
+    footnote is how the definition became the patient's conclusion.
+    """
     capture = False
     parts: List[str] = []
-    for line in lines:
+    may_speak = _result_row_mask(lines)
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
+            continue
+        if not may_speak[index]:
+            if capture:
+                break
             continue
         if not capture and any(keyword in stripped for keyword in start_keywords):
             capture = True
@@ -4027,24 +4219,52 @@ def _states_an_absence(text: str) -> bool:
 #: the graded fields care — a hedged sentence is still DISPLAYED, via
 #: `interpretation_summary`; it just does not become a diagnosis.
 #:
-#: 不排除 / 不能排除 BELONG HERE AND NOWHERE ELSE. 不除外 — the same
-#: sentence in different characters — has been on this list since it was
-#: written, while its two synonyms were on the ABSENCE list, so one
-#: hedge had two opposite readings depending on which characters the
-#: laboratory happened to print. `_states_an_absence` no longer calls
-#: them absences; this is what they are instead.
+#: A NEGATED EXCLUSION IS NOT ON THIS LIST, BECAUSE IT IS NOT A WORD.
+#:
+#: 不除外 / 不排除 / 不能排除 used to be spelled out here, three literal
+#: strings, while the ABSENCE side was rebuilt on grammar — a negator,
+#: its closed class of function words, and a verb. So the two halves of
+#: the same sentence were being read by two different mechanisms, and
+#: every other spelling of the same clause was a hedge to neither.
+#: Measured, each on a synthetic report whose only conclusion is the
+#: clause named:
+#:
+#:     本次检测无法排除 FSHD2      → diagnosis_type: FSHD2 at 0.98
+#:     本次检测不能完全排除 FSHD2  → diagnosis_type: FSHD2 at 0.98
+#:     本次检测未能排除 FSHD2      → diagnosis_type: FSHD2 at 0.98
+#:     本次检测不能除外 FSHD2      → diagnosis_type: FSHD2 at 0.98
+#:
+#: — a type the report says it CANNOT RULE OUT, published as this
+#: patient's 分型 on the passport, in the exports, and into
+#: `patient_profiles` by `applyGeneticReportAutofill`. 「不能完全排除」 is
+#: the single most common way a Chinese laboratory declines to commit.
+#:
+#: What remains here is what really is a word: the vocabulary of
+#: SUSPICION. The negated exclusion is `_HEDGED_EXCLUSION`, built out of
+#: the same `_NEGATION` and the same `_EXCLUSION_VERBS` the absence test
+#: uses, so a spelling either side learns is a spelling both sides know.
 _HEDGE_MARKERS = (
     "怀疑",
     "疑似",
     "待排",
     "待查",
     "拟诊",
-    "不除外",
-    "不排除",
-    "不能排除",
     "可能为",
     "rule out",
     "suspected",
+)
+
+#: 「排除」 IS AN ABSENCE AND 「不能排除」 IS A HEDGE — the XOR of
+#: `_ABSENCE_CLAUSE`, read off its other branch.
+#:
+#: `_states_an_absence` already answers 「negated exclusion → not an
+#: absence」 by grammar; this is the positive statement of what such a
+#: clause IS instead, so that the two tests cannot drift apart on a
+#: wording. The `得` lookahead is the same one and for the same reason:
+#: 不见得 is 「not necessarily」, and a verb followed by 得 is not that
+#: verb.
+_HEDGED_EXCLUSION = re.compile(
+    rf"{_NEGATION}(?:{'|'.join(_EXCLUSION_VERBS)})(?!\s*得)"
 )
 
 #: A TYPE NAMED IN A RECOMMENDATION IS NEITHER STATED NOR DENIED.
@@ -4227,9 +4447,15 @@ def _is_hedged(text: str, match: "re.Match") -> bool:
     question about the same token and the two disagreeing on scope is
     how one hedge ends up with two readings. 「符合 FSHD1 分子诊断标准,
     待排合并其他肌病」 states one type and defers a second one.
+
+    TWO TESTS, ONE FOR EACH KIND OF HEDGE. A word of suspicion is a word
+    and is looked up; a negated exclusion is a CLAUSE and is parsed, by
+    the same grammar the absence test uses. See `_HEDGE_MARKERS`.
     """
     lowered = _match_clause(text, match).lower()
-    return any(marker in lowered for marker in _HEDGE_MARKERS)
+    if any(marker in lowered for marker in _HEDGE_MARKERS):
+        return True
+    return bool(_HEDGED_EXCLUSION.search(lowered))
 
 
 #: The FSHD type token, on its own and not inside a longer one.

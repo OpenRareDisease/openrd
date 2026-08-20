@@ -109,7 +109,7 @@ describe('the mirror rule — anaphoric follow-ups about own records', () => {
     expect(added).toEqual([]);
   });
 
-  it('adds nothing when the plan already reads the patient', () => {
+  it('adds nothing when the plan already reads the reports', () => {
     const { added } = withCompanionToolCalls(
       [
         { id: 'c1', name: 'get_my_reports', argumentsJson: '{}' },
@@ -118,6 +118,67 @@ describe('the mirror rule — anaphoric follow-ups about own records', () => {
       '这些报告的数值呢',
       AVAILABLE,
       { hasHistory: true },
+    );
+    expect(added).toEqual([]);
+  });
+
+  /**
+   * THE SUPPRESSION IS ABOUT THE REPORTS AND NOTHING ELSE.
+   *
+   * The gate was 「does this plan read anything personal」 and the set
+   * held `get_my_profile` and `get_my_records` beside `get_my_reports`.
+   * So the two scopes that carry no document suppressed the one that
+   * does: a patient asking about their own genetics whose planner
+   * called `get_my_profile` got four archived cells, their genetics
+   * report was never opened, and the confirmation guard in
+   * answer-guard.ts stood down on `no_genetics_this_turn` — which that
+   * file names this file as the closer of.
+   */
+  it.each(['get_my_profile', 'get_my_records'])(
+    'adds the report lookup to a plan that only read %s',
+    (tool) => {
+      const { added, toolCalls } = withCompanionToolCalls(
+        [{ id: 'c1', name: tool, argumentsJson: '{}' }],
+        '我的基因报告怎么说',
+        AVAILABLE,
+        { hasHistory: false },
+      );
+      expect(added).toContain('get_my_reports');
+      expect(toolCalls.map((c) => c.id)).toContain('server-companion-reports');
+    },
+  );
+
+  /**
+   * AND THE REPORT THE SERVER ADDED IS STILL A REPORT.
+   *
+   * The first rule in this file — a plan that reads the patient's
+   * reports without the knowledge base beside them gets it added —
+   * used to read the PLANNER'S names only, which was harmless while the
+   * two rules could not both fire. Narrowing the gate above makes them
+   * overlap, so a plan of `get_my_profile` on a report question would
+   * otherwise reach the model as report rows with nothing to interpret
+   * them: 「一行分析物名称和数字不是答案」 is this file's opening
+   * paragraph.
+   */
+  it('gives the server-added report lookup the knowledge base beside it', () => {
+    const { added, toolCalls } = withCompanionToolCalls(
+      [{ id: 'c1', name: 'get_my_profile', argumentsJson: '{}' }],
+      '我的基因报告怎么说',
+      AVAILABLE,
+    );
+    expect(added).toEqual(['get_my_reports', 'search_medical_kb']);
+    expect(toolCalls.map((c) => c.name)).toEqual([
+      'get_my_profile',
+      'get_my_reports',
+      'search_medical_kb',
+    ]);
+  });
+
+  it('still respects the consent gate for a profile-only plan', () => {
+    const { added } = withCompanionToolCalls(
+      [{ id: 'c1', name: 'get_my_profile', argumentsJson: '{}' }],
+      '我的基因报告怎么说',
+      new Set(['search_medical_kb', 'get_my_profile']),
     );
     expect(added).toEqual([]);
   });

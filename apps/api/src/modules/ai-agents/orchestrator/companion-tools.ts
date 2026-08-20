@@ -35,9 +35,13 @@
  * just supplied is the app forgetting you.
  *
  * So: when the conversation is demonstrably about the patient's own
- * records and the plan reads none of them, the report lookup is added.
+ * records and the plan reads NO REPORT, the report lookup is added.
  * Gated on there being prior turns, because without them there is no
  * antecedent for 这些 to refer to and the phrase is just a topic.
+ *
+ * 「reads no report」 and not 「reads nothing personal」 — the difference
+ * is what `REPORT_TOOLS` is about, and it decided whether a patient
+ * asking about their own genetics ever got their report opened.
  *
  * The trials rule
  * ---------------
@@ -73,8 +77,38 @@ import type { LlmToolCall } from '../llm/base.js';
 
 const KB_TOOL = 'search_medical_kb';
 
-/** Tools that read the patient's own clinical documents. Reading any of
- *  these is what triggers the companion KB lookup. */
+/**
+ * Tools that read the patient's own clinical documents.
+ *
+ * Reading any of these is what triggers the companion KB lookup, AND it
+ * is the whole of what suppresses the companion report lookup. One set,
+ * because both rules are about the same fact: whether this plan reaches
+ * the patient's reports.
+ *
+ * THE SUPPRESSION USED TO BE A WIDER SET and that was the defect. It
+ * was `PERSONAL_TOOLS` — `get_my_reports`, `get_my_profile`,
+ * `get_my_records` — on the reasoning that a plan touching any of the
+ * patient's own data is already about the patient. True, and not the
+ * question. What the mirror rule adds is the REPORTS, and the two extra
+ * members do not carry any:
+ *
+ *   - `get_my_profile` returns the registration archive. It carries the
+ *     genetics cells the read-time autofill tops up out of a report
+ *     (retrievers/patient-profile.ts) and NOTHING ELSE off one — no
+ *     analyte, no impression, no report date, no document at all. So a
+ *     patient asking 「我的基因报告怎么说」 whose planner called
+ *     `get_my_profile` got four archived cells and their report was
+ *     never opened, which is the exact shape of the failure the mirror
+ *     rule was written to end: the app holding the document and asking
+ *     the patient to describe it.
+ *   - `get_my_records` returns measurement and symptom SERIES. There is
+ *     no document on that path either.
+ *
+ * `get_my_reports` is the one tool whose presence makes the companion
+ * redundant, so it is the one tool that suppresses it. Nothing about
+ * consent moves: the call is still gated on `available.has`, which is
+ * the registry's answer for this patient's consent level.
+ */
 const REPORT_TOOLS: ReadonlySet<string> = new Set(['get_my_reports']);
 
 /** Cap on the query text handed to the KB. The retriever embeds it, and
@@ -82,15 +116,6 @@ const REPORT_TOOLS: ReadonlySet<string> = new Set(['get_my_reports']);
 const QUERY_MAX = 120;
 
 const REPORTS_TOOL = 'get_my_reports';
-
-/** Tools that read anything belonging to the patient. If the plan has
- *  none of these, the answer cannot be about their data — except by
- *  carrying it forward from the conversation, which is the case below. */
-const PERSONAL_TOOLS: ReadonlySet<string> = new Set([
-  'get_my_reports',
-  'get_my_profile',
-  'get_my_records',
-]);
 
 /**
  * Does this question point back at the patient's own material?
@@ -171,19 +196,31 @@ export const withCompanionToolCalls = (
   // a call the model actually made — the trail is shown to the patient
   // as「AI 思考过程」and it should not claim the model decided something
   // the server decided.
-  const readsReports = [...REPORT_TOOLS].some((tool) => names.has(tool));
-  if (readsReports && !names.has(KB_TOOL) && available.has(KB_TOOL)) {
-    toolCalls.push({
-      id: 'server-companion-kb',
-      name: KB_TOOL,
-      argumentsJson: JSON.stringify({ query }),
-    });
-    added.push(KB_TOOL);
-  }
+  const readsReports = () => [...REPORT_TOOLS].some((tool) => names.has(tool));
 
-  const readsPersonal = [...PERSONAL_TOOLS].some((tool) => names.has(tool));
+  // THE MIRROR RULE RUNS FIRST, AND ITS RESULT IS PART OF THE PLAN THE
+  // KB RULE THEN READS.
+  //
+  // The order is load-bearing now and was not before. The two rules
+  // used to be mutually exclusive — the KB rule fired only when the
+  // PLAN already read reports, and the report rule's gate was a
+  // superset of that — so a server-added report lookup could never be
+  // seen by the KB rule, and it never had to be. Narrowing the gate
+  // below to `REPORT_TOOLS` makes them overlap: a plan of
+  // `get_my_profile` on 「我的基因报告怎么说」 now gains the report
+  // lookup, and left in the old order that is a plan reading the
+  // patient's reports with no knowledge base beside it — the exact
+  // state the first rule in this file exists to prevent, reached by
+  // the fix for the second. So `names` gains the added call and the KB
+  // rule asks again.
+  //
+  // GATED ON THE REPORTS THEMSELVES, NOT ON 「ANY PERSONAL SCOPE」. This
+  // asked whether the plan read ANY tool belonging to the patient —
+  // `get_my_profile` and `get_my_records` were in the set with
+  // `get_my_reports` — and the two extra members suppress the one
+  // companion this rule adds. See the block above `REPORT_TOOLS`.
   if (
-    !readsPersonal &&
+    !readsReports() &&
     available.has(REPORTS_TOOL) &&
     refersToOwnRecords(question, Boolean(opts.hasHistory))
   ) {
@@ -193,6 +230,16 @@ export const withCompanionToolCalls = (
       argumentsJson: '{}',
     });
     added.push(REPORTS_TOOL);
+    names.add(REPORTS_TOOL);
+  }
+
+  if (readsReports() && !names.has(KB_TOOL) && available.has(KB_TOOL)) {
+    toolCalls.push({
+      id: 'server-companion-kb',
+      name: KB_TOOL,
+      argumentsJson: JSON.stringify({ query }),
+    });
+    added.push(KB_TOOL);
   }
 
   // No gate on what the plan already contains: see the trials rule in

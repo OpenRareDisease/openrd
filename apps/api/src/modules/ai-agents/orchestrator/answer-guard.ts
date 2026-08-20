@@ -539,6 +539,28 @@ export interface GuardEvidence {
    *  absence of the finding. */
   withheldCells: readonly string[];
   /**
+   * THIS PATIENT'S OWN CELL VALUES THAT ARE NOT NUMBERS, per cell.
+   *
+   * `numbers` is the measurement set and it deliberately excludes 4qA
+   * (「an identifier that contains a digit, not a measurement」 — pinned
+   * in answer-guard.test.ts, and admitting it would make every bare 4 in
+   * the answer this patient's haplotype). That exclusion is right for a
+   * MEASUREMENT set and it left check 2 with no way to see the sentence
+   * this platform's own D2 report names: 「4qA 是允许型」, written with no
+   * 你的 in front of it, about the haplotype cell this platform refused
+   * to read. Driven against the stack on the self-entered record, the
+   * model published exactly that shape —
+   * 「**单倍型**：4qA 是「允许型单倍型」，是 FSHD1 致病所需要的类型」 — and
+   * check 2 had neither a number nor a possessive to attach it by.
+   *
+   * So the IDENTIFIER half of the same fact travels separately. It is
+   * the value the turn's own payloads hold for the cell, matched
+   * verbatim, and it is confined to values that are not digit strings —
+   * a d4z4 cell holding 「3」 must keep going through `carriesNumber`,
+   * which knows what a bare 3 in a sentence is and is not.
+   */
+  cellIdentifiers: ReadonlyMap<string, readonly string[]>;
+  /**
    * 4-character shingles of everything the turn READ rather than
    * composed: every retrieved non-patient chunk, every rendered
    * projection row, and this file's own Chinese for the platform's
@@ -1631,6 +1653,41 @@ const profileScopeLaboratoryCells = (payload: Record<string, unknown>): Laborato
 });
 
 /**
+ * The two cells whose `_clinical` row can be this platform DECLINING to
+ * read them rather than a reading of them, and which this file can tell
+ * the two apart for. See the block in `buildGuardEvidence` that uses it.
+ *
+ * `methylation` is deliberately not here: it mints no `_clinical` row at
+ * all (see `THE METHYLATION CELL` in pii-redactor.ts), so it is
+ * permanently ungraded by the rule above and needs no help from this
+ * one. `ecori` mints none either.
+ */
+const LABORATORY_READ_CELLS = ['d4z4', 'haplotype'] as const;
+
+/**
+ * WHICH OF THOSE TWO CELLS THIS TURN CARRIES A LABORATORY READING FOR.
+ *
+ * The union across the turn's payloads, not the intersection: if ONE
+ * record is the laboratory's own report and gave a value for the cell,
+ * the projection printed this platform's real reading of it somewhere in
+ * this prompt, and a sentence stating that reading is quoting rather
+ * than inventing. A turn where only a self-entered record carries the
+ * cell leaves it out, which is the case this exists for.
+ *
+ * Same two readers `readGeneticConfirmation` uses, in the same order, so
+ * the two can never disagree about what a laboratory reading is.
+ */
+const laboratoryReadCells = (payloads: readonly Record<string, unknown>[]): ReadonlySet<string> => {
+  const read = new Set<string>();
+  for (const payload of payloads) {
+    const cells = reportScopeLaboratoryCells(payload) ?? profileScopeLaboratoryCells(payload);
+    if (cells.d4z4 !== null) read.add('d4z4');
+    if (cells.haplotype !== null) read.add('haplotype');
+  }
+  return read;
+};
+
+/**
  * How far short of the confirmation one record falls, ordered by how
  * much the sentence quoted to the model and to the patient gains from
  * saying it. 0 is the confirmation itself.
@@ -1684,6 +1741,44 @@ export const readGeneticConfirmation = (
   return { state: 'not_confirmed', shortfall: SHORTFALL_ZH[closest] ?? '' };
 };
 
+/**
+ * WHAT THE PROJECTION PRINTED, AS KEY NAMES ONLY — AND THE ONE THING
+ * THAT COSTS.
+ *
+ * `readEmission` in run.ts builds this out of `readRenderedRows`
+ * (security/render.ts), which reads the renderer's grammar back and
+ * returns LABELS and KEYS. The VALUE half of every row — the text after
+ * 「: 」 — is computed there (`valueOf`) and discarded, so no value the
+ * projection printed reaches this file except as undifferentiated prose
+ * in `renderedTexts`.
+ *
+ * That is why `buildGuardEvidence` can only recover ONE of the six
+ * `GENETIC_READING_REFUSALS` a `_clinical` row can hold. To close the
+ * other five the value has to be carried, and the smallest honest shape
+ * is in the RENDERER rather than in a second parse here:
+ *
+ *   - `renderChunkForPrompt` (security/render.ts) already holds the
+ *     REDACTED `fields` object — it builds the text out of it and then
+ *     returns only `content` / `fieldsUsed` / `stats`. One more member
+ *     on `RenderedChunk`, computed with no parsing at all:
+ *         refusedCells: string[]   // keys ending `_clinical` whose value
+ *                                  // is in GENETIC_READING_REFUSALS,
+ *                                  // with the suffix stripped
+ *     `GENETIC_READING_REFUSALS` is already exported from
+ *     pii-redactor.ts for exactly this kind of question, and render.ts
+ *     already imports from that module.
+ *   - `BuiltContext` (orchestrator/context-builder.ts) unions those
+ *     across the chunks it rendered, exactly as it already unions
+ *     `fieldsUsed`, and carries them as `refusedCells: string[]`.
+ *   - run.ts passes them into `buildGuardEvidence`, and this interface
+ *     grows `refusedCells: ReadonlySet<string>`; the loop below deletes
+ *     those from `graded` alongside the laboratory question.
+ *
+ * Reading the values back out of the rendered TEXT here would be the
+ * second implementation of the row grammar that `readRenderedRows`
+ * exists to prevent — see its own note — so it is not an option, and
+ * the un-carried refusals are recorded as open rather than approximated.
+ */
 export interface EmittedRows {
   fields: ReadonlySet<string>;
   ocrKeys: ReadonlySet<string>;
@@ -1723,6 +1818,20 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
   // for (below), and which cells the conversation fallback is allowed to
   // speak for (`collectConversationNumbers`).
   const onFile = new Set<string>();
+  /** See `cellIdentifiers` on `GuardEvidence`. A value with no letter and
+   *  no Chinese in it is a measurement and belongs to `numbers`; one that
+   *  is a single character is too short to be anything but noise in a
+   *  substring test. */
+  const identifiers = new Map<string, Set<string>>();
+  const noteIdentifier = (cell: string, value: unknown): void => {
+    if (typeof value !== 'string' && typeof value !== 'number') return;
+    const text = String(value).trim();
+    if (text.length < 2 || text.length > 32) return;
+    if (!/[A-Za-z\u4e00-\u9fff]/u.test(text)) return;
+    const bucket = identifiers.get(cell) ?? new Set<string>();
+    bucket.add(text);
+    identifiers.set(cell, bucket);
+  };
   const walk = (value: unknown, key: string, depth: number): void => {
     if (depth > 8) return;
     if (Array.isArray(value)) {
@@ -1738,7 +1847,10 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     }
     if (value === null || value === undefined || value === '') return;
     const cell = cellOfKey(key);
-    if (cell !== null) onFile.add(cell);
+    if (cell !== null) {
+      onFile.add(cell);
+      noteIdentifier(cell, value);
+    }
   };
   for (const payload of input.patientPayloads) walk(payload, '', 0);
 
@@ -1751,6 +1863,7 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
   // platform's reading of a cell, and a cell with any other row and no
   // `_clinical` row is one it declined to read.
   const printedKeys = [...input.emitted.fields, ...input.emitted.ocrKeys];
+  const laboratoryReadThisTurn = laboratoryReadCells(input.patientPayloads);
   const graded = new Set<string>();
   const printed = new Set<string>();
   for (const key of printedKeys) {
@@ -1758,6 +1871,50 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     if (cell === null) continue;
     printed.add(cell);
     if (key.endsWith('_clinical')) graded.add(cell);
+  }
+  // ...AND A `_clinical` ROW IS NOT AUTOMATICALLY A GRADE. A REFUSAL IS
+  // WRITTEN IN THE SAME ROW.
+  //
+  // The paragraph above is the whole rule as it stood, and it reads the
+  // KEY. `readEmission` in run.ts hands over key names — the value the
+  // renderer printed after 「: 」 is thrown away in security/render.ts and
+  // never reaches this function. So a row saying
+  // 「D4Z4 本平台判读: 本平台没有把这一格当成化验报告上的读数」 — this
+  // platform stating in the prompt that it DECLINED to read the cell —
+  // counted as this platform having read it, and check 2 stood down on
+  // the one record it exists for. Driven against a synthetic patient
+  // whose 重复数 3 and 单倍型 4qA are the registration form's own boxes,
+  // the projection printed that refusal twice and `ungradedCells` came
+  // back identical to the laboratory-read patient's: `['methylation']`.
+  //
+  // WHAT IS RECOVERED HERE, AND WHAT STILL NEEDS THE VALUE CARRIED.
+  //
+  // `not_read_off_a_laboratory_report` is the one refusal that is not a
+  // reading of the cell's CONTENT — it is the redactor asking whether
+  // this platform read the cell off the genetics laboratory's own report
+  // (`clinicaliseD4Z4` / `clinicaliseHaplotype` return it on the branch
+  // immediately after 「empty」, before any parse). That question is
+  // ALREADY ANSWERED HERE, off the raw payloads, by the two functions
+  // `readGeneticConfirmation` runs — the flags the profile retriever
+  // computes and `isLaboratoryGeneticReport` on a reports payload. Same
+  // question, same imported predicates, no threshold and no branch order
+  // retyped: see the block above `readGeneticConfirmation`. So a cell no
+  // payload gave a LABORATORY reading for is struck out of `graded`, and
+  // a sentence banding it is a sentence banding a cell this platform
+  // refused, in the prompt, in this turn.
+  //
+  // The other refusals in `GENETIC_READING_REFUSALS`
+  // (`length_in_kb_not_a_repeat_count`,
+  // `other_allele_not_the_contracted_one`, the non-permissive one,
+  // `zero_repeat_count_not_a_valid_reading`, `unspecified`) ARE readings
+  // of the content, they are reachable on a record that IS the
+  // laboratory's, and reproducing them here would mean retyping
+  // `clinicaliseD4Z4`'s branch order — the one thing the note above
+  // `readGeneticConfirmation` forbids. Those stay open until the
+  // projection's `_clinical` VALUES are carried to this function; the
+  // shape that would carry them is written up beside `EmittedRows`.
+  for (const cell of LABORATORY_READ_CELLS) {
+    if (!laboratoryReadThisTurn.has(cell)) graded.delete(cell);
   }
   const ungradedCells = [...printed].filter((cell) => !graded.has(cell));
 
@@ -1826,6 +1983,7 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     corpusChunkCount: input.corpusTexts.length,
     recordIntervals,
     patientCells,
+    cellIdentifiers: new Map([...identifiers].map(([cell, set]) => [cell, [...set]])),
     // Read off the RAW payloads, and off `onFile` rather than off the
     // projection: a cell strict consent stripped out of the prompt is
     // still a cell the record holds, and 「is this record confirmed」 is
@@ -1969,7 +2127,22 @@ const isHeaderRow = (segments: readonly Segment[], index: number): boolean => {
  * whose number the sentence lands on — is the half that does the work.
  * A lexicon alone would flag every sentence in a disease encyclopedia.
  *
- * IT IS A REGISTER LIST, AND IT WILL ALWAYS BE INCOMPLETE. That is the
+ * ASKED AGAIN ON THE FOURTH WIDENING, BECAUSE FOUR ROUNDS OF ADDING
+ * WORDS IS WHAT A MISSING FACT LOOKS LIKE. It is still not a fact. The
+ * turn holds: which numbers are his, which cells this platform graded,
+ * which intervals his record printed, what the retrieval said. Compose
+ * those any way you like and none of them decides whether a sentence is
+ * a VERDICT ON HOW BAD IT WILL GET. That predicate is about the mood of
+ * a Chinese sentence, and this repo holds no artefact that carries it.
+ * So the answer to 「should this be a fact instead」 is settled: no, and
+ * the widening below is a widening of a list, done knowingly.
+ *
+ * IT IS A REGISTER LIST, IT IS USED ONLY TO WITHHOLD, AND IT WILL ALWAYS
+ * BE INCOMPLETE — three properties that have to be read together. It
+ * decides nothing on its own: the FACT beside it (whose number the
+ * sentence lands on) is what makes a hit a violation, so a word it is
+ * missing costs a sentence that should have been cut and never a
+ * sentence that should have been kept. That is the
  * defect the second half of it exists to reduce rather than to close.
  * The first version carried only the 更-comparatives — 更快 更重 更早 —
  * which is the register of a translation, not of a clinical answer
@@ -1997,6 +2170,54 @@ const COMPARATIVE_DEGREE = '(?:更|较|比较|偏|相对较?|稍微?|略|越|最
  *  broad to use — they only count behind a degree marker or in front of
  *  a comparative tail. */
 const SEVERITY_AXIS = '(?:早(?!期)|晚|重|轻|快|慢|差)';
+
+/**
+ * THE FOUR BANDING REGISTERS, WRITTEN AS REGISTERS RATHER THAN AS WORDS.
+ *
+ * Chinese clinical writing does not usually deliver a severity verdict
+ * as a comparative. It delivers it as a BAND, and there are four
+ * suffixes it hangs the band on: 度, 级, 型, 期. Only 型 was here, and
+ * only two of its bands (轻型 / 重型). Everything else went past:
+ * 「中重度」, 「轻度到中度」, 「Ⅱ 级」, 「已经进入中期」 — every one of them
+ * measured against the running stack on a patient whose count is 3, and
+ * every one of them a verdict on how bad it is.
+ *
+ * Compositional for the reason the comparatives above are: enumerating
+ * 轻度/中度/重度/中重度/极重度 by hand is how 轻中度 goes missing next
+ * round.
+ *
+ * WHAT EACH ONE EXCLUDES, AND WHY THE EXCLUSION IS NOT A NICETY:
+ *
+ *   度 — 程度 / 浓度 / 角度 all end in 度 and none of them is preceded
+ *        by a band word, so the band prefix is the whole guard.
+ *   级 — 一级亲属 IS THE COMMONEST 级 IN THIS PRODUCT'S CHINESE. FSHD is
+ *        autosomal dominant and every counselling answer says 一级亲属;
+ *        三级医院 and 一级预防 are the other two. All three are excluded
+ *        by name, because flagging them would delete the honest answer
+ *        to the question patients ask most.
+ *   型 — 表型 / 基因型 / 允许型 / FSHD1 型 are cell vocabulary, not
+ *        severity bands; none of them carries a band word in front of
+ *        the 型, which is what makes the composition safe here.
+ *   期 — 早期 IS DELIBERATELY ABSENT. It is this platform's own word for
+ *        a DOCUMENT's date (「比较早期的报告」, the collision `SEVERITY_AXIS`
+ *        already spells out with 早(?!期)) and for the advice this
+ *        platform wants published (早期干预 / 早期康复). The onset claim
+ *        it would otherwise catch is already reachable through 发病早,
+ *        起病早, 早发 and the comparatives, so excluding it costs a
+ *        register that is covered and buys back two sentences that
+ *        should reach the patient.
+ */
+const SEVERITY_BAND = [
+  // 轻度 / 中度 / 重度 / 中重度 / 轻中度 / 极重度
+  '(?:极重|中重|轻中|轻|中|重)度',
+  // 轻型 / 中间型 / 重型 / 婴儿型 / 成人型 / 经典型
+  '(?:极重|中间|婴儿|儿童|青少年|成人|经典|轻|中|重)型',
+  // 中期 / 晚期 / 中晚期 / 进展期 / 终末期 — see the note on 早期.
+  '(?:中晚|晚|中|进展|终末|平台|稳定)期',
+  // 2 级 / Ⅱ 级 / 三级 — the band written as a grade number.
+  '(?:[0-9０-９]{1,2}|[IVXivx]{1,4}|[ⅠⅡⅢⅣⅤ]|[一二三四五六])\\s*级(?!亲属|医院|预防)',
+].join('|');
+
 const SEVERITY_WORD = new RegExp(
   [
     '严重|重症|轻重|轻型|重型|预后|进展|恶化|加重|病程|残疾|轮椅|走不了|失能|寿命|活不',
@@ -2006,6 +2227,8 @@ const SEVERITY_WORD = new RegExp(
     `${COMPARATIVE_DEGREE}${SEVERITY_AXIS}`,
     // 「进展快一些」「重得多」 — the comparative written as a tail.
     `${SEVERITY_AXIS}(?:一些|一点|得多|不少)`,
+    // 度 / 级 / 型 / 期 — see `SEVERITY_BAND`.
+    SEVERITY_BAND,
   ].join('|'),
   'u',
 );
@@ -2060,7 +2283,14 @@ const SEVERITY_WORD = new RegExp(
  * so a guard that deletes them is enforcing the opposite of the rule.
  */
 const CLAIM_DISCLAIMED =
-  /不能|不会|无法|没法|没能|没办法|不做|不拿|不据此|不是对|不要自己|不是用来|不能用来|不作为|不足以|不预测|不推断|不判断|说不准|由医生|请医生|主治医生|问医生|医生判断|医生评估/u;
+  // THE REFUSAL-OF-INFERENCE REGISTER came in with the bands. Driven
+  // against the stack on the self-entered record, the model wrote
+  // 「重复数 3 不是「一定会重度」的判决书。」 — the platform's own position,
+  // in the model's voice — and the 度 band matched while none of the
+  // markers below it did: 「不是「一定」 is not 不是对, and 「会重度」 is
+  // not 不会. These six are the shapes a Chinese sentence uses to REFUSE
+  // an inference, and none of them can carry one.
+  /不一定|不必然|不等于|不代表|不意味|不是[「『"']?(?:一定|必然)|不能|不会|无法|没法|没能|没办法|不做|不拿|不据此|不是对|不要自己|不是用来|不能用来|不作为|不足以|不预测|不推断|不判断|说不准|由医生|请医生|主治医生|问医生|医生判断|医生评估/u;
 
 /**
  * ...AND IT HAS TO STAND IN FRONT OF THE CLAIM, WHICH IS THE RULE THIS
@@ -2129,9 +2359,34 @@ const claimIsNotAsserted = (asserted: string): boolean => {
  * grade, said in the synonym the list did not hold. The cell terms and
  * the possessive are grounded in facts the turn holds; this half is
  * not, and cannot be.
+ *
+ * ONE PART OF IT IS GROUNDED, THOUGH, AND IT IS THE PART THAT WAS
+ * MISSING: THIS PLATFORM'S OWN READING WORDINGS.
+ *
+ * The list above is the register of a LABORATORY grade — 偏高, 超出,
+ * 正常范围. The gradings this file exists to stop are not written in it.
+ * They are written in the platform's OWN reading vocabulary, because the
+ * model is echoing the projection back: `WIRE_TOKEN_ZH` says
+ * `within_fshd1_repeat_range` is 「这个重复数落在 FSHD1 的范围里」 and
+ * `permissive_haplotype` is 「允许型单倍型」, and on a record where those
+ * two rows held `not_read_off_a_laboratory_report` instead, the model
+ * published 「D4Z4 重复数 3 落在 FSHD1 的范围里」 and 「4qA 是允许型」 —
+ * both readings this platform declined to make, on the record where it
+ * declined, and neither one carrying a single word of the list above.
+ *
+ * So the reading wordings are added, and their source is the table this
+ * file already keeps in step with the redactor's enum. They are matched
+ * as the discriminating FRAGMENT rather than as the whole rendered
+ * string, because the model restates rather than quotes:
+ * 「4qA 是允许型」 is `permissive_haplotype` said in a sentence, and
+ * 「属于 FSHD1 的致病范围」 is `within_fshd1_repeat_range` said in
+ * another. That makes this half a register list like the rest of the
+ * line — the same warning applies to it — but a register list whose
+ * entries are derived from what this platform itself says, rather than
+ * guessed at.
  */
 const GRADING_WORD =
-  /偏高|偏低|过高|过低|很高|很低|太高|太低|极高|极低|相当高|非常高|高出|低于|超出|超标|异常|正常范围|典型范围|常规范围|正常水平|明显升高|明显降低|属于高|属于低|高甲基化|低甲基化|分级|哪一档|这一档|程度很|水平很|读成|比较少见|不太常见/u;
+  /偏高|偏低|过高|过低|很高|很低|太高|太低|极高|极低|相当高|非常高|高出|低于|超出|超标|异常|正常范围|典型范围|常规范围|正常水平|明显升高|明显降低|属于高|属于低|高甲基化|低甲基化|分级|哪一档|这一档|程度很|水平很|读成|比较少见|不太常见|允许型|致病范围|发病范围|FSHD\s*[0-9]?\s*的?\s*范围|范围之上|说不准的区间/u;
 
 /** A negation reaching FORWARD over the grading word. 「我没办法把这个数值
  *  解读成「高」或「低」」 is a refusal to grade and must survive; 「95% 高出
@@ -3506,7 +3761,15 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
           (number) => number.cell === cell && carriesNumber(text, number.value),
         );
         const byName = possessiveAttachedToCell(text, cell);
-        if (!byNumber && !byName) continue;
+        // ...AND BY THE CELL'S OWN VALUE, which for the haplotype is
+        // neither a number nor reachable by the possessive. See
+        // `cellIdentifiers`: 「4qA 是允许型」 names this reader's cell as
+        // squarely as 「你的单倍型是允许型」 does, and it is the form the
+        // model published on the record this platform refused to read.
+        const byIdentifier = (evidence.cellIdentifiers.get(cell) ?? []).some((identifier) =>
+          text.includes(identifier),
+        );
+        if (!byNumber && !byName && !byIdentifier) continue;
         add({
           kind: 'ungraded_cell_graded',
           sentence: segment.text.trim(),
@@ -3777,7 +4040,12 @@ export const buildRegenerationDirective = (violations: readonly ClinicalViolatio
     '- 群体层面的结论仍然可以讲，但**不要点名他的数字，也不要点名包住他数字的那一档**。',
     '  「在人群里，重复数越短总体上发病越早」可以；',
     '  「1–3 个重复单元的人发病更早」不行——他就站在 1–3 里，写「在群体研究中」也不改变这一点。',
-    '- 本平台不判读的格子（没有 _clinical 的那些）照实说本平台不下这个结论，不要自己补一个。',
+    // 「没有 _clinical 的那些」 was what this line said, and it taught the
+    // model the rule the guard itself had wrong: a `_clinical` row can
+    // hold this platform DECLINING to read the cell
+    // （「本平台没有把这一格当成化验报告上的读数」）as easily as a reading.
+    '- 判读栏写着本平台没有读这一格（或者根本没有判读栏）的，照实说本平台不下这个结论，',
+    '  不要自己补一个，也不要把本平台的判读用语（「落在 FSHD1 的范围里」「允许型」）安到那一格上。',
     '- 资料里没写的机制不要写；能确定的部分照说，剩下的直说查不到、建议跟主治医生确认。',
     '- **不要自己编「参考范围」「正常值」「诊断范围」的数字区间。**',
     '  报告上没印的区间就是没有；要讲文献里的范围就明写成资料里的结论并带上出处编号，',
