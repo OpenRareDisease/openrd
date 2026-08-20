@@ -3778,6 +3778,222 @@ describe('...and it must still tell the patient what this platform DOES say', ()
   });
 });
 
+// ══════════════════════════════════════════════════════════════════════
+// THE ATTRIBUTIVE FORM — 「你是基因确诊的 FSHD1。」
+// ══════════════════════════════════════════════════════════════════════
+//
+// The check read possession as the addressee standing before the claim,
+// one of his own numbers, or an anaphor — and then threw the match away
+// whenever a 的 followed it, on the grounds that a 的 makes a noun
+// phrase. It does not: 「你是基因确诊的 FSHD1。」 is a copula sentence
+// whose predicate is that noun phrase, and it is the form Chinese most
+// naturally writes this claim in. A self-entered patient could be told
+// they were genetically confirmed with zero violations raised.
+//
+// The previous round had met one instance of this and spelled it into
+// `CONFIRMATION_CLAIM` as a branch listing four head nouns
+// (患者/病人/病例/个案). Enumerating head nouns is the wrong axis — the
+// claim attaches to the disease, the diagnosis, the report, the result,
+// or to nothing at all — so what is asked now is whether the noun phrase
+// is PREDICATED of anybody.
+
+/** A sentence naming him, for the forms that carry no subject of their
+ *  own. Its own possession is asserted separately below. */
+const NAMES_HIM = '你的档案里记录了 D4Z4 重复数 3 和单倍型 4qA。\n\n';
+
+describe('the attributive form of the confirmation claim', () => {
+  // THE SENTENCE THIS ROUND EXISTS FOR.
+  it('catches the claim attached to the disease name', () => {
+    const evidence = unconfirmed();
+    for (const sentence of [
+      '你是基因确诊的 FSHD1。',
+      '你已经是基因确诊的 FSHD1 了。',
+      '你现在属于基因确诊的 FSHD1。',
+      '你就是基因确诊的 FSHD1 型。',
+      '你是一名基因确诊的 FSHD1 患者。',
+      '你现在是遗传学确诊的 FSHD1。',
+      '你这个基因确诊的 FSHD1，定期随访就行。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(1);
+    }
+  });
+
+  // ...and the rest of the family, which is why the fix is the copula
+  // and not a longer list of head nouns.
+  it('catches it attached to the diagnosis, the report and the result', () => {
+    const evidence = unconfirmed();
+    for (const sentence of [
+      '你的诊断是基因确诊的诊断。',
+      '你的诊断属于基因确诊的那一类。',
+      '你的分型是基因确诊的 FSHD1 型。',
+      '你的报告是基因确诊的报告。',
+      '你的报告算作基因确诊的依据。',
+      '你这是基因确诊的结果。',
+      '你的结果就是基因确诊的结论。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(1);
+    }
+  });
+
+  // THE DISEASE'S OWN NAME ENDS IN 不良, and the clause-wide cancel read
+  // that 不 as the patient's refusal — so the claim cancelled itself on
+  // the name of the disease it was confirming.
+  it('is not cancelled by the 不 in 肌营养不良', () => {
+    expect(confirmationHits('你是分子确诊的面肩肱型肌营养不良。', unconfirmed())).toHaveLength(1);
+  });
+
+  // A LATIN TOKEN MEETS CHINESE WITH A SPACE IN IT, and the adverbs
+  // stack. Both spellings matched nothing at all.
+  it('reads the claim across a space and across stacked adverbs', () => {
+    const evidence = unconfirmed();
+    expect(confirmationHits('你是 DNA 确诊的 FSHD1。', evidence)).toHaveLength(1);
+    expect(confirmationHits('你临床上和基因层面都已经确诊了。', evidence)).toHaveLength(1);
+  });
+
+  // ...AND THE CLAIM PREDICATED OF NOTHING AT ALL. A heading, a
+  // label-value pair and a table cell have no subject of their own, so
+  // they are about whatever the sentence that introduced them was
+  // about — the one-hop carry, spent by structure instead of by an
+  // anaphor. See `claimFillsAField`.
+  it('catches the claim standing as a bare field under a sentence that names him', () => {
+    const evidence = unconfirmed();
+    for (const answer of [
+      NAMES_HIM + '## 基因确诊',
+      NAMES_HIM + '诊断：FSHD1（基因确诊）',
+      NAMES_HIM + '| 项目 | 结果 |\n| --- | --- |\n| 基因确诊 | 是 |',
+      NAMES_HIM + '基因确诊。',
+    ]) {
+      expect(confirmationHits(answer, evidence)).toHaveLength(1);
+    }
+  });
+
+  // THE RESIDUAL, STATED: a field with nothing anywhere near it naming
+  // this reader is still published. It fails toward the un-claimed
+  // reading — a heading over nobody — rather than toward a verdict.
+  it('leaves a bare field alone when no sentence near it names him', () => {
+    expect(confirmationHits('## 基因确诊', unconfirmed())).toHaveLength(0);
+  });
+
+  // A FIELD IS ONLY A FIELD WHEN THE CLAIM FILLS IT. These three are
+  // the rule, the question and the refusal written in the same shapes.
+  it('does not read a longer phrase in a field as the claim', () => {
+    const evidence = unconfirmed();
+    for (const answer of [
+      NAMES_HIM + '| 基因确诊标准 | D4Z4 收缩 + 4qA 单倍型 |',
+      NAMES_HIM + '| 基因确诊 | 需要 D4Z4 长度和 4qA 单倍型 |',
+      NAMES_HIM + '| 项目 | 结果 |\n| --- | --- |\n| 是否基因确诊 | 否 |',
+      NAMES_HIM + '| 结论 | 未经基因确诊 |',
+      // A TERM IN 「」 IS MENTIONED, NOT USED. This is the sentence this
+      // platform says most often to an unconfirmed patient, and letting
+      // a quote open a field would have cut it.
+      NAMES_HIM +
+        '本平台说的「基因确诊」要两项同时是从基因报告上读出来的：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型。',
+    ]) {
+      expect(confirmationHits(answer, evidence)).toHaveLength(0);
+    }
+  });
+
+  // THE SKIP THE 的 RULE WAS BUILT FOR IS UNTOUCHED. Predication is what
+  // was added; nothing was taken away.
+  it('still keeps the platform own attributive wording', () => {
+    const evidence = unconfirmed();
+    for (const sentence of [
+      '你的档案里没有从基因报告里读出来的、可作确诊依据的基因结果。',
+      '你的档案里目前没有本平台从基因报告原件上读取的、可作为确诊依据的 D4Z4 重复数和单倍型结果。',
+      '本平台不把你当成基因确诊的患者，因为这两格不是报告读数。',
+      '基因确诊的两项是 D4Z4 长度和 4qA 单倍型，你的档案里这两项都在，但来源不是基因报告。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
+  });
+
+  // AND THE CONFIRMED PATIENT IS STILL TOLD PLAINLY, in every one of the
+  // forms this round newly reads. Driven against the running stack, this
+  // is verbatim what the model answered a synthetic confirmed patient.
+  it('never touches these forms for a record this platform does grade 基因确诊', () => {
+    const evidence = confirmed();
+    for (const answer of [
+      '你是基因确诊的 FSHD1。',
+      '是的，你已经是一名基因确诊的 FSHD1 患者——D4Z4 重复数落在 FSHD1 的范围里，同时 4qA 单倍型属于允许型单倍型。',
+      '你的诊断是基因确诊的诊断。',
+      NAMES_HIM + '| 项目 | 结论 |\n| --- | --- |\n| 基因确诊 | 是 |',
+      NAMES_HIM + '诊断：FSHD1（基因确诊）',
+    ]) {
+      expect(confirmationHits(answer, evidence)).toHaveLength(0);
+    }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ...AND THE FOUR WAYS THE SAME CHECK CUT THE HONEST ANSWER
+// ══════════════════════════════════════════════════════════════════════
+//
+// Every sentence below was WRITTEN BY THE MODEL, driven against the
+// running stack with the synthetic self-entered patient, and every one
+// of them was excised — under an excision notice announcing that the
+// answer had told the patient he was genetically confirmed. Each says
+// the opposite. This is the direction this check calls its own worst
+// outcome, so they are pinned as assertions rather than as comments.
+
+describe('the honest answer this check was cutting', () => {
+  const evidence = unconfirmed();
+
+  // The clause was located by SEARCHING for the matched text, so the
+  // second 基因确诊 in a sentence was judged against the FIRST one's
+  // clause — and the 未经 sitting right in front of it was never read.
+  it('reads the cancel on the clause the claim is actually in', () => {
+    expect(
+      confirmationHits(
+        '你被医生诊断为 FSHD1，但在本平台的基因确诊判断里，目前的结果是**未经基因确诊**。',
+        evidence,
+      ),
+    ).toHaveLength(0);
+  });
+
+  // 「确诊为 FSHD1」 counts the disease name as the genetic basis, which
+  // is right until the sentence names its basis as the clinical one.
+  it('does not contradict a diagnosis the sentence sources to the clinic', () => {
+    for (const sentence of [
+      '是的，你已经在临床上确诊为 FSHD1 型，但从本平台的记录来看，还没有从你的基因检测报告上读取到可作为正式基因确诊依据的数据。',
+      '医生说你已经确诊 FSHD1 了，本平台不否定这个临床诊断。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
+    // ...and 临床试验 is a different sense of the word, so it is not a
+    // password.
+    expect(
+      confirmationHits('临床试验筛选那边你可以填「是」，你是基因确诊的 FSHD1。', evidence),
+    ).toHaveLength(1);
+  });
+
+  // A protasis governs the whole sentence; the clause window cannot see
+  // it. This is the platform's own call to action.
+  it('does not cut the upload prompt out of a conditional', () => {
+    for (const sentence of [
+      '如果你有基因检测报告的原件，可以上传到档案里，这样就能获得正式的基因确诊判读了。',
+      '- 如果你之前做过基因检测，可以把基因报告上传到平台上，这样系统就能读取报告上的原始数据，给出正式的基因确诊判读',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
+    // ...and a protasis standing AFTER the claim rescues nothing.
+    expect(confirmationHits('你已经是基因确诊的了，如果你想的话。', evidence)).toHaveLength(1);
+  });
+
+  // 基因确诊判读 / 基因确诊判断 are one word each: the READING, the
+  // JUDGEMENT. Naming what this platform decides is not deciding it.
+  it('reads the claim heading a compound noun as the name of the question', () => {
+    expect(
+      confirmationHits('这样系统就能读取报告上的原始数据，给出正式的基因确诊判读。', evidence),
+    ).toHaveLength(0);
+    // ...unless the compound noun is itself predicated of him, and
+    // unless a branch that opens at the VERB matches it anyway.
+    expect(confirmationHits('你就是基因确诊状态。', evidence)).toHaveLength(1);
+    expect(
+      confirmationHits(NAMES_HIM + '这两项同时满足 FSHD1 的基因确诊标准。', evidence),
+    ).toHaveLength(1);
+  });
+});
+
 // ---------------------------------------------------------------------
 // THE BANDING REGISTERS A CHINESE CLINICAL ANSWER ACTUALLY USES.
 //

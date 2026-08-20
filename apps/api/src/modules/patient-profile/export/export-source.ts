@@ -11,6 +11,7 @@ import {
 import { MUSCLE_GROUP_LABELS, labelFor } from './labels.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import {
+  VENTILATORY_PATTERN_ZH,
   buildClinicalPassportSummary,
   isDeterminateRepeatCount,
   pickLabReading,
@@ -1947,6 +1948,18 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
   codingKey: string | null;
   readingNoteZh?: string;
   geneticCell?: GeneticCellSpec;
+  /**
+   * A CLOSED WIRE ENUM, LOCALISED — the only cell here whose payload
+   * value is not what a laboratory printed.
+   *
+   * The parser reads 「限制性通气功能障碍」 off a Chinese report and stores
+   * `restrictive`. Exporting the stored token would put an English word
+   * this platform invented into a registry under a Chinese label, and
+   * beside a passport that prints the Chinese. The table is IMPORTED
+   * from the passport rather than repeated, so the two renderings of
+   * one payload cannot come apart.
+   */
+  valuesZh?: Record<string, string>;
 }> = [
   {
     key: 'creatineKinase',
@@ -2016,6 +2029,168 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     keys: ['serratusFatigueGrade', 'serratus_fatigue_grade'],
     labelZh: '前锯肌脂肪化等级',
     category: 'imaging',
+    codingKey: null,
+  },
+  /**
+   * ══════════════════════════════════════════════════════════════════
+   * THE SIXTEEN MONITORING CELLS THIS TABLE WAS A SUBSET OF.
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * WHAT WAS WRONG. `PASSPORT_MONITORING_PAYLOAD_KEYS` is every cell the
+   * clinical passport's 血检指标 / 肺功能 / 心脏 rows can print. It holds
+   * twenty-six; this table read nine of them. The other sixteen — the
+   * whole 血常规 block (WBC / HGB / PLT), the whole 甲功 block (FT3 /
+   * FT4 / TSH), the whole 凝血 block (PT / APTT / Fib / D-二聚体), 肌酐,
+   * 尿酸, the ventilatory pattern, the diaphragm summary, and both
+   * cardiac conclusions — were parsed by `fshd_report_service.py`,
+   * printed on the app's own 检查结果 screen, printed in the passport
+   * that goes into the referral pack and onto the share page a
+   * clinician opens, and reached NO portable export. Nor were they
+   * declared in one: `REPORT_READINGS_RULE_ZH` builds its 「本平台可解析
+   * 的项目是这些」 sentence out of this table, so the sentence named
+   * nineteen items and a receiver reading it concluded those were the
+   * items. A flagged white cell count sitting in the archive, absent
+   * from every registry document, with the document itself listing what
+   * it could have carried and not listing it.
+   *
+   * That is the same defect as the five MRC grades below, one panel
+   * wider, and it is the fifth round of it.
+   *
+   * WHY THE FOUR TEXT CELLS ARE HERE TOO. 通气模式, 膈肌运动, 心电结论 and
+   * 心超结论 are conclusions rather than numbers, and the neighbouring
+   * argument for excluding free text (`interpretationSummary`,
+   * `reportImpression` in `PARSED_CELL_INVENTORY`) does not reach them:
+   * those two are the report's whole narrative paragraph, while these
+   * four are the value of a NAMED cell that the passport prints in a
+   * named slot to a clinician. 「本平台没有承载心电结论」 and 「本平台不承载
+   * 报告的结论段落」 are different statements and only the second one was
+   * ever made.
+   *
+   * NO LEDGER ENTRY FOR ANY OF THEM. codings.ts holds five verified
+   * codes and none of these is among them; inventing a LOINC here is
+   * the thing that file exists to prevent. They travel under their
+   * Chinese names, like 肌红蛋白 and LDH already do.
+   */
+  // 生化 / 肌酶, beyond the four this table already had.
+  {
+    key: 'creatinine',
+    keys: ['creatinine'],
+    labelZh: '肌酐（Cr）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'uricAcid',
+    keys: ['uricAcid', 'uric_acid'],
+    labelZh: '尿酸（UA）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  // 血常规. One spelling each, for the reason the passport's own list
+  // gives: `_extract_blood_routine` writes all-lowercase analyte names
+  // and an alias nothing can mint is a key advertised and never filled.
+  {
+    key: 'wbc',
+    keys: ['wbc'],
+    labelZh: '白细胞计数（WBC）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'hgb',
+    keys: ['hgb'],
+    labelZh: '血红蛋白（HGB）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'plt',
+    keys: ['plt'],
+    labelZh: '血小板计数（PLT）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  // 甲功
+  {
+    key: 'ft3',
+    keys: ['ft3'],
+    labelZh: '游离三碘甲状腺原氨酸（FT3）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'ft4',
+    keys: ['ft4'],
+    labelZh: '游离甲状腺素（FT4）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'tsh',
+    keys: ['tsh'],
+    labelZh: '促甲状腺激素（TSH）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  // 凝血. `d_dimer` is the one name here with an underscore in it, so it
+  // is the one with a camel twin on the payload.
+  {
+    key: 'pt',
+    keys: ['pt'],
+    labelZh: '凝血酶原时间（PT）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'aptt',
+    keys: ['aptt'],
+    labelZh: '活化部分凝血活酶时间（APTT）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'fibrinogen',
+    keys: ['fibrinogen'],
+    labelZh: '纤维蛋白原（Fib）',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'dDimer',
+    keys: ['dDimer', 'd_dimer'],
+    labelZh: 'D-二聚体',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  // 肺功能, beyond the three percentages this table already had.
+  {
+    key: 'ventilatoryPattern',
+    keys: ['ventilatoryPattern', 'ventilatory_pattern'],
+    labelZh: '通气模式',
+    category: 'laboratory',
+    codingKey: null,
+    valuesZh: VENTILATORY_PATTERN_ZH,
+  },
+  {
+    key: 'diaphragmMotionSummary',
+    keys: ['diaphragmMotionSummary', 'diaphragm_motion_summary'],
+    labelZh: '膈肌运动',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  // 心脏, beyond LVEF and QTc.
+  {
+    key: 'ecgSummary',
+    keys: ['ecgSummary', 'ecg_summary'],
+    labelZh: '心电图结论',
+    category: 'laboratory',
+    codingKey: null,
+  },
+  {
+    key: 'echoSummary',
+    keys: ['echoSummary', 'echo_summary'],
+    labelZh: '心脏超声结论',
+    category: 'laboratory',
     codingKey: null,
   },
   /**
@@ -2196,7 +2371,12 @@ const collectReportFields = (
       // flag and the interval unreachable. See `ReportField.flag`.
       const reading = pickLabReading(fields, spec.keys);
       if (reading === undefined) return;
-      const value = reading.value;
+      // The stored token stands where the spec declares no vocabulary,
+      // and a token OUTSIDE a declared vocabulary stands too rather than
+      // being dropped: a pattern this platform's enum has no word for is
+      // still what the report said, and blanking it would be this export
+      // deciding the cell was empty. Same fallback the passport uses.
+      const value = spec.valuesZh?.[reading.value] ?? reading.value;
       out.push({
         key: spec.key,
         labelZh: spec.labelZh,

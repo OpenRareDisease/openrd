@@ -426,6 +426,29 @@ export const EXPORT_FIXTURE_PROFILE_MAXIMAL: PatientProfileDTO = {
           // A range the parser declined to type. It must travel as the
           // examiner wrote it, not folded into one number.
           tibialisStrength: 'L4-5级 / R4级',
+          // AND THE SIXTEEN MONITORING CELLS THE SPEC TABLE WAS A SUBSET
+          // OF — every remaining key on `PASSPORT_MONITORING_PAYLOAD_KEYS`.
+          // Synthetic values in the rendered form `embedded-report-ocr.ts`
+          // writes; without them the coverage assertions over the new
+          // specs would be green over cells that are not there.
+          creatinine: '68 umol/L',
+          uric_acid: '392 umol/L',
+          wbc: '14.2',
+          hgb: '141',
+          plt: '233',
+          ft3: '4.6',
+          ft4: '15.2',
+          tsh: '2.13',
+          pt: '11.4',
+          aptt: '29.8',
+          fibrinogen: '2.9',
+          d_dimer: '0.31',
+          // The wire token, NOT the Chinese: this is what the parser
+          // stores, and the export has to be the thing that localises it.
+          ventilatory_pattern: 'restrictive',
+          diaphragmMotionSummary: '双侧膈肌活动度减低',
+          ecgSummary: '窦性心律，未见明显异常',
+          echoSummary: '各房室内径正常，未见节段性室壁运动异常',
         },
       },
     },

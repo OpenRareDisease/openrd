@@ -15,6 +15,7 @@ import {
 import { buildPortableExport, type PortableExportFormat } from './index.js';
 import { MEASUREMENT_METRIC_LABELS, measurementSubjectZh } from './labels.js';
 import { MUSCLE_GROUPS } from '../profile.constants.js';
+import { PASSPORT_MONITORING_PAYLOAD_KEYS } from '../profile.passport.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
 /**
@@ -402,6 +403,67 @@ const FORMATS = [
   ['fhir-r4', 'fhir'],
 ] as const;
 
+/**
+ * Keys whose string content is the export talking ABOUT itself, not a
+ * value read off this patient.
+ *
+ * Needed because the false-denial half of the DECLARED branch below
+ * asks 「is this fact nevertheless sitting in the document?」, and a
+ * whole-document substring search answers 「yes」 for three facts that
+ * are honestly declared:
+ *
+ *   - `datasetSourceZh` — the TREAT-NMD blurb naming what the core
+ *     dataset's mandatory questions cover (「…诊断、家族史、症状…」). That
+ *     is a statement about the STANDARD, and it reads the same whether
+ *     or not we filled the slot.
+ *   - `titleZh` — a section heading. `sections[1]` is titled 家族史 with
+ *     `collected: false` and zero items; the heading is identical in the
+ *     variant that does carry it, so it distinguishes nothing.
+ *   - `noteZh` — the section's own in-document statement of what it
+ *     leaves out (「本节不含 Brooke 上肢分级与 Vignos 下肢分级…」). Matching a
+ *     declaration against the declaration would make the assertion
+ *     always fail for the facts it most needs to be green on.
+ *
+ * Everything else stays in scope, and that is where the check earns its
+ * keep: an item's `key`, `labelZh`, `value` and `provenanceZh` are all
+ * searched, so a serialiser that starts EMITTING a declared fact trips
+ * this on the same run — the local-retention family-history variant is
+ * asserted against below to prove exactly that.
+ *
+ * FAIL DIRECTION. A serialiser that invents a fourth prose key is not
+ * silently excused: its prose is searched like any value, so the first
+ * declared fact it names fails here and somebody has to decide whether
+ * the key belongs on this list. Loud is the correct direction for a
+ * list that would otherwise rot.
+ */
+const DECLARATORY_PROSE_KEYS: ReadonlySet<string> = new Set([
+  'datasetSourceZh',
+  'titleZh',
+  'noteZh',
+]);
+
+/** Every string in `document` except the export's own declaratory prose. */
+const carriedStrings = (node: unknown, key: string | null, into: string[]): string[] => {
+  if (key !== null && DECLARATORY_PROSE_KEYS.has(key)) return into;
+  if (typeof node === 'string') {
+    into.push(node);
+    return into;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((entry) => carriedStrings(entry, key, into));
+    return into;
+  }
+  if (node && typeof node === 'object') {
+    Object.entries(node as Record<string, unknown>).forEach(([childKey, value]) => {
+      into.push(childKey);
+      carriedStrings(value, childKey, into);
+    });
+  }
+  return into;
+};
+
+const carriedText = (document: unknown): string => carriedStrings(document, null, []).join('\n');
+
 describe('每一项临床事实，三份可携带导出要么承载它，要么声明没有承载', () => {
   FORMATS.forEach(([format, column]) => {
     FACTS.forEach((row) => {
@@ -429,15 +491,50 @@ describe('每一项临床事实，三份可携带导出要么承载它，要么�
         }
         const reasons = envelope.omissions.map((entry) => entry.reasonZh).join('\n');
         expect(reasons).toContain(placement.probe);
-        // A declaration must not also be a false denial: the fact must
+        // A declaration must not also be a FALSE DENIAL: the fact must
         // not be sitting in the document while an omission says it is
-        // not. Scoped to the `field` names, because a reason legitimately
-        // quotes values (「记录的分型「FSHD1」」).
-        expect(envelope.omissions.some((entry) => entry.reasonZh.includes(placement.probe))).toBe(
-          true,
-        );
+        // not. A receiver who reads both believes the omission, because
+        // the omission is the half written for them.
+        //
+        // Searched over the document minus its own declaratory prose —
+        // see `DECLARATORY_PROSE_KEYS` for which three keys that is and
+        // why each one distinguishes nothing.
+        expect(
+          carriedText(envelope.document),
+          `${format} 在 omissions 里声明了「${placement.probe}」，` +
+            '但文件本身又承载了它。声明与承载只能二选一——' +
+            '收件人读到的是声明，于是把文件里那个值当作不存在。',
+        ).not.toContain(placement.probe);
       });
     });
+  });
+
+  /**
+   * AND THE FALSE-DENIAL HALF IS NOT VACUOUS.
+   *
+   * `carriedText` strips three prose keys. A stripper that stripped one
+   * key too many would leave every `not.toContain` above green over a
+   * document that does carry the value — the precise failure this whole
+   * file exists to name, one level down.
+   *
+   * So it is pinned against the one profile/flag combination where a
+   * DECLARED fact really is emitted: 家族史 is declared by shareable
+   * treat-nmd and written by the local-retention variant. If the same
+   * probe that must be absent from the shareable document is not found
+   * in the local-only one, the stripper has stopped seeing values.
+   */
+  it('false-denial 那半边不是空转的：同一个探针在真的承载它的那份文件里必须找得到', () => {
+    const shareable = build('treat-nmd', EXPORT_FIXTURE_PROFILE, false);
+    const localOnly = build('treat-nmd', EXPORT_FIXTURE_PROFILE, true);
+    expect(
+      carriedText(shareable.document),
+      '可分享版本声明了家族史，文件里不该有它。',
+    ).not.toContain('家族史');
+    expect(
+      carriedText(localOnly.document),
+      'carriedText 把承载着的值也一并剥掉了——' +
+        '这样一来上面每一条 not.toContain 都是在空字符串上通过的。',
+    ).toContain('家族史');
   });
 
   /**
@@ -668,6 +765,24 @@ describe('清单是从运行时的表里推导出来的，不是手写的', () =
     { payloadKey: 'quadriceps_strength' },
     { payloadKey: 'tibialisStrength' },
     { payloadKey: 'tibialis_strength' },
+    // The sixteen monitoring cells the spec table used to be a subset
+    // of — see `PASSPORT_MONITORING_PAYLOAD_KEYS`.
+    { payloadKey: 'creatinine' },
+    { payloadKey: 'uric_acid' },
+    { payloadKey: 'wbc' },
+    { payloadKey: 'hgb' },
+    { payloadKey: 'plt' },
+    { payloadKey: 'ft3' },
+    { payloadKey: 'ft4' },
+    { payloadKey: 'tsh' },
+    { payloadKey: 'pt' },
+    { payloadKey: 'aptt' },
+    { payloadKey: 'fibrinogen' },
+    { payloadKey: 'd_dimer' },
+    { payloadKey: 'ventilatory_pattern' },
+    { payloadKey: 'diaphragmMotionSummary' },
+    { payloadKey: 'ecgSummary' },
+    { payloadKey: 'echoSummary' },
     { payloadKey: 'd4z4Repeats' },
     { payloadKey: 'haplotype' },
     { payloadKey: 'ecoRIFragment' },
@@ -734,6 +849,50 @@ describe('清单是从运行时的表里推导出来的，不是手写的', () =
       untraced,
       '这些解析项的所有拼写都不在 PARSED_CELL_INVENTORY 里，' +
         '也就是说没人核对过 OCR 到底会不会写出这个键。',
+    ).toEqual([]);
+  });
+
+  /**
+   * ════════════════════════════════════════════════════════════════
+   * AND THE INVENTORY ITSELF IS NO LONGER HAND-WRITTEN.
+   * ════════════════════════════════════════════════════════════════
+   *
+   * `PARSED_CELL_INVENTORY` above is manual, and the header says so:
+   * closed in the direction that matters, blind to a key nobody adds.
+   * That blindness had already cost a round — `REPORT_FIELD_SPECS` was
+   * a NINETEEN-ENTRY SUBSET of what this platform parses and prints,
+   * and the sixteen missing cells were invisible to every check in this
+   * file, including the derived ones, because the derived ones walked
+   * the incomplete table.
+   *
+   * A check whose subject is itself a hand-written subset has exactly
+   * the defect it was written to catch, one level up. So the subject is
+   * now a RUNTIME table again: `PASSPORT_MONITORING_PAYLOAD_KEYS` is
+   * every cell the clinical passport's 血检 / 肺功能 / 心脏 rows can
+   * print, exported from profile.passport.ts for this assertion.
+   *
+   * WHY THE PASSPORT IS THE RIGHT SUBJECT and not the Python parser's
+   * `STRUCTURED_KEY_ALIASES` (which is wider still — urinalysis,
+   * 感染筛查, stool, 腹部超声). The passport is the line this platform has
+   * already drawn: a cell on it is a number we are willing to put in
+   * front of a CLINICIAN, on the share page, in the referral pack, on
+   * the PDF handed across a desk. The portable exports reach the same
+   * reader through a registry. Anything we will show a clinician here
+   * and not there is a discrepancy between two of our own surfaces, and
+   * that is the class of defect this directory keeps producing.
+   *
+   * The parser's wider set stays the residual named in the header —
+   * this narrows it, it does not close it.
+   */
+  it('临床护照上能印出来的每一个监测项，导出这边都有一条 REPORT_FIELD_SPECS 读它', () => {
+    const consumed = new Set(REPORT_FIELD_INVENTORY.flatMap((spec) => spec.payloadKeys));
+    const unexported = PASSPORT_MONITORING_PAYLOAD_KEYS.filter((key) => !consumed.has(key));
+    expect(
+      unexported,
+      '这些单元格临床护照会印给医生看（分享页、转诊资料、患者递过去的 PDF），' +
+        '但三份可携带导出一条都读不到它们——既不承载，也不会出现在 ' +
+        'REPORT_READINGS_RULE_ZH 那句「本平台可解析的项目是这些」里，' +
+        '于是收件人读到的清单就是全部。同一个平台的两个面给医生看的东西不能不一样。',
     ).toEqual([]);
   });
 

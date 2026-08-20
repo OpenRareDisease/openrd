@@ -1909,7 +1909,8 @@ _SCOPE_BLOCK = "block"
 #: refused, with an empty `review_queue` reporting nothing amiss. That is
 #: the whole panel a clinician reads, lost to one heading.
 #:
-#: THE FUSE ALSO POINTED THE WRONG WAY. Sixteen lines is a bound chosen
+#: A ROW IS NOT A LINE EITHER, WHICH IS WHY THE FUSE IS NOT THE
+#: BOUNDARY. Sixteen lines is a bound chosen
 #: so that a REAL footnote block always fits inside it, which makes every
 #: ambiguous line fall on the swallowing side; the two errors are not
 #: symmetric. Admitting one footnote costs one threshold in the review
@@ -2207,19 +2208,13 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
     switched off — see `_SCOPE_BLOCK` and `_NOTE_BLOCK_MAX_ROWS`.
 
     AND IT IS BOUNDED BY THE PAGE FIRST AND BY THE FUSE ONLY AFTER. A
-    region ends at the next labelled row, at a blank line, and at the
-    first row that prints a READING without reading as prose — see
-    `_ends_a_note_region`, which is asked of the LINE rather than of a
-    laboratory table's furniture, because a genetics page has no such
-    furniture and its footnotes are the dangerous ones. The fuse is what
-    is left when the page shows none of those, not the boundary itself.
+    region ends at the next labelled row, at a blank line, and where the
+    page's own ROWS RESUME — see `_ends_a_note_region`, which appeals to
+    no laboratory furniture at all, because a genetics page has none and
+    its footnotes are the dangerous ones. The fuse is what is left when
+    the page shows none of those, not the boundary itself.
     """
     kinds: List[str] = [_KIND_PLAIN] * len(lines)
-    # WHAT A ROW LOOKS LIKE IS A PROPERTY OF THE PAGE, asked once here
-    # and not once per line: a laboratory panel prints every row against
-    # a reference interval and a molecular report prints none at all.
-    # See `_ends_a_note_region`.
-    wears_an_interval = _page_rows_wear_an_interval(lines)
     section: Optional[str] = None
     pending: Optional[str] = None
     block: Optional[str] = None
@@ -2242,9 +2237,7 @@ def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
             if (
                 block is not None
                 and block_left > 0
-                and not _ends_a_note_region(
-                    stripped, wears_an_interval=wears_an_interval
-                )
+                and not _ends_a_note_region(lines, index)
             ):
                 # Inside a footnote region, and it outranks the section
                 # because it is the nearer statement about this row: the
@@ -3090,25 +3083,41 @@ def _append_field(container: List[Dict[str, Any]], field: Optional[Dict[str, Any
 #: all are — and 左右 anywhere else is the PAIR: 「左右对称」, 「左右上肢」,
 #: 「左右均为4级」. So an approximation asserts no side, and the pair
 #: asserts both.
-_SIDE_PAIR_WORD = "左右"
-_APPROXIMATE_PAIR = re.compile(
-    rf"\d[^\d\s{_SIDE_PAIR_WORD}]{{0,2}}{_SIDE_PAIR_WORD}"
-)
+#:
+#: AND THE PAIR IS ALSO SPELLED ACROSS THE ENUMERATION SEPARATOR.
+#: 「左、右三角肌肌力均4级」 and 「左/右上肢」 are the same compound with 、
+#: or / inside it, and reading them as a bare 左 followed later by a bare
+#: 右 makes the sentence assert two sides where it asserts one pair. It
+#: also matters to the reader below it: `_mrc_side_prefix` refuses to
+#: bind a side word across the OTHER side's word, so unless 「左、右」 is
+#: folded here that sentence would lose its left grade entirely.
+_SIDE_PAIR_SOURCE = r"左\s*[、/]?\s*右"
+_SIDE_PAIR = re.compile(_SIDE_PAIR_SOURCE)
+_APPROXIMATE_PAIR = re.compile(rf"\d[^\d\s左右]{{0,2}}{_SIDE_PAIR_SOURCE}")
+
+
+def _blank_span(match: "re.Match") -> str:
+    """The match replaced by as many spaces as it spans."""
+    return " " * (match.end() - match.start())
 
 
 def _read_side_pair(text: str) -> Tuple[str, bool]:
-    """`text` with every 左右 blanked out, and whether one named the PAIR.
+    """`text` with every spelling of the PAIR blanked out, and whether one
+    of them named the pair rather than approximating a quantity.
 
     Blanked rather than deleted, so that the offsets of everything else
     on the line are the ones the caller's other readers see. See
-    `_SIDE_PAIR_WORD`.
+    `_SIDE_PAIR_SOURCE`.
     """
-    blank = " " * len(_SIDE_PAIR_WORD)
-    without = _APPROXIMATE_PAIR.sub(
-        lambda match: match.group()[: -len(_SIDE_PAIR_WORD)] + blank, text
-    )
-    names_pair = _SIDE_PAIR_WORD in without
-    return without.replace(_SIDE_PAIR_WORD, blank), names_pair
+
+    def _blank_trailing_pair(match: "re.Match") -> str:
+        pair = _SIDE_PAIR.search(match.group())
+        assert pair is not None
+        return match.group()[: pair.start()] + " " * (pair.end() - pair.start())
+
+    without = _APPROXIMATE_PAIR.sub(_blank_trailing_pair, text)
+    names_pair = _SIDE_PAIR.search(without) is not None
+    return _SIDE_PAIR.sub(_blank_span, without), names_pair
 
 
 def _canonical_side(text: str) -> str:
@@ -3380,10 +3389,17 @@ class _MriClause(NamedTuple):
 
     `descriptors` holds the FIELD NAMES the clause asserts, which is
     what keeps this reader and `_extract_mri`'s writer from drifting.
+
+    `text` IS CARRIED BECAUSE THE SIDE IS THE CLAUSE'S TOO. See
+    `_extract_mri`: the descriptors were already read per clause and the
+    SIDE was still read once per sentence, so 「右侧腓肠肌脂肪浸润, 左侧
+    胫骨前肌萎缩」 published BOTH muscles as left-sided — `_canonical_side`
+    answers with the first side it finds and the sentence names two.
     """
 
     muscles: Tuple[_NamedMuscle, ...] = ()
     descriptors: Tuple[str, ...] = ()
+    text: str = ""
 
 
 def _mri_clauses(sentence: str) -> List[_MriClause]:
@@ -3426,7 +3442,7 @@ def _read_mri_clause(clause: str) -> _MriClause:
             for field_name, keywords in _MRI_DESCRIPTORS
             if any(keyword.lower() in lowered for keyword in keywords)
         )
-    return _MriClause(tuple(_muscles_in_sentence(stripped)), descriptors)
+    return _MriClause(tuple(_muscles_in_sentence(stripped)), descriptors, stripped)
 
 
 def _read_asymmetry(sentence: str) -> str:
@@ -6021,7 +6037,44 @@ def _mrc_grade_cell(printed: str) -> str:
 #: the same split `_CLAUSE_BREAK` and `_mri_clauses` already make. A side
 #: word introduces what follows it, and it stops introducing at the
 #: clause break, not at the enumeration.
-_MRC_SIDE_GAP = r"[^0-5\n,;.()]{0,12}"
+#:
+#: AND ADMITTING 、 IS WHY THE SAME DEFECT SURVIVED THE COMMA FIX. The
+#: examiner who writes the two sides across an enumeration writes them
+#: with 、 as readily as with 「,」:
+#:
+#:     左侧三角肌未测、右侧肌力4级
+#:
+#: The left side word then stood ten characters in front of the RIGHT
+#: side's 4, so the left deltoid was published `mrc_score: 4` typed 4.0
+#: at 0.95 — the confidence reserved for a grade read against a side the
+#: examiner named — on a sentence saying in words that the left side was
+#: not measured. It lands on `deltoid_strength`, on the 平均肌力 average
+#: and on the muscle map the patient sees, which is the same landing the
+#: comma fix was written for.
+#:
+#: A LIST OF SEPARATORS WAS NEVER THE ANSWER; the answer is that A SIDE
+#: WORD STOPS INTRODUCING WHERE THE OTHER SIDE IS NAMED. Whatever
+#: punctuation stands between them, 右 is the page saying 「what follows
+#: is the right side's」, and no grade after it belongs to the left. So
+#: the gap is built per side and excludes its opposite — see
+#: `_mrc_side_prefix` — and 「左、右…均4级」 keeps working because
+#: `_read_side_pair` folds that spelling into the PAIR before this
+#: reader ever sees it.
+_MRC_SIDE_GAP_STOPS = r"0-5\n,;.()"
+_MRC_SIDE_GAP = rf"[^{_MRC_SIDE_GAP_STOPS}]{{0,12}}"
+
+#: The sides, each with the word that names it and the word that ends
+#: its reach. Written once so the two readers cannot disagree about
+#: which is which.
+_MRC_SIDES: Tuple[Tuple[str, str, str], ...] = (
+    ("left", "(?:左|left)", "右"),
+    ("right", "(?:右|right)", "左"),
+)
+
+
+def _mrc_side_prefix(side_word: str, other_side: str) -> str:
+    """A side word and the gap it may reach across — see `_MRC_SIDE_GAP`."""
+    return rf"{side_word}[^{_MRC_SIDE_GAP_STOPS}{other_side}]{{0,12}}"
 
 #: WHAT MAKES A GRADE-SHAPED NUMBER AN MRC GRADE — and the whole of what
 #: was missing.
@@ -6082,7 +6135,7 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         # distance behind it, so ONE grade was published TWICE — once as
         # the left deltoid and once as the right — off a sentence that
         # measured the two together. `source_text` stays the sentence the
-        # examiner wrote. See `_SIDE_PAIR_WORD`.
+        # examiner wrote. See `_SIDE_PAIR_SOURCE`.
         sided, _ = _read_side_pair(sentence)
 
         # ONE SENTENCE, AS MANY MUSCLES AS IT NAMES, EACH READ INSIDE ITS
@@ -6110,15 +6163,21 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
             if side == "unspecified":
                 side = _canonical_side(sentence)
 
-            left_match, _ = _find_regex(
-                graded, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
-            )
-            right_match, _ = _find_regex(
-                graded, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
-            )
+            sided_matches = [
+                (
+                    named_side,
+                    _find_regex(
+                        graded,
+                        _mrc_grade_patterns(
+                            _mrc_side_prefix(side_word, other_side)
+                        ),
+                    )[0],
+                )
+                for named_side, side_word, other_side in _MRC_SIDES
+            ]
 
-            if left_match or right_match:
-                for named_side, match in (("left", left_match), ("right", right_match)):
+            if any(match for _, match in sided_matches):
+                for named_side, match in sided_matches:
                     if not match:
                         continue
                     score = _mrc_grade_cell(match.group(1))
@@ -6199,7 +6258,19 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
     unread_terms: List[str] = []
 
     for sentence in sentences:
-        side = _canonical_side(sentence)
+        # THE SIDE BELONGS TO THE CLAUSE, NOT TO THE SENTENCE, and it is
+        # the finding on this modality. FSHD IS CHARACTERISTICALLY
+        # ASYMMETRIC — which muscles on WHICH SIDE are involved is the
+        # descriptor that separates it from the limb-girdle dystrophies
+        # it is confused with — and a radiologist states the two sides in
+        # two clauses of one sentence: 「右侧腓肠肌脂肪浸润, 左侧胫骨前肌
+        # 萎缩」. `_canonical_side` answers with the FIRST side it finds,
+        # so a side read once per sentence and stamped onto every muscle
+        # of every clause published the right gastrocnemius as a LEFT
+        # -sided finding, onto `mri_map` and the muscle map the patient
+        # sees. The descriptors were split off the clause three rounds
+        # ago for exactly this reason; the side never was.
+        sentence_side = _canonical_side(sentence)
         # THE ASYMMETRY BELONGS TO THE SENTENCE, THE DESCRIPTORS TO THE
         # CLAUSE. 「右侧较重」 is printed as a clause of its own about the
         # muscles the clause before it named, so it is read whole;
@@ -6223,6 +6294,14 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
             continue
 
         for clause in clauses:
+            # A CLAUSE THAT NAMES NO SIDE FALLS BACK TO THE SENTENCE'S,
+            # because a leading 双侧 governs what follows it: 「双侧股外侧
+            # 肌脂肪浸润, 股中间肌相对保留」 says 双侧 once. The same
+            # fallback `_extract_physical_exam` makes, for the same
+            # reason.
+            side = _canonical_side(clause.text)
+            if side == "unspecified":
+                side = sentence_side
             fatty = "yes" if "fatty_infiltration" in clause.descriptors else None
             inflammation = "yes" if "inflammatory_change" in clause.descriptors else None
             atrophy = "yes" if "atrophy" in clause.descriptors else None
@@ -8055,98 +8134,156 @@ def _reads_as_prose(line: str) -> bool:
     return _CLAUSE_BREAK.search(_strip_group_separators(line)) is not None
 
 
-def _reads_as_a_result_row(line: str, *, wears_an_interval: bool) -> bool:
-    """Is `line` a RESULTS ROW of a page whose rows look like this one?
+#: THE CLOSED CLASS THAT TURNS A ROW OF CELLS INTO A CLAUSE.
+#:
+#: A RESULTS ROW IS A NOUN PHRASE AND NUMBERS — 「血小板计数 20」. A
+#: FOOTNOTE ITEM IS A SENTENCE ABOUT ONE — 「血小板计数 20 为危急值」.
+#: The two are the same characters plus a PREDICATE, and the predicate
+#: is the whole of the difference between the cell a clinician reads and
+#: the threshold that must never be published as one.
+#:
+#: `_reads_as_prose` was standing in for this with clause PUNCTUATION
+#: alone, and punctuation only answers where the page prints it. Worse,
+#: it was asked of the DECORATED line, so 「1.」 — a footnote's own
+#: ordinal — read as a full stop and a numbered laboratory ROW read as
+#: prose. Both questions are now asked of `_note_undecorated`, where an
+#: ordinal is neither a clause break nor a reading.
+#:
+#: A CLOSED CLASS, WITH THE MEMBERS CHOSEN SO THAT NO ANALYTE NAME
+#: CONTAINS ONE. This is asked of rows on a laboratory page, so a member
+#: that occurs inside an analyte's own name refuses that analyte:
+#:
+#:   - 应 is out — 「C反应蛋白」 carries it, and admitting it swallows a
+#:     CRP row.
+#:   - 需 is out — 「必需氨基酸」. 属 is out — 「重金属」. 由 and 系 are
+#:     out — 「自由基」, 「消化系统」.
+#:
+#: The multi-character members carry no such risk, which is why they are
+#: spelled in full rather than by their heads.
+_NOTE_PREDICATE = re.compile(
+    "为|是|即|请|须|宜|供|勿|提示|建议|参见|详见|说明|表示|判定|定义|用于|适用|需要|应当"
+)
 
-    THREE THINGS A ROW IS AND A FOOTNOTE ITEM IS NOT:
 
-      - it PRINTS A READING — a number that is not an interval end, not
-        a digit a unit spells itself with, and not a threshold that a
-        bound word governs (`_prints_a_reading`);
-      - it is not PROSE — a row separates its cells with whitespace and a
-        footnote item separates its clauses with punctuation
-        (`_reads_as_prose`);
-      - and it wears whatever furniture the rest of THIS PAGE's rows
-        wear, which is what `wears_an_interval` carries.
+def _reads_as_a_note_item(line: str) -> bool:
+    """Is `line` an ITEM OF A FOOTNOTE BLOCK rather than a row of the page?
 
-    THE THIRD ONE CANNOT BE ANSWERED OFF THE LINE, and that is not a
-    shortcut — it is the finding. 「血小板计数 20」 under a 危急值提示
-    header and 「D4Z4 重复单元数 18」 under a 备注 header are THE SAME
-    STRING SHAPE: a name and a number. One is a panic threshold and the
-    other is the cell this whole product turns on, and nothing on either
-    line says which. What says it is the page. See `_ends_a_note_region`.
+    Asked of the line with its footnote decoration taken off, so that the
+    marker a block numbers its items with is evidence of nothing — see
+    `_note_undecorated`.
+
+    An item is a CLAUSE: it carries clause punctuation (`_reads_as_prose`)
+    or a predicate (`_NOTE_PREDICATE`). A row carries neither, because a
+    row is a noun phrase and its numbers.
+
+    A LINE THAT IS NOTHING BUT A MARKER IS AN ITEM, since decoration
+    asserts nothing and a page that prints its ordinal on a line of its
+    own has not resumed its table.
     """
-    text = line.strip()
-    if _reads_as_prose(text) or not _prints_a_reading(text):
+    text = _note_undecorated(line)
+    if not text:
+        return True
+    if _reads_as_prose(text):
+        return True
+    return _NOTE_PREDICATE.search(text) is not None
+
+
+def _resumes_the_page_rows(line: str) -> bool:
+    """Does `line` read as a ROW — a name, and a reading of this patient?
+
+    The two halves this file already writes down: it is not a clause
+    (`_reads_as_a_note_item`) and it prints a number that is not an
+    interval end, not a digit a unit spells itself with and not a
+    threshold a bound word governs (`_prints_a_reading`).
+    """
+    text = _note_undecorated(line)
+    if not text or _reads_as_a_note_item(line):
         return False
-    return not wears_an_interval or _ROW_RANGE.search(text) is not None
+    return _prints_a_reading(text)
 
 
-def _page_rows_wear_an_interval(lines: Iterable[str]) -> bool:
-    """Do THIS page's result rows print a reference interval beside them?
+#: HOW MANY ROWS MAKE A RESUMPTION.
+#:
+#: A TABLE IS NEVER ONE LINE LONG AND A FOOTNOTE BLOCK NEVER HOLDS TWO
+#: ROWS IN A ROW. That asymmetry is the whole of the answer below, and it
+#: is why the count is two rather than one.
+_NOTE_REGION_RESUMES_AFTER = 2
 
-    Asked once per page, by `_row_kinds`, and handed to
-    `_ends_a_note_region`. A line counts only where it is a row under
-    the STRICT reading, so a footnote item that happens to quote a range
-    — 「参考区间 130-175 g/L, 检测周期 3 个工作日」 — cannot put a page
-    into a mode that none of its own rows can then satisfy.
+
+def _ends_a_note_region(lines: List[str], index: int) -> bool:
+    """Does the footnote region opened above `lines[index]` END there?
+
+    WHAT ENDS A NOTE REGION ON A PAGE THAT HAS NO TABLE — asked for the
+    fourth time, and answered this time WITHOUT NAMING A TABLE.
+
+    The previous answer was 「a line that reads like a result row OF THIS
+    PAGE」, where 「of this page」 meant 「wearing a reference interval,
+    where the page prints intervals」. That is a statement about
+    laboratory furniture, and it was wrong in three directions at once:
+
+      - A GENETICS PAGE HAS NO SUCH FURNITURE. Where one row of it did
+        print an interval, every row that did not — 「4q35单倍型 4qA」,
+        a methylation state, a qualitative call — could no longer end
+        anything, and the sixteen-line fuse was the only boundary left
+        on exactly the page where a footnote defining the pathogenic
+        threshold does the most damage. Measured on a synthetic page
+        whose 备注 block stands above its results: `haplotype: None`
+        with an empty `review_queue` reporting nothing amiss — a
+        passport field erased by a footnote.
+      - AND ON A PAGE WITH A TABLE THE SAME TEST FIRED INSIDE THE BLOCK.
+        A footnote item quotes an interval beside a second number all
+        the time — a turnaround time, a paediatric range — so
+        「①本项目参考区间 130-175 g/L 检测周期 3 个工作日」 satisfied it
+        exactly, the block REOPENED at item one, and every item under it
+        went back to being a candidate result row. Measured on a
+        synthetic 血常规 laid out that way: `plt: 20` off
+        「②血小板计数 20 为危急值」 — a critical-value threshold published
+        as this patient's platelet count, on a page that never printed
+        his platelets at all.
+      - AND IT ONLY EVER COVERED TABLES WHERE EVERY ROW PRINTS AN
+        INTERVAL. On a mixed table the rows without one were still
+        swallowed: 「说明 / 肌酸激酶同工酶(CKMB) 28 U/L / 肌酸激酶(CK)
+        693 50-310 U/L」 published CK and LDH and lost the CKMB row.
+
+    THE ANSWER THAT NEEDS NO TABLE: a note region ends where THE PAGE'S
+    OWN ROWS RESUME, and rows resume IN A RUN. A footnote block may
+    contain one line that looks like a row — an item that quoted a
+    number — but it does not contain two of them in succession, and a
+    table is never one row long. So the boundary is the first line that
+    reads as a row and is followed, without an intervening item, by
+    enough further rows to be a table (`_NOTE_REGION_RESUMES_AFTER`).
+
+    This is decidable on a page with no intervals, no units and no flag
+    column, because it appeals to none of them: 「4q35单倍型 4qA」 followed
+    by 「D4Z4重复单元数 3」 is two rows and ends the region, while
+    「①…低于10个即为缩短」 followed by 「②…为危急值」 is two clauses and
+    does not.
+
+    WHAT IS STILL NOT BOUNDED, STATED PLAINLY rather than left to be
+    found: a SINGLE row printed under a footnote header with nothing
+    after it is indistinguishable from an item that quoted a number, and
+    stays inside the region; a block whose items are two consecutive
+    numbered quotations with no predicate between them ends at the
+    first. Both residues are bounded by `_NOTE_BLOCK_MAX_ROWS`, which
+    remains the fuse and not the boundary.
     """
-    return any(
-        _reads_as_a_result_row(line, wears_an_interval=True) for line in lines
-    )
-
-
-def _ends_a_note_region(line: str, *, wears_an_interval: bool) -> bool:
-    """Does `line` END the footnote region opened above it?
-
-    A NOTE REGION HAS AN END, AND `_NOTE_BLOCK_MAX_ROWS` WAS NOT IT.
-    A fuse is what is left when nothing was observed; this is what the
-    page can actually be observed to say. The other two ends are
-    structural and live in `_row_kinds`: a row carrying a label of its
-    own closes the region (a column heading, a section header and a
-    table header row all do), and so does a blank line.
-
-    IT WAS A STATEMENT ABOUT A LABORATORY TABLE, ASKED ON EVERY PAGE.
-    The test used to be 「a reading printed BESIDE ITS INTERVAL」, spelled
-    as a property of the LINE, and that one assumption made it wrong in
-    both directions at once:
-
-      - A GENETICS PAGE PRINTS NO INTERVALS, so NOTHING on it could ever
-        end a region and the sixteen-line fuse was the only boundary
-        left — on exactly the page where the footnote 「D4Z4 重复单元数
-        低于 10 个即为缩短」 is most dangerous. Measured on a synthetic
-        report with that block printed ABOVE its readings:
-        `d4z4_repeat_pathogenic`, `haplotype` and `diagnosis_type` all
-        None, with an empty `review_queue` reporting nothing amiss — the
-        cell the passport, the exports and `applyGeneticReportAutofill`
-        all turn on, lost to a footnote.
-      - AND A FOOTNOTE QUOTES AN INTERVAL AND CARRIES A SECOND NUMBER
-        ALL THE TIME — a turnaround time, a paediatric range, a second
-        interval. 「1. 本项目参考区间 130-175 g/L, 检测周期 3 个工作日」
-        satisfied 「a reading beside an interval」 exactly, so the block
-        REOPENED at item one and every item under it went back to being
-        a candidate result row. Measured on a synthetic 血常规 laid out
-        that way: `plt: 20` off 「2. 血小板计数 20 为危急值」 — a
-        critical-value threshold published as this patient's platelet
-        count.
-
-    ONE ANSWER, BECAUSE IT IS ONE QUESTION: a note region ends at the
-    first line that reads like a RESULT ROW OF THIS PAGE. Grounding
-    「result row」 in the page instead of in a universal shape is what
-    makes the interval a requirement where the page prints intervals and
-    no requirement at all where it prints none.
-
-    THE FUSE DIRECTION IS REVERSED HERE, and that is the point. A line
-    this file is unsure about is READ, not swallowed: admitting one
-    footnote costs one threshold in the review queue, and swallowing a
-    results table costs every number a clinician came to the report for.
-    So the residue is named rather than hidden — on a page that prints
-    no intervals anywhere, a footnote item stating a bare quantity in
-    ONE clause with no bound word on it still ends the region, and that
-    is the side of the line this file chooses to be wrong on. See
-    `_NOTE_BLOCK_MAX_ITEMS`.
-    """
-    return _reads_as_a_result_row(line, wears_an_interval=wears_an_interval)
+    if not _resumes_the_page_rows(lines[index]):
+        return False
+    rows = 0
+    for line in lines[index:index + _NOTE_BLOCK_MAX_ROWS]:
+        text = line.strip()
+        if not text or _reads_as_a_note_item(text):
+            break
+        if _row_label(text) is not None:
+            # A labelled row ends the region on its own account, in
+            # `_row_kinds`; it is not part of the run that proves a
+            # table resumed.
+            break
+        if _prints_a_reading(_note_undecorated(text)):
+            rows += 1
+            if rows >= _NOTE_REGION_RESUMES_AFTER:
+                return True
+    return False
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:

@@ -3163,6 +3163,39 @@ const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
   clausesOf(segment).some((clause) => POSSESSIVE.test(clause) && cellTermsPresent(clause, cell));
 
 /**
+ * THE CLAUSE A GIVEN **OFFSET** FALLS IN, and it has to be an offset
+ * rather than a string.
+ *
+ * The confirmation check used to find its clause with
+ * `clausesOf(segment).find((c) => c.includes(match[0]))` — the first
+ * clause containing the matched TEXT. A claim word appears twice in one
+ * sentence all the time, and when it does, the second occurrence is
+ * judged against the FIRST one's clause. Driven against the running
+ * stack with a synthetic self-entered patient, that is what published:
+ *
+ *   「你被医生诊断为 FSHD1，但在本平台的基因确诊判断里，目前的结果是
+ *     **未经基因确诊**。」
+ *
+ * The second 基因确诊 stands in a clause whose first two characters are
+ * 未经. The lookup handed it the clause before, which has no refusal in
+ * it, and the guard cut a sentence for asserting the exact opposite of
+ * what it says — then printed a notice claiming it had. The clause a
+ * cancel is measured on is a fact about POSITION, so it is read off the
+ * position.
+ */
+const clauseAt = (segment: string, index: number): string => {
+  const boundary = new RegExp(CLAUSE_BOUNDARY.source, 'gu');
+  let start = 0;
+  let hit: RegExpExecArray | null;
+  while ((hit = boundary.exec(segment)) !== null) {
+    if (index < hit.index) return segment.slice(start, hit.index);
+    start = hit.index + hit[0].length;
+    if (boundary.lastIndex === hit.index) boundary.lastIndex += 1;
+  }
+  return segment.slice(start);
+};
+
+/**
  * IS THIS TEXT'S GRADE LANDING ON **HIS** COPY OF THE CELL — the three
  * ties check 2 grades on, asked in one place.
  *
@@ -3292,7 +3325,14 @@ const CONFIRMATION_CLAIM = new RegExp(
   [
     // 基因确诊 / 基因层面已经确诊 / 遗传学确认 / 分子诊断明确 — the
     // compound this platform's own surfaces print, said forwards.
-    '(?:基因|遗传学?|分子(?:遗传学?)?|DNA)(?:上|层面|水平|检测|报告|结果)?(?:已经|已|也|都|确实|完全)?(?:得到|获得|构成|达到)?(?:确诊|确认|证实)',
+    // The gaps are 「\\s*」 because the model writes a space wherever a
+    // Latin token meets Chinese: 「DNA 确诊」 and 「基因 确诊」 are what
+    // came back off the running stack, and neither reached this branch
+    // while it was spelled with the tokens glued together.
+    // The adverbs stack — 「基因层面都已经确诊了」 is two of them, and
+    // the branch used to admit exactly one, so the sentence matched
+    // nothing at all.
+    '(?:基因|遗传学?|分子(?:遗传学?)?|DNA)\\s*(?:上|层面|水平|检测|报告|结果)?(?:\\s*(?:已经|已|也|都|确实|完全))*\\s*(?:得到|获得|构成|达到)?\\s*(?:确诊|确认|证实)',
     '(?:分子|遗传学?|基因)(?:层面的?|水平的?)?诊断[^，。；]{0,6}(?:已经?)?(?:明确|成立|确立)',
     // 确诊 with the disease on the other side of the verb.
     '(?:确诊|确认|证实)(?:了)?(?:是|为)?\\s*(?:FSHD1?|面肩肱)',
@@ -3339,17 +3379,133 @@ const CONFIRMATION_CLAIM = new RegExp(
  * 谈不上 / 算不上 / 够不上 are here because they carry the refusal AFTER
  * the claim word rather than before it, and this one marker is measured
  * over the whole clause for that reason — see below.
+ *
+ * AND 不良 IS NOT A REFUSAL — IT IS HALF THE DISEASE'S OWN NAME.
+ * 面肩肱型肌营养不良 is what this platform is for, it ends in 不良, and
+ * this clause-wide cancel read that 不 as the patient's refusal. So
+ * 「你是分子确诊的面肩肱型肌营养不良。」 cancelled itself on the name of
+ * the disease it was confirming — the same lexical-不 inversion this
+ * file has already been caught on once in the bound reader, in the one
+ * word it could least afford it in.
  */
-const CONFIRMATION_NEGATED = /不(?!过|光|仅|只)|没|未|无法|缺|尚|还差|谈不上|算不上|够不上|不到位/u;
+const CONFIRMATION_NEGATED =
+  /不(?!过|光|仅|只|良)|没|未|无法|缺|尚|还差|谈不上|算不上|够不上|不到位/u;
 
 /**
  * ...AND THE FORMS THAT PUT IT IN THE FUTURE OR IN A CONDITION.
  * 「才算基因确诊」「要想基因确诊」「基因确诊需要两项」 are all statements
  * OF the rule, which is what an honest answer to an unconfirmed patient
  * is mostly made of.
+ *
+ * 就能 / 就可以 / 就会 ARE THE OTHER HALF OF A CONDITIONAL, and the
+ * conditional 如果 that governs them lives in an EARLIER CLAUSE, where
+ * this window — measured on the claim's own clause, for the reason the
+ * block below gives — cannot see it. Driven against the running stack
+ * with a synthetic self-entered patient, the sentence this cost was
+ * 「如果你有基因检测报告的原件，可以上传到档案里，这样就能获得正式的
+ * 基因确诊判读了。」 — the platform's own call to action, excised, under
+ * a notice announcing that the answer had claimed he was confirmed. The
+ * 如果 is NOT read across the clause boundary instead: a conditional
+ * protasis is exactly the hedge a model reaches for while asserting
+ * (「如果按指南来看，你已经是基因确诊的了」), and widening that window
+ * would build the escape hatch this file has already been caught
+ * building twice. The apodosis marker is the narrower fact and it is
+ * where the claim actually stands.
  */
 const CONFIRMATION_DEFERRED =
-  /如果|假如|倘若|要是|一旦|除非|才能|才算|才叫|需要|要想|想要|前提|条件|将来|以后|下一步|去做|补做/u;
+  /如果|假如|倘若|要是|一旦|除非|才能|才算|才叫|才可以|就能|就可以|就会|需要|要想|想要|前提|条件|将来|以后|下一步|去做|补做/u;
+
+/**
+ * ...AND THE 确诊 WHOSE BASIS THE SENTENCE ITSELF SAYS IS CLINICAL.
+ *
+ * The block above `CONFIRMATION_CLAIM` states the rule this enforces:
+ * a clinical diagnosis of FSHD can be settled without a molecular one,
+ * 未经基因确诊 says nothing against it, and this platform is in no
+ * position to contradict the neurologist who made it. One branch of the
+ * claim list nevertheless has no genetic word in it at all — 「确诊为
+ * FSHD1」, which counts the DISEASE NAME as the genetic basis — and on a
+ * sentence that names its basis as the clinical one that reading is
+ * simply wrong. Driven against the running stack, the sentence it cost
+ * was the single most important true sentence this check has:
+ *
+ *   「是的，你已经在临床上确诊为 FSHD1 型，但从本平台的记录来看，还没有
+ *     从你的基因检测报告上读取到可作为正式基因确诊依据的数据。」
+ *
+ * — clinically diagnosed, not genetically confirmed, both halves said
+ * plainly, excised whole and replaced by a notice claiming it had told
+ * the patient he was genetically confirmed. That notice was false about
+ * the sentence it removed.
+ *
+ * IT CANCELS ONLY A MATCH CARRYING NO GENETIC WORD OF ITS OWN. 「你临床
+ * 和基因层面都确诊了」 matches through the 基因 branch, so this never
+ * looks at it. And 临床试验 / 临床研究 are a different sense of the word
+ * — a trial is not a basis for a diagnosis — so they do not cancel.
+ */
+const CONFIRMATION_CLINICAL_BASIS =
+  /临床(?!试验|研究)|症状|体征|查体|表型|医生(?:说|讲|诊断|判断|认为|告诉)/u;
+
+/**
+ * ...AND THE CONDITIONAL THAT GOVERNS THE WHOLE SENTENCE.
+ *
+ * A protasis scopes its apodosis — that is what a protasis IS — and in
+ * Chinese it does so across every comma up to the full stop. The clause
+ * window this check measures its cancels on therefore cannot see the
+ * 如果 that makes the sentence conditional, and driven against the
+ * running stack that cost the platform its own call to action twice in
+ * ten questions:
+ *
+ *   「如果你之前做过基因检测，可以把基因报告上传到平台上，这样系统就能
+ *     读取报告上的原始数据，给出正式的基因确诊判读」
+ *
+ * — excised, under a notice announcing the answer had told him he was
+ * genetically confirmed. It had told him the opposite.
+ *
+ * SO THE CONDITIONAL IS READ OVER THE TEXT **BEFORE** THE CLAIM, which
+ * is the position rule the rest of this check already runs on: a
+ * protasis governs what follows it and not what precedes it, so
+ * 「你已经是基因确诊的了，如果你想的话」 is not rescued.
+ *
+ * WHAT IT COSTS, stated plainly, because it is the one cancel here that
+ * a model could in principle lean on: a confirmation asserted inside a
+ * conditional — 「如果按指南来看，你已经是基因确诊的了」 — now publishes.
+ * The trade is deliberate. That sentence reaches the patient as a
+ * CONDITIONAL, which is the un-claimed reading; the sentence it buys
+ * back reaches him as this platform telling him what to do next, and
+ * deleting that one was leaving a direct question answered by a notice
+ * that was false about what it had removed.
+ */
+const CONFIRMATION_CONDITIONAL = /如果|假如|倘若|要是|一旦|除非|若是|的话/u;
+
+/**
+ * ...AND THE CLAIM HEADING A COMPOUND NOUN, WHICH NAMES THE QUESTION
+ * RATHER THAN ANSWERING IT.
+ *
+ * 「基因确诊判读」「基因确诊判断」「基因确诊标准」 are one word each: the
+ * READING, the JUDGEMENT, the CRITERION. Naming the thing this platform
+ * decides is not deciding it, and an honest answer to an unconfirmed
+ * patient is full of them. Driven against the running stack, two of the
+ * fifteen answers were excised on one:
+ *
+ *   「你被医生诊断为 FSHD1，但在本平台的基因确诊判断里，目前的结果是
+ *     **未经基因确诊**。」
+ *
+ * — a sentence whose own last two characters are 未经, cut for asserting
+ * the opposite of what it says. The 未经 sits in the next clause, where
+ * the clause window cannot reach it, and the claim it fired on is the
+ * NAME of the judgement it is reporting.
+ *
+ * NOTHING IS LOST BY SKIPPING THEM, because every ASSERTIVE use of these
+ * nouns has a branch of its own further down `CONFIRMATION_CLAIM`:
+ * 「满足基因确诊标准」, 「达到确诊依据」, 「构成确诊的证据」 are matched by
+ * the 满足 / 达到 / 符合 branches, which open at the VERB and are not
+ * touched here. What this skips is the noun standing on its own.
+ *
+ * AND PREDICATION STILL OVERRIDES IT, exactly as it overrides the 的:
+ * 「你就是基因确诊状态」 puts the compound noun in the predicate, which
+ * makes it a claim again.
+ */
+const CLAIM_NAMES_THE_QUESTION =
+  /^(?:判断|判读|判定|结论|结果|标准|依据|条件|要求|流程|状态|情况|资格|门槛|定义|口径)/u;
 
 /**
  * IS THE ANSWER TELLING **THIS PATIENT** THEY ARE CONFIRMED?
@@ -3426,13 +3582,14 @@ const CONFIRMATION_DEFERRED =
  * that as possession would condemn the explanation this check is
  * supposed to leave standing.
  *
- * WHAT IT MISSES, stated: a claim with no second person and no number —
- * 「诊断：FSHD1（基因确诊）」 as a bare heading; a claim carried entirely
- * by a table's column header; and a confirmation asserted across two
- * sentences (「…就是 FSHD1 的典型遗传模式。」 followed by 「说明这个结论
- * 在临床上是明确的。」), which is the two-step inference this file
- * already documents as out of a segment-level check's reach. All fail
- * toward publication.
+ * WHAT IT MISSES, stated: a confirmation asserted across two sentences
+ * (「…就是 FSHD1 的典型遗传模式。」 followed by 「说明这个结论在临床上
+ * 是明确的。」), which is the two-step inference this file already
+ * documents as out of a segment-level check's reach; and a bare label
+ * — 「诊断：FSHD1（基因确诊）」 — standing where no sentence anywhere near
+ * it names this reader. Both fail toward publication. The label form
+ * standing under a sentence that DOES name him is now read; see
+ * `claimFillsAField`.
  *
  * AND IT DOES NOT FIRE ON A BARE 「你的诊断已经明确」. That sentence
  * carries no genetic basis, a clinical diagnosis of FSHD can be settled
@@ -3454,6 +3611,121 @@ const CONFIRMATION_ANAPHORA =
 const namesThisPatient = (segment: string, evidence: GuardEvidence): boolean =>
   ADDRESSED_TO_THE_PATIENT.test(segment) ||
   evidence.numbers.some((number) => carriesNumber(segment, number.value));
+
+/**
+ * WHEN THE 的 IS NOT AN EXCUSE: THE ATTRIBUTIVE PHRASE **PREDICATED** OF
+ * THE READER.
+ *
+ * The skip below reads a 的 after the claim as 「this is a noun phrase,
+ * not an assertion」, and for the sentence it was written for that is
+ * exactly right: 「可作为确诊依据的基因结果」 names a kind of result, and
+ * the platform's own honest answer is built out of it.
+ *
+ * IT IS NOT RIGHT FOR THE FORM CHINESE MOST NATURALLY WRITES THE CLAIM
+ * IN. 「你是基因确诊的 FSHD1。」 is a copula sentence: the attributive NP
+ * is the PREDICATE, and the subject is the reader. The 的 is doing the
+ * same grammatical work in both, so the 的 cannot be what tells them
+ * apart — what tells them apart is whether the NP is being predicated of
+ * anybody. The previous round had noticed one instance of this and
+ * spelled it into `CONFIRMATION_CLAIM` as a whole branch of its own
+ * (「是…基因确诊的…患者」), which worked only for the four head nouns that
+ * branch happens to list. 「你是基因确诊的 FSHD1。」 attaches the claim to
+ * the DISEASE NAME instead, matched none of them, and a self-entered
+ * patient could be told they were genetically confirmed with zero
+ * violations raised. The same hole took 「你的诊断是基因确诊的诊断」,
+ * 「你的报告是基因确诊的报告」, 「你这是基因确诊的结果」 — the claim
+ * attaching to the diagnosis, to the report, to the result. Enumerating
+ * head nouns is the wrong axis; the copula is the right one.
+ *
+ * TWO WAYS THE NP GETS PREDICATED, and both are read off the text
+ * immediately in front of the claim rather than out of a lexicon of
+ * nouns:
+ *
+ *   - A COPULA. 是 / 为 / 属于 / 成为 / 算是 / 当成 / 视为 / 认定 …, with
+ *     room for a classifier (一名 / 一位) and for the adverbs that sit
+ *     between a copula and its complement (已经 / 经过 / 正式 / 确实).
+ *   - A POSSESSIVE BOUND TIGHT TO THE NP — 「你这个基因确诊的 FSHD1」.
+ *     IMMEDIATELY adjacent and nothing else, because the loose version
+ *     of this window is precisely what would take the platform's own
+ *     「你的档案里目前没有…可作为确诊依据的…结果」 back down.
+ *
+ * NEITHER ONE DECIDES ANYTHING ON ITS OWN. All they do is stop the 的
+ * from ending the inspection early; the possession question, the clause
+ * negation, the interrogative and the deferral all still run afterwards,
+ * which is what keeps 「本平台不把你当成基因确诊的患者」 — a copula, a 你,
+ * and a refusal — standing.
+ */
+const CONFIRMATION_PREDICATED =
+  /(?:是|为|属于|成为|算是|算作|视为|看作|当成|当作|认定|判定|称为|叫做)(?:\s*一?(?:名|位|个|例))?(?:\s*(?:已经|已|经过|通过|真正|正式|确实|完全))*\s*$/u;
+
+/** The possessive standing directly on the claim, with nothing between
+ *  them but a classifier. See the block above. */
+const CONFIRMATION_POSSESSED = /(?:你|您|咱)(?:的|这|那)?(?:\s*一?(?:名|位|个|例|种|类))?\s*$/u;
+
+/**
+ * ...AND THE COPULA THE CLAIM SWALLOWED INTO ITSELF.
+ *
+ * `CONFIRMATION_CLAIM` has branches that begin at the verb —
+ * 「属于基因确诊」, 「是基因确诊的…患者」, 「就是 FSHD1 的典型遗传模式」 —
+ * so for those the copula is inside `match[0]` and `before` ends one
+ * character short of it. 「你现在属于基因确诊的 FSHD1。」 fell straight
+ * through the test above for that reason alone.
+ *
+ * 作为 IS DELIBERATELY NOT HERE, and neither is a bare 构成 / 就是
+ * followed by 确诊依据. Branch 4 of the claim list matches the platform's
+ * OWN wording — 「可作为确诊依据的基因结果」 — and it also opens at a
+ * verb. Reading that verb as a copula would un-skip the attributive on
+ * the one sentence the skip was built for, and the 没有 that refuses it
+ * sits behind a 、 where the clause window cannot reach. So the copula
+ * has to be followed by the GENETIC BASIS itself (基因 / 分子 / 遗传 /
+ * DNA / FSHD) and not by the noun 确诊依据.
+ */
+const CLAIM_OPENS_PREDICATED =
+  /^(?:是|为|成为|属于|算是|算作|算|视为|看作|当成|当作|认定|判定|称为|叫做|就是|正是|构成|符合|对应|等于)(?:是|作|为)?\s*(?:一(?:名|位|个|例))?\s*(?:基因|分子|遗传学?|DNA|FSHD)/u;
+
+/**
+ * ...AND THE CLAIM THAT IS PREDICATED OF NOTHING AT ALL, BECAUSE IT IS
+ * A FIELD RATHER THAN A SENTENCE.
+ *
+ * 「诊断：FSHD1（基因确诊）」, 「| 基因确诊 | 是 |」, 「## 基因确诊」. There
+ * is no verb, no second person and no number in any of them, so every
+ * possession tie this check owns comes back empty — and the block above
+ * used to list this as a documented miss. It is not an acceptable miss:
+ * a heading is what a reader's eye lands on first, and a label-value
+ * pair is the most assertive way this platform's own surfaces print
+ * anything.
+ *
+ * A FIELD HAS NO SUBJECT OF ITS OWN, so it is about whatever the thing
+ * it labels was about — which is the one-hop carry this check already
+ * runs, spent by structure instead of by an anaphor. The hop is the same
+ * one and the same width: `previousNamedThePatient`, which a table row
+ * deliberately does not consume, so the sentence that introduced a table
+ * still speaks for every row in it.
+ *
+ * WHAT COUNTS AS A FIELD is read off the delimiters on both sides — the
+ * claim has to FILL the field, not sit inside a longer phrase in one.
+ * That is what separates 「诊断：FSHD1（基因确诊）」 from
+ * 「| 基因确诊标准 | D4Z4 收缩 + 4qA |」, which is the rule with a header
+ * on it, and 「是否基因确诊」, whose 是否 is the question this check must
+ * not read as its own answer.
+ *
+ * 「」 AND “” ARE NOT FIELD DELIMITERS, deliberately. A term in quotation
+ * marks is MENTIONED, not used, and the sentence this platform says most
+ * often to an unconfirmed patient —
+ * 「本平台说的「基因确诊」要两项同时是从基因报告上读出来的…」 — is built
+ * on exactly that. Letting a quote open a field would have cut it.
+ *
+ * WHAT IT COSTS, stated: the rule written as a bare table row with no
+ * 需要 / 才算 / 未 in it, standing under a sentence that names him, is
+ * now cut. It is the trade the rest of this check already makes, and a
+ * patient reading 「基因确诊」 in a cell of a table about themselves
+ * cannot tell it from a verdict either.
+ */
+const FIELD_OPENS_BEFORE = /(?:^|[|：:（(【[])[\s#>*\-–—•]*$/u;
+const FIELD_CLOSES_AFTER = /^\s*(?:$|[|）)】\],，。；;！!])/u;
+
+const claimFillsAField = (before: string, after: string): boolean =>
+  FIELD_OPENS_BEFORE.test(before) && FIELD_CLOSES_AFTER.test(after);
 
 const confirmationAssertedAboutThisPatient = (
   segment: string,
@@ -3480,17 +3752,36 @@ const confirmationAssertedAboutThisPatient = (
     // the honest answer is the worse of the two failures — most records
     // are unconfirmed, so that sentence is the one this check sees most.
     const after = segment.slice(match.index + match[0].length);
-    if (/^[的之]/u.test(after)) continue;
     const before = segment.slice(0, match.index);
-    const pointsBack = carriedFromEarlier && CONFIRMATION_ANAPHORA.test(before);
+    // ...UNLESS THE NOUN PHRASE IS BEING PREDICATED OF HIM. See
+    // `CONFIRMATION_PREDICATED`: 「你是基因确诊的 FSHD1。」 wears the same
+    // 的 and is a claim, and the copula in front of it is what says so.
+    const predicated =
+      CONFIRMATION_PREDICATED.test(before) ||
+      CONFIRMATION_POSSESSED.test(before) ||
+      CLAIM_OPENS_PREDICATED.test(match[0]);
+    if (/^[的之]/u.test(after) && !predicated) continue;
+    // ...and the same for the claim standing as the first half of a
+    // compound noun. See `CLAIM_NAMES_THE_QUESTION`.
+    if (CLAIM_NAMES_THE_QUESTION.test(after) && !predicated) continue;
+    const fillsAField = claimFillsAField(before, after);
+    const pointsBack = carriedFromEarlier && (CONFIRMATION_ANAPHORA.test(before) || fillsAField);
     if (!ADDRESSED_TO_THE_PATIENT.test(before) && !carriesHisNumber && !pointsBack) continue;
     // The clause the claim sits in, whole: 谈不上 and 算不上 put the
-    // refusal after the word they refuse.
-    const clause = clausesOf(segment).find((candidate) => candidate.includes(match![0]));
-    const window = clause ?? segment;
+    // refusal after the word they refuse. Located by OFFSET — see
+    // `clauseAt` for the sentence that taught this the difference.
+    const window = clauseAt(segment, match.index);
     if (CONFIRMATION_NEGATED.test(window)) continue;
     if (INTERROGATIVE.test(window)) continue;
     if (CONFIRMATION_DEFERRED.test(window)) continue;
+    // The protasis governs everything after it in the sentence, so this
+    // one cancel is measured on `before` rather than on the clause. See
+    // `CONFIRMATION_CONDITIONAL`.
+    if (CONFIRMATION_CONDITIONAL.test(before)) continue;
+    // A 确诊 the sentence itself sources to the clinic is not the claim
+    // this check forbids — see `CONFIRMATION_CLINICAL_BASIS`. Asked only
+    // of a match with no genetic word of its own.
+    if (!/基因|遗传|分子|DNA/u.test(match[0]) && CONFIRMATION_CLINICAL_BASIS.test(window)) continue;
     return true;
   }
   return false;

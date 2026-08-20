@@ -5346,6 +5346,51 @@ class EveryMuscleTheSentenceNamesIsReadTest(unittest.TestCase):
         )
 
 
+class TheSideBelongsToTheClauseNotTheSentenceTest(unittest.TestCase):
+    """THE DESCRIPTORS WERE SPLIT OFF THE CLAUSE AND THE SIDE WAS NOT.
+
+    A radiologist states the two sides in two clauses of one sentence,
+    and `_canonical_side` answers with the FIRST side it finds — so a
+    side read once per sentence was stamped onto every muscle of every
+    clause. FSHD is characteristically asymmetric: which muscle on which
+    side is the finding, not decoration on it. Synthetic throughout.
+    """
+
+    def _map(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双下肢MRI平扫",
+            f"影像所见: {sentence}",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        return {
+            entry["muscle_name"]: entry["side"]
+            for entry in result["fshd"]["normalized_summary"]["mri_map"]
+        }
+
+    def test_two_sides_in_one_sentence_are_two_sides(self):
+        """THE REGRESSION. The RIGHT gastrocnemius was published as a
+        left-sided finding because the sentence went on to name the left
+        tibialis anterior."""
+        self.assertEqual(
+            self._map("右侧腓肠肌内侧头脂肪浸润, 左侧胫骨前肌萎缩。"),
+            {"gastrocnemius_medial_head": "right", "tibialis_anterior": "left"},
+        )
+
+    def test_the_order_of_the_clauses_does_not_decide_the_side(self):
+        self.assertEqual(
+            self._map("左侧腓肠肌内侧头脂肪浸润, 右侧胫骨前肌萎缩。"),
+            {"gastrocnemius_medial_head": "left", "tibialis_anterior": "right"},
+        )
+
+    def test_a_clause_that_names_no_side_still_inherits_the_sentence(self):
+        """A leading 双侧 governs what follows it and is printed once."""
+        self.assertEqual(
+            self._map("双侧股外侧肌脂肪浸润, 股中间肌脂肪浸润。"),
+            {"vastus_lateralis": "bilateral", "vastus_intermedius": "bilateral"},
+        )
+
+
 class TheAsymmetryAChineseMriActuallyWritesTest(unittest.TestCase):
     """FSHD IS CHARACTERISTICALLY ASYMMETRIC, AND FOUR SPELLINGS WERE READ.
 
@@ -7337,32 +7382,27 @@ class ANoteHeaderDoesNotSwallowTheResultsTableTest(unittest.TestCase):
         self._assert_whole_panel(panel)
 
     def test_a_footnote_quoting_an_interval_does_not_end_its_own_region(self):
-        """A footnote QUOTES an interval; a row prints a READING against
-        one. On a page whose rows wear intervals the quote is not a row,
-        and the reading is."""
-        self.assertFalse(
-            fshd_report_service._ends_a_note_region(
-                "D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1 分子诊断标准",
-                wears_an_interval=True,
+        """A footnote QUOTES an interval; a row prints a READING. The
+        quote is a clause and the reading is a row, and neither answer
+        needs the page to print intervals."""
+        self.assertTrue(
+            fshd_report_service._reads_as_a_note_item(
+                "D4Z4 重复单元数 1-10 为缩短范围, 符合 FSHD1 分子诊断标准"
             )
         )
         self.assertFalse(
-            fshd_report_service._ends_a_note_region(
-                "血红蛋白量参考区间 130-175 g/L", wears_an_interval=True
-            )
+            fshd_report_service._resumes_the_page_rows("血红蛋白量参考区间 130-175 g/L")
         )
         self.assertTrue(
-            fshd_report_service._ends_a_note_region(
-                "血红蛋白量(HGB) 155 130-175 g/L", wears_an_interval=True
-            )
+            fshd_report_service._resumes_the_page_rows("血红蛋白量(HGB) 155 130-175 g/L")
         )
 
     def test_a_unit_that_spells_itself_with_digits_is_not_a_reading(self):
         """「10^9/L」 is the 单位 cell of half a 血常规, and a scan that
         counts its 10 as a reading ends every region on the first line."""
         self.assertFalse(
-            fshd_report_service._ends_a_note_region(
-                "白细胞计数参考区间 3.5-9.5 10^9/L", wears_an_interval=True
+            fshd_report_service._resumes_the_page_rows(
+                "白细胞计数参考区间 3.5-9.5 10^9/L"
             )
         )
 
@@ -7774,46 +7814,44 @@ class ANoteRegionEndsAtARowOfThisPageTest(unittest.TestCase):
         self.assertEqual(panel.get("hgb"), 155)
         self.assertNotIn("plt", panel)
 
-    def test_the_same_string_shape_is_read_two_ways_by_the_page(self):
-        """THE WHOLE REASON THE PAGE HAS TO BE ASKED. 「血小板计数 20」
+    def test_the_same_string_shape_is_read_two_ways_by_what_follows_it(self):
+        """THE WHOLE REASON A SINGLE LINE CANNOT ANSWER. 「血小板计数 20」
         and 「D4Z4 重复单元数 18」 are a name and a number in both cases;
         one is a panic threshold and the other is the cell this product
-        turns on, and only the page says which."""
+        turns on. What says which is whether the page goes on printing
+        ROWS after it — a table is never one row long."""
+        alone = ["备注", "血小板计数 20", "请立即通知临床医师"]
+        self.assertFalse(fshd_report_service._ends_a_note_region(alone, 1))
+        in_a_run = ["备注", "D4Z4 重复单元数 18", "4q35 单倍型 4qA"]
+        self.assertTrue(fshd_report_service._ends_a_note_region(in_a_run, 1))
+
+    def test_a_page_with_no_intervals_at_all_can_still_end_a_region(self):
+        """THE ANSWER FOR THE PAGE THAT HAS NO TABLE. A molecular report
+        prints no interval, no unit and no flag column, and its rows
+        still resume in a run."""
+        genetics = [
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "备注",
+            "D4Z4 重复单元数低于 10 个即为缩短",
+            "4q35 单倍型 4qA",
+            "D4Z4 重复单元数 18",
+        ]
+        self.assertTrue(fshd_report_service._reads_as_a_note_item(genetics[2]))
+        self.assertTrue(fshd_report_service._ends_a_note_region(genetics, 3))
+
+    def test_a_footnote_item_that_quotes_a_range_is_not_a_run(self):
+        """A footnote item that quotes a range looks like a row and is
+        one line long; the block under it is clauses, so nothing
+        resumes."""
         self.assertFalse(
             fshd_report_service._ends_a_note_region(
-                "血小板计数 20", wears_an_interval=True
-            )
-        )
-        self.assertTrue(
-            fshd_report_service._ends_a_note_region(
-                "D4Z4 重复单元数 18", wears_an_interval=False
-            )
-        )
-
-    def test_the_page_is_read_off_its_own_rows(self):
-        self.assertTrue(
-            fshd_report_service._page_rows_wear_an_interval(
-                ("血红蛋白量(HGB) 155 130-175 g/L", "备注")
-            )
-        )
-        self.assertFalse(
-            fshd_report_service._page_rows_wear_an_interval(
-                self.GENETICS_NOTE_FIRST
-            )
-        )
-
-    def test_a_quoted_interval_does_not_make_a_page_a_table(self):
-        """A footnote item that quotes a range is not one of the page's
-        rows, and counting it would put a genetics page into a mode none
-        of its own lines could then satisfy."""
-        self.assertFalse(
-            fshd_report_service._page_rows_wear_an_interval(
-                (
+                [
                     "示例医学检验所 FSHD1 基因检测报告单",
                     "备注",
-                    "1. 本项目参考区间 11-100, 检测周期 3 个工作日",
-                    "D4Z4 重复单元数 18",
-                )
+                    "1 本项目参考区间 11-100 检测周期 3 个工作日",
+                    "2 重复单元数低于 10 个即为缩短",
+                ],
+                2,
             )
         )
 
@@ -7835,6 +7873,112 @@ class ANoteRegionEndsAtARowOfThisPageTest(unittest.TestCase):
         self.assertTrue(
             fshd_report_service._reads_as_prose("血清钾低于 2.8 为危急值, 请通知临床")
         )
+
+
+class ANoteRegionEndsWhereTheRowsResumeTest(unittest.TestCase):
+    """A NOTE REGION ENDS WHERE THE PAGE'S OWN ROWS RESUME, IN A RUN.
+
+    The boundary before this one was 「a row of this page」, where 「of
+    this page」 meant 「wearing a reference interval where the page prints
+    intervals」 — a statement about laboratory furniture, which a
+    molecular report does not have and a mixed table does not wear on
+    every row. Three defects came out of that one assumption, and all
+    three are below. Every fixture is synthetic; no value, name or
+    number here belongs to anybody.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 生化") + rows),
+            "other",
+            "Muscle Enzyme.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(rows), "genetic_test", "Genetic Report.jpeg"
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_a_genetics_page_that_wears_one_interval_still_reads_the_rest(self):
+        """D1. One row of a molecular report printing a reference range
+        put the whole page into a mode its OTHER rows could not satisfy,
+        and 「4q35 单倍型 4qA」 — which carries no number at all outside a
+        Latin token — was swallowed by the footnote above it. The
+        haplotype is a passport field."""
+        summary = self._genetic(
+            "示例医学检验所 FSHD1 基因检测报告单",
+            "检测方法: 脉冲场凝胶电泳",
+            "备注",
+            "①D4Z4 重复单元数低于 10 个即为缩短 符合 FSHD1 分子诊断标准",
+            "4q35 单倍型 4qA",
+            "D4Z4 重复单元数 3 参考范围 11-100",
+            "检测结论: 检出 4q35 D4Z4 阵列缩短",
+        )
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_circled_marker_does_not_reopen_the_block(self):
+        """D2. The block held only because 「1.」 put a full stop on the
+        line and `_reads_as_prose` counted the ordinal's own terminator
+        as a clause break. A page numbering its footnotes ①②③ had item
+        one end the region — it quotes an interval beside a turnaround
+        time — and every item under it went back to being a candidate
+        result row."""
+        panel = self._panel(
+            "肌酸激酶(CK) 693 50-310 U/L",
+            "备注",
+            "①本项目参考区间 50-310 U/L 检测周期 3 个工作日",
+            "②肌酸激酶 5000 为危急值",
+            "③乳酸脱氢酶 1000 为危急值",
+        )
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertNotIn("ldh", panel)
+
+    def test_a_mixed_table_keeps_the_rows_that_print_no_interval(self):
+        """D3. The panel-loss fix only covered tables where EVERY row
+        prints an interval; on a mixed table the rows without one could
+        not end the region and were lost with it."""
+        panel = self._panel(
+            "说明",
+            "肌酸激酶同工酶(CKMB) 28 U/L",
+            "肌酸激酶(CK) 693 50-310 U/L",
+            "乳酸脱氢酶(LDH) 319 120-250 U/L",
+        )
+        self.assertEqual(panel.get("ckmb"), 28)
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertEqual(panel.get("ldh"), 319)
+
+    def test_a_numbered_table_under_a_note_header_is_not_prose(self):
+        """The same 「asked of the decorated line」 mistake in the other
+        direction: a Chinese laboratory numbers its rows, and every one
+        of them read as prose because of its own ordinal."""
+        panel = self._panel(
+            "说明",
+            "1. 肌酸激酶(CK) 693 50-310 U/L",
+            "2. 乳酸脱氢酶(LDH) 319 120-250 U/L",
+        )
+        self.assertEqual(panel.get("ck"), 693)
+        self.assertEqual(panel.get("ldh"), 319)
+
+    def test_a_predicate_is_what_makes_an_item_an_item(self):
+        """A row is a noun phrase and its numbers; an item is a clause
+        about one. The two are the same characters plus a predicate."""
+        self.assertTrue(fshd_report_service._reads_as_a_note_item("血小板计数 20 为危急值"))
+        self.assertFalse(fshd_report_service._reads_as_a_note_item("血小板计数 20"))
+
+    def test_no_analyte_name_is_read_as_a_predicate(self):
+        """The class is closed and chosen so that no analyte carries a
+        member — 「C反应蛋白」 would otherwise refuse itself."""
+        for row in (
+            "C反应蛋白(CRP) 3.2 0-8 mg/L",
+            "必需氨基酸 120 100-200 umol/L",
+            "自由基代谢产物 1.4 0-2",
+            "血清铜等重金属 0.9 0.7-1.5",
+        ):
+            with self.subTest(row=row):
+                self.assertFalse(fshd_report_service._reads_as_a_note_item(row), row)
 
 
 class ASideWordStopsAtTheClauseBreakTest(unittest.TestCase):
@@ -7868,12 +8012,25 @@ class ASideWordStopsAtTheClauseBreakTest(unittest.TestCase):
             [(g["side"], g["mrc_score"]) for g in grades], [("left", "3")]
         )
 
-    def test_the_enumeration_comma_is_still_crossed(self):
-        """、 separates the two sides INSIDE one statement, which is the
-        same split `_CLAUSE_BREAK` and `_mri_clauses` already make."""
+    def test_the_enumerated_pair_is_still_one_statement_about_both_sides(self):
+        """「左、右」 IS THE PAIR WITH A SEPARATOR INSIDE IT, and it is now
+        folded where 「左右」 already was — see `_SIDE_PAIR_SOURCE`. One
+        measurement of both sides is published once, as bilateral, rather
+        than as two sided entries off one grade: the same correction the
+        welded spelling 「肌力左右均为4级」 already had."""
         grades = self._grades("左、右上肢三角肌肌力均4级。")
         self.assertEqual(
-            {g["side"]: g["mrc_score"] for g in grades}, {"left": "4", "right": "4"}
+            {g["side"]: g["mrc_score"] for g in grades}, {"bilateral": "4"}
+        )
+
+    def test_a_side_word_stops_where_the_other_side_is_named(self):
+        """THE DEFECT THE COMMA FIX DID NOT REACH. 、 was admitted into
+        the gap, so 「左侧…未测、右侧肌力4级」 put the left side word ten
+        characters in front of the RIGHT side's grade and published a
+        left deltoid the examiner recorded as not measured."""
+        grades = self._grades("左侧三角肌未测、右侧三角肌肌力4级。")
+        self.assertEqual(
+            [(g["side"], g["mrc_score"]) for g in grades], [("right", "4")]
         )
 
     def test_the_side_gap_spells_the_same_break_as_the_label_gap(self):
@@ -7883,6 +8040,14 @@ class ASideWordStopsAtTheClauseBreakTest(unittest.TestCase):
             with self.subTest(char=char):
                 self.assertIn(char, fshd_report_service._MRC_SIDE_GAP)
                 self.assertIn(char, fshd_report_service._MRC_LABEL_GAP)
+
+    def test_each_side_gap_excludes_its_opposite(self):
+        """Whatever punctuation stands between them, the other side's
+        word is the page saying what follows is not this side's."""
+        left = fshd_report_service._mrc_side_prefix("(?:左|left)", "右")
+        right = fshd_report_service._mrc_side_prefix("(?:右|right)", "左")
+        self.assertIn("右", left)
+        self.assertIn("左", right)
 
 
 class OneExamSentenceNamesAsManyMusclesAsItMeasuresTest(unittest.TestCase):

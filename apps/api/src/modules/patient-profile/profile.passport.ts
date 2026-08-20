@@ -1581,8 +1581,16 @@ const latestDocByTypesWithFields = (
   );
 
 /**
- * A RANGE IN AN MMT CELL, told apart from the MRC ± modifier by whether
- * a number follows the sign.
+ * ══════════════════════════════════════════════════════════════════════
+ * WHAT AN MMT CELL LOOKS LIKE WHEN IT STATES NO SINGLE GRADE.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * Two spellings of one thing, and they are built as two classes joined
+ * in one place: an INTERVAL (this block) and an ALTERNATION (the next).
+ * Only the first was ever spelled here, and the second cost a round.
+ *
+ * A RANGE IN AN MMT CELL is told apart from the MRC ± modifier by
+ * whether a number follows the sign.
  *
  * 「4-」 is grade 4 minus. 「4-5级」 is an examiner who wrote down an
  * interval. The same hyphen, and the difference is the digit after it.
@@ -1605,7 +1613,66 @@ const latestDocByTypesWithFields = (
  * table in clinical-notation.test.ts asserts the containment rather
  * than leaving it to be re-noticed.
  */
-const STRENGTH_RANGE_CELL = new RegExp(`\\d\\s*${RANGE_SEPARATOR_SOURCE}\\s*\\d`);
+/**
+ * AN EXAMINER DECLINING TO CHOOSE DOES NOT ALWAYS WRITE A DASH.
+ *
+ * `_ALTERNATION_WORDS` in
+ * apps/report-manager/app/services/fshd_report_service.py, copied
+ * because this reader has to answer the same question about the same
+ * cell. A SEPARATOR states an interval; an ALTERNATION states a choice.
+ * Both are the examiner refusing to pin a grade down, and only the
+ * first of them was spelled here.
+ *
+ * WHAT THAT COST. The parser was taught this class last round and
+ * publishes 「肌力4级或5级」 as the cell 「4或5」 with `mrc_numeric: null`
+ * and `normalized_value: None` — on the stated ground that it must not
+ * be typed and must not be averaged. The bridge then folds the printed
+ * cell, and only the printed cell, onto `deltoid_strength`
+ * (`formatAggregateStrength` reads `item.mrc_score`, which is the
+ * string; the refused normalisation is on the observation and does not
+ * travel). So this file received 「4或5」, `parseScore` found no
+ * separator in it, read the leading digit, and voted a determinate 4.0
+ * into 平均肌力 — on the passport tile, on the share page a clinician
+ * opens, in the referral pack and in the markdown export. The refusal
+ * was published by the producer and undone by the consumer.
+ *
+ * WHY THE WORDS ARE NOT IN `RANGE_SEPARATOR_SOURCE`. Because they are
+ * not range separators, and clinical-notation.ts is read by the
+ * laboratory reference-interval reader and by `parseD4Z4Reading` as
+ * well. 「4或5」 is not the interval [4,5] — 「参考区间 3或9」 is not an
+ * interval at all — and widening the shared class would make one for
+ * every cell in the archive. The parser keeps the two classes apart for
+ * this reason and joins them in ONE reader; so does this.
+ *
+ * 和 AND 与 MEAN 「AND」 BEFORE THEY MEAN 「OR」, which is what the
+ * trailing lookahead is for — `_MRC_SECOND_GRADE`'s rule, same reason.
+ * 「4级与5级之间」 is a refusal; 「4级和5年前相比无变化」 is a grade beside
+ * a duration, and the two are told apart by what the SECOND digit is
+ * wearing. A Chinese character other than the grade unit after it means
+ * the digit heads another quantity, and the cell states a grade after
+ * all.
+ */
+const STRENGTH_ALTERNATION_WORDS: readonly string[] = ['或者', '或', '、', '和', '与'];
+
+/** The MRC grade unit, which may stand between the two halves and after
+ *  the second one. The parser strips it before publishing, so 「4或5」 is
+ *  what actually arrives; accepted here as well because an archived or
+ *  hand-entered cell is under no such discipline. */
+const STRENGTH_GRADE_UNIT = '级';
+
+const STRENGTH_INDETERMINATE_JOIN_SOURCE = `(?:${RANGE_SEPARATOR_SOURCE}|${STRENGTH_ALTERNATION_WORDS.join(
+  '|',
+)})`;
+
+/**
+ * TWO GRADES WITH A REFUSAL BETWEEN THEM — an interval or a choice.
+ *
+ * Renamed from `STRENGTH_RANGE_CELL`: it was a range test and the name
+ * was the whole of why the alternation spellings were never noticed.
+ */
+const STRENGTH_INDETERMINATE_CELL = new RegExp(
+  `\\d\\s*(?:${STRENGTH_GRADE_UNIT})?\\s*${STRENGTH_INDETERMINATE_JOIN_SOURCE}\\s*\\d(?!\\s*(?!${STRENGTH_GRADE_UNIT})[\\u4e00-\\u9fa5])`,
+);
 
 /** The ± of an MRC grade in both widths — a Chinese physical-exam sheet
  *  is typed in a full-width IME, so 「4＋」 has to mean what 「4+」 means. */
@@ -1627,15 +1694,20 @@ const STRENGTH_PLUS = /[+＋﹢]/;
  * the same question asked of the examination cell, and the answer for a
  * range is the same: no number.
  *
+ * AND THE SAME ANSWER FOR AN ALTERNATION, which is the second half of
+ * `STRENGTH_INDETERMINATE_CELL` and was missing while the producer had
+ * already refused to type it: 「4或5」 came back a determinate 4.0.
+ *
  * The cell is still DISPLAYED verbatim by `buildStrengthSummary` — what
- * a range loses is its vote in the average, not its place on the page.
+ * an indeterminate cell loses is its vote in the average, not its place
+ * on the page.
  *
  * 「4/5」 is NOT a range: it is grade 4 out of 5, the commonest way an
  * MMT sheet writes a single grade, so the separator and not the count of
  * digits is what decides.
  */
 const parseScore = (value: string) => {
-  if (STRENGTH_RANGE_CELL.test(value)) return null;
+  if (STRENGTH_INDETERMINATE_CELL.test(value)) return null;
   const match = value.match(/(\d+(?:\.\d+)?)\s*([-+＋﹢−﹣－])?/);
   if (!match) return null;
   const base = Number(match[1]);
@@ -1829,7 +1901,7 @@ const withUnit = (value: string, unit?: string) =>
  * platform inventing a staging scale and attributing it to the patient's
  * own words. See the 「诊断阶段」 note in ai-agents/orchestrator/run.ts.
  */
-const VENTILATORY_PATTERN_ZH: Record<string, string> = {
+export const VENTILATORY_PATTERN_ZH: Record<string, string> = {
   restrictive: '限制性通气功能障碍',
   obstructive: '阻塞性通气功能障碍',
   mixed: '混合性通气功能障碍',
@@ -2015,6 +2087,39 @@ const CARDIAC_METRICS: MonitoringMetricSpec[] = [
   { keys: ['LVEF', 'lvef'], label: 'LVEF', unit: '%' },
   { keys: ['QTc', 'qtc', 'qtcMs', 'qtc_ms'], label: 'QTc', unit: ' ms' },
 ];
+
+/**
+ * EVERY PAYLOAD CELL THE PASSPORT'S THREE MONITORING ROWS CAN PRINT,
+ * as a list something outside this file can walk.
+ *
+ * WHY IT IS EXPORTED. The passport is the surface a CLINICIAN reads —
+ * on the share page, in the referral pack, on the PDF handed across a
+ * desk — so any cell on this list is a number this platform is already
+ * willing to put in front of one. The portable exports go to the same
+ * kind of reader through a registry, and `REPORT_FIELD_SPECS` in
+ * export/export-source.ts was a nineteen-entry SUBSET of it: the whole
+ * 血常规, 甲功 and 凝血 blocks, 肌酐, 尿酸, the ventilatory pattern, the
+ * diaphragm summary and both cardiac conclusions were printed here and
+ * reached no portable export — and were named in no export's
+ * `omissions` either, which is the 「silently absent」 state envelope.ts
+ * forbids. Sixteen cells, the fifth instance of one defect.
+ *
+ * A list, not a doc comment, because the four previous instances were
+ * all found by a human reading two tables side by side and the fifth
+ * was found the same way. omissions-coverage.test.ts walks this and
+ * fails on the day a seventeenth cell is added with no home, which is
+ * the only version of the check that survives the next person.
+ *
+ * Deliberately the KEYS and not the labels: the passport's labels are
+ * clinician shorthand (「CK」, 「FT3」) and the exports write out the full
+ * analyte name, so the two vocabularies are allowed to differ. What may
+ * not differ is which cells exist.
+ */
+export const PASSPORT_MONITORING_PAYLOAD_KEYS: readonly string[] = [
+  ...BLOOD_METRICS,
+  ...RESPIRATORY_METRICS,
+  ...CARDIAC_METRICS,
+].flatMap((metric) => metric.keys);
 
 /** What `geneEvidence` says when none of its components parsed. */
 const NO_GENE_EVIDENCE = '暂无可直接展示的基因证据';

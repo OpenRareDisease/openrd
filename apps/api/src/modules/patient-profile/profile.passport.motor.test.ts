@@ -113,6 +113,82 @@ describe('MMT 单元格：区间不是计数', () => {
   });
 });
 
+/**
+ * 「4或5」 —— 检查者拒绝在两个等级之间选一个，只是没写破折号。
+ *
+ * 解析器上一轮已经学会了这一类：`_ALTERNATION_WORDS` 把 或/或者/、/和/与
+ * 和区间分隔符并成 `_MRC_INDETERMINATE_JOIN`，「肌力4级或5级」 发布成
+ * `mrc_score: "4或5"` 且 `mrc_numeric: None` / `normalized_value: None`,
+ * 理由写得很清楚：不能被平均。
+ *
+ * 而这边照样平均了。桥只把印出来的那个字符串折到 `deltoid_strength`
+ * 上（`formatAggregateStrength` 读的是 `item.mrc_score`），被拒绝的
+ * 归一值挂在 observation 上、根本不过来；`parseScore` 在 「4或5」 里找不到
+ * 分隔符，就读了头一个数字，把一个确定的 4.0 投进了 平均肌力 ——
+ * 护照卡片、分享页、转诊资料、markdown 导出，四处都是。
+ * 生产者拒绝掉的东西，被消费者又还原了回来。
+ *
+ * 下面这些单元格全是合成的，也正是 Python 侧
+ * `AnAlternationIsAlsoARefusalToChooseTest` 覆盖的那几种写法。
+ */
+describe('MMT 单元格：并列也是一种「选不出来」', () => {
+  it.each([
+    // 解析器实际发布的形态：`_mrc_grade_cell` 会把 级 和空白全部去掉。
+    ['4或5', '解析器发布的原样'],
+    ['4或者5', '或者'],
+    ['4、5', '顿号并列'],
+    ['4和5', '和'],
+    ['4与5', '与'],
+    // 归档的、或者人工录入的单元格不受那道 strip 的约束，所以带 级 的
+    // 写法也要认。
+    ['4级或5级', '两个 级 都在'],
+    ['4 或 5 级', '带空格'],
+  ])('%s（%s）不产生平均值', (cell) => {
+    expect(averageFor(cell)).toBe('—');
+  });
+
+  it('并列照常原样印在摘要里 —— 丢掉的还是那一票', () => {
+    const summary = buildClinicalPassportSummary(
+      base({ documents: [exam({ deltoidStrength: '4或5' })] } as never),
+    );
+    expect(summary.motor.summary).toContain('4或5');
+    expect(summary.motor.average).toBe('—');
+    expect(summary.motor.ready).toBe(true);
+  });
+
+  it('导出里不出现被拒绝掉的那个数', () => {
+    const { markdown } = buildClinicalPassportExport(
+      buildClinicalPassportSummary(
+        base({ documents: [exam({ deltoidStrength: '4或5' })] } as never),
+      ),
+    );
+    expect(markdown).toContain('- 平均肌力：— 级');
+    expect(markdown).not.toContain('- 平均肌力：4.0 级');
+  });
+
+  it('一侧并列时，只丢掉它自己那一票', () => {
+    // 跟区间那一侧同一条规则：另一侧那个没人有异议的等级照样计票。
+    expect(averageFor('L4或5 / R3')).toBe('3.0');
+    expect(averageFor('L4或5 / R3、4')).toBe('—');
+  });
+
+  /**
+   * 和 / 与 先是「并且」，然后才是「或者」。
+   *
+   * 这正是 Python 侧 `_MRC_SECOND_GRADE` 存在的理由，规则也照抄过来：
+   * 第二个数字后面跟的是不是 级，决定这一格到底是「选不出来」还是
+   * 「一个等级挨着另一个量」。少了这一条，为了认下 和，就会把一个检查者
+   * 明明写了的等级悄悄弄丢 —— 拿一个错的数换一个缺的数。
+   */
+  it.each([
+    ['4级和5年前相比无变化', '4.0', '5 后面跟的是「年」，是病程不是等级'],
+    ['4级、5岁起病', '4.0', '5 后面跟的是「岁」'],
+    ['4级与5个月前一致', '4.0', '5 后面跟的是「个」'],
+  ])('%s → %s（%s）', (cell, expected) => {
+    expect(averageFor(cell)).toBe(expected);
+  });
+});
+
 describe('MMT 单元格：MRC 的 ± 仍然是 ±', () => {
   it.each([
     ['4级', '4.0'],
