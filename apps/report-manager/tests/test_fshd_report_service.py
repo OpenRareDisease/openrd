@@ -2361,6 +2361,15 @@ class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
         # the ordered item it names; its one value cell goes with it.
         "检测项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
         "检验项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        # Column heading AND a footnote lead — 提示 heads the 提示 column
+        # of half the laboratory tables this file reads AND introduces
+        # 「提示: 血钾低于 2.8 为危急值」. Decided as the HEADING, which
+        # closes the run: reading a bare 提示 cell as a footnote header
+        # would open a `_SCOPE_BLOCK` region over the table printed
+        # underneath it, which is the larger of the two blast radii by a
+        # long way. A 提示 CARRYING content still reaches rule 5 and is
+        # refused there, where it asserts something.
+        "提示": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
         # Column heading AND a method section header. Decided as the
         # heading, which closes the run rather than opening one.
         "参考区间": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
@@ -6737,6 +6746,274 @@ class ANegatedExclusionIsAHedgeInEverySpellingTest(unittest.TestCase):
         self.assertIsNone(
             fshd_report_service._HEDGED_EXCLUSION.search("不见得")
         )
+
+
+class TheTextRowReadersAskTheRowModelTooTest(unittest.TestCase):
+    """THE TWO READERS THE NOTE-REGION WORK NEVER REACHED.
+
+    `_extract_lab_value` consults `_result_row_mask`, and
+    `_panel_haystacks` blanks a refused line before a pattern sees it —
+    so on a page carrying a footnote the numeric side declines twice.
+    `_read_qualitative_row` and `_read_free_text_row` walked the raw
+    lines, and whatever they return REPLACES the pattern's answer
+    outright, so a footnote that names an analyte and quotes its
+    reference verdict was published as the patient's own reading.
+    Every fixture is synthetic.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 尿常规") + rows),
+            "other",
+            "urine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_footnote_verdict_is_not_this_patients_qualitative_result(self):
+        panel = self._panel(
+            "注: 尿蛋白 阴性 为本实验室参考值",
+            "尿蛋白 阳性",
+        )
+        self.assertEqual(panel.get("urine_protein"), "阳性")
+
+    def test_a_footnote_colour_is_not_this_patients_free_text_result(self):
+        """A urine printed 淡黄色 in a footnote and 深黄色 on the row is
+        the same 参考区间-read-as-结果 defect, one door further out."""
+        panel = self._panel(
+            "注: 颜色 淡黄色 为本实验室参考值",
+            "颜色 深黄色",
+        )
+        self.assertEqual(panel.get("urine_color"), "深黄色")
+
+    def test_a_banner_between_a_name_cell_and_its_verdict_cell_ends_the_row(self):
+        """The forward scan is the cell-per-line reader, and a banner
+        printed between the two cells is not this row's next column —
+        reading through it takes the verdict the banner quotes. The same
+        boundary `_extract_lab_value` puts on its own forward scan, and
+        the same answer: an unread cell is visibly missing, the banner's
+        verdict was not."""
+        lines = ["项目", "结果", "尿蛋白", "注: 本项目参考值为阴性", "阴性"]
+        self.assertIsNone(
+            fshd_report_service._read_qualitative_row(
+                {"urine_protein": ["尿蛋白"]},
+                "urine_protein",
+                lines,
+                fshd_report_service._page_columns(lines),
+            )
+        )
+
+    def test_the_free_text_forward_scan_stops_at_a_banner_too(self):
+        lines = ["项目", "结果", "颜色", "注: 本项目参考值为淡黄色", "淡黄色"]
+        self.assertIsNone(
+            fshd_report_service._read_free_text_row(
+                {"urine_color": ["颜色"]},
+                "urine_color",
+                lines,
+                fshd_report_service._page_columns(lines),
+            )
+        )
+
+    def test_a_footnote_above_the_table_still_does_not_refuse_the_table(self):
+        """The guard may only cost the footnote its reading."""
+        panel = self._panel(
+            "注: 尿蛋白 阴性 为本实验室参考值, 请结合临床。",
+            "尿蛋白 阳性",
+            "颜色 深黄色",
+            "透明度 清亮",
+        )
+        self.assertEqual(panel.get("urine_protein"), "阳性")
+        self.assertEqual(panel.get("urine_color"), "深黄色")
+        self.assertEqual(panel.get("urine_clarity"), "清亮")
+
+
+class TheCommonestChineseFootnoteLeadsAreFootnotesTest(unittest.TestCase):
+    """注意 / 注意事项 / 提示 / 温馨提示 WERE NOT FOOTNOTE LEADS AT ALL.
+
+    注意事项 heads the panic-threshold block and 温馨提示 heads the
+    patient-instruction block on a Chinese laboratory report at least as
+    often as 备注 does, and neither was recognised: 注意事项 begins with
+    注, and the one-character lead needs a separator behind it. So the
+    threshold quoted under one of them was published as this patient's
+    reading. Synthetic fixtures throughout.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_lead_carrying_its_own_content_is_a_footnote(self):
+        for lead in ("注意", "注意事项", "提示", "温馨提示"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    f"{lead}: 血红蛋白量低于 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_a_bare_lead_opens_the_block_printed_under_it(self):
+        """提示 is absent on purpose — it is decided as the column
+        heading it also is. See `_row_label` and DECIDED."""
+        for lead in ("注意", "注意事项", "温馨提示"):
+            with self.subTest(lead=lead):
+                panel = self._panel(
+                    "白细胞计数(WBC) 6.69 3.5-9.5",
+                    lead,
+                    "血红蛋白量低于 60 g/L 为危急值",
+                )
+                self.assertNotIn("hgb", panel, lead)
+                self.assertEqual(panel.get("wbc"), 6.69, lead)
+
+    def test_the_bare_提示_column_heading_does_not_refuse_the_table(self):
+        """THE HALF THAT WOULD HAVE COST MORE THAN IT SAVED. 提示 heads
+        a column on half the tables this file reads, and reading a lone
+        one as a footnote HEADER would open a region over the rows
+        underneath it."""
+        panel = self._panel(
+            "项目", "结果", "提示", "单位",
+            "白细胞计数(WBC)", "6.69", "", "10^9/L",
+            "血红蛋白量(HGB)", "155", "", "g/L",
+        )
+        self.assertEqual(panel.get("wbc"), 6.69)
+        self.assertEqual(panel.get("hgb"), 155)
+
+    def test_注意力_is_not_a_footnote_lead(self):
+        """A lead is a lead only where a separator follows it — 注意 opens
+        注意力 exactly as 注 opens 注射用."""
+        self.assertFalse(fshd_report_service._leads_a_note("注意力 正常"))
+        panel = self._panel("注意力 正常", "白细胞计数(WBC) 6.69 3.5-9.5")
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+
+class TheNoteBlockFuseIsCountedInItemsTest(unittest.TestCase):
+    """THE FUSE COUNTED OCR LINES WHILE ITS OWN COMMENT COUNTED ITEMS.
+
+    PaddleOCR returns a text box per line and a footnote item is a
+    sentence, so the four-item block the fuse was sized for is a dozen
+    lines. The fuse blew in the middle of item three and every item after
+    it went back to being a candidate result row — the whole defect
+    `_SCOPE_BLOCK` was added to close, reappearing at item four.
+    """
+
+    BLOCK = (
+        "备注",
+        "1. 血红蛋白量低于 60 g/L",
+        "为危急值,",
+        "请立即通知临床医师",
+        "2. 白细胞计数低于 1.5",
+        "为危急值,",
+        "请立即通知临床医师",
+        "3. 血小板计数低于 20",
+        "为危急值,",
+        "请立即通知临床医师",
+        "4. 中性粒细胞绝对值低于 0.5",
+        "为危急值,",
+        "请立即通知临床医师",
+    )
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 血常规") + rows),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_four_item_block_wrapped_across_lines_is_refused_whole(self):
+        panel = self._panel("血红蛋白量(HGB) 155 130-175", *self.BLOCK)
+        self.assertEqual(panel.get("hgb"), 155)
+        self.assertNotIn("plt", panel)
+        self.assertNotIn("neut_abs", panel)
+        self.assertNotIn("wbc", panel)
+
+    def test_the_last_item_of_the_block_is_refused_like_the_first(self):
+        """The fuse blew at line eight, which is inside item three, so
+        the item that leaked was the LAST one."""
+        panel = self._panel("血红蛋白量(HGB) 155 130-175", *self.BLOCK)
+        self.assertNotEqual(panel.get("neut_abs"), 0.5)
+
+    def test_the_bound_is_stated_in_the_unit_it_is_reasoned_in(self):
+        self.assertEqual(
+            fshd_report_service._NOTE_BLOCK_MAX_ROWS,
+            fshd_report_service._NOTE_BLOCK_MAX_ITEMS
+            * fshd_report_service._NOTE_BLOCK_MAX_ITEM_LINES,
+        )
+
+    def test_the_fuse_still_blows_on_a_block_that_was_never_a_block(self):
+        rows = ("说明",) + tuple(
+            f"备用说明行 {index}"
+            for index in range(fshd_report_service._NOTE_BLOCK_MAX_ROWS)
+        ) + ("血红蛋白量(HGB) 155 130-175",)
+        self.assertEqual(self._panel(*rows).get("hgb"), 155)
+
+
+class AnMmtGradeRangeIsNotADeterminateGradeTest(unittest.TestCase):
+    """「4-5级」 IS AN EXAMINER DECLINING TO CHOOSE, NOT GRADE 4 MINUS.
+
+    The modifier pattern took any 「-」 after the grade as the MRC minus
+    with no lookahead for a following digit, so 「4-5级」 was read as
+    「4-」, the 5 was dropped and `MRC_NORMALIZATION` typed it 3.7 — a
+    number below both ends of the interval it came off, carried onto
+    `deltoid_strength` and averaged into 平均肌力 on the passport, the
+    share page, the referral pack and the markdown export.
+    profile.passport.ts refuses a range it is SHOWN; it cannot refuse one
+    that was manufactured here.
+    """
+
+    def _fields(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join(("神经科专科查体记录", sentence)), "other", "physical.jpeg"
+        )
+        return result["fshd"]["structured_fields"], result
+
+    def _grade(self, sentence):
+        fields, _ = self._fields(sentence)
+        grades = [f for f in fields if f["field_name"] == "mrc_score"]
+        self.assertTrue(grades, sentence)
+        return grades[0]
+
+    def test_a_range_keeps_both_ends_and_is_typed_as_no_number(self):
+        grade = self._grade("体格检查: 三角肌肌力4-5级。")
+        self.assertEqual(grade["field_value"], "4-5")
+        self.assertIsNone(grade["normalized_value"])
+
+    def test_every_separator_the_shared_vocabulary_knows_reads_as_a_range(self):
+        """The containment profile.passport.ts spells out at
+        `STRENGTH_RANGE_CELL`: every dash the ± modifier accepts is in
+        the range class, or 「4‐5级」 is grade 4 minus all over again."""
+        separators = tuple(fshd_report_service._RANGE_DASHES) + tuple(
+            fshd_report_service._RANGE_WORDS
+        )
+        for separator in separators:
+            with self.subTest(separator=separator):
+                grade = self._grade(f"体格检查: 三角肌肌力4{separator}5级。")
+                self.assertEqual(grade["field_value"], f"4{separator}5", separator)
+                self.assertIsNone(grade["normalized_value"], separator)
+
+    def test_the_mrc_modifier_still_means_what_it_means(self):
+        for printed, typed in (("4-", 3.7), ("4+", 4.3), ("4", 4.0), ("3-", 2.7)):
+            with self.subTest(printed=printed):
+                grade = self._grade(f"体格检查: 三角肌肌力{printed}级。")
+                self.assertEqual(grade["field_value"], printed)
+                self.assertEqual(grade["normalized_value"], typed)
+
+    def test_a_range_reaches_the_passport_cell_as_a_range(self):
+        _, result = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
+        self.assertEqual(result["deltoid_strength"], "L4-5 / R4")
+
+    def test_a_side_still_binds_to_its_own_grade(self):
+        fields, _ = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
+        by_side = {
+            f["side"]: (f["field_value"], f["normalized_value"])
+            for f in fields
+            if f["field_name"] == "mrc_score"
+        }
+        self.assertEqual(by_side["left"], ("4-5", None))
+        self.assertEqual(by_side["right"], ("4", 4.0))
 
 
 if __name__ == "__main__":

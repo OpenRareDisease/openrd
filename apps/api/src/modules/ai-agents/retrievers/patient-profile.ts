@@ -154,93 +154,98 @@ const baselineSection = (
 };
 
 /**
- * WHETHER AN ARCHIVED GENETICS CELL IS A VALUE THIS PLATFORM READ OFF
- * THE GENETICS LABORATORY'S OWN REPORT.
+ * WHICH VALUE A GENETICS CELL HOLDS, AND WHETHER THIS PLATFORM READ IT
+ * OFF THE GENETICS LABORATORY'S OWN REPORT.
  *
- * The redactor has to decide what the assistant may say about
- * `diseaseBackground.d4z4` and `.haplotype`, and it had no way to ask:
- * it passed `fromLaboratoryReport: false` as a constant, so the prompt
- * asserted `not_read_off_a_laboratory_report` about EVERY archived
- * genetics cell — including the cells the read-time autofill copied out
- * of a parsed genetics report. For the same profile in the same run the
- * passport resolved those cells to `kind: 'report'` / 「报告读取」 and the
- * TREAT-NMD provenance sentence ended 「所以这个值是基因报告的解析结果」.
- * A patient whose genetics report this platform DID read could be told
- * by the assistant the opposite of what their passport, share page,
- * referral pack, PDF and registry export all say — and the assistant is
- * the surface that generates advice off the answer.
+ * ONE RESOLUTION, BECAUSE IT IS ONE DECISION. The value and the
+ * provenance beside it used to be computed apart: the value came off
+ * the archive (topped up by `applyGeneticReportAutofill`, which fills
+ * EMPTY boxes only) and the flag asked, separately, whether that
+ * archived string happened to equal the line this platform reads off
+ * the picked document. Where the two disagreed the pair was incoherent
+ * — an archived number carrying `not_read_off_a_laboratory_report`, on
+ * a profile whose passport was printing the REPORT's number with
+ * 「报告读取」 beside it in the same request.
  *
- * THE TEST IS THE ONE `geneticResultValue` ALREADY PERFORMS for the
- * TREAT-NMD document: the archived string equals the line this
- * platform reads off the ONE document `pickGeneticEvidenceDocument`
- * names, AND that document is the laboratory's own report
- * (`readGeneticEvidence(...).laboratory`). Asked through
- * `readGeneticEvidence` rather than restated here, so the assistant
- * cannot answer 「where did this value come from」 differently from the
- * exports built off the same profile in the same request.
+ * DOCUMENT-FIRST PRECEDENCE, THE PASSPORT'S OWN ORDERING. When the one
+ * document `pickGeneticEvidenceDocument` names states a cell, that is
+ * the cell — whatever sits in the patient's questionnaire box.
+ * `buildReportInsights` in profile.passport.ts resolves 分型, D4Z4 重复数
+ * and 甲基化 as 「the picked document, then the baseline slot, then
+ * `patient_profiles.genetic_mutation`」 and takes 单倍型 off the document
+ * alone, and `normaliseSource` in export/export-source.ts states the
+ * reasoning in its own words for the FHIR `Condition.code` and the
+ * Phenopacket `Disease.term`: the autofill never corrects a full slot,
+ * so a patient who answered the questionnaire before uploading the
+ * corrected report keeps their old answer forever — an ordinary state,
+ * not an edge case.
  *
- * THE CELL IT IS ASKED ABOUT IS THE PROJECTED ONE, and that is what
- * makes the question answerable at all. `search` runs
- * `applyGeneticReportAutofill` before calling this, so a report-derived
- * profile arrives here with the report's own line sitting in the box.
- * Asked of the RAW column it was asked of an empty cell for exactly the
- * patients whose genetics this platform did read, and answered `false`
- * about every one of them.
+ * WHAT READING THE BOX INSTEAD COST, MEASURED. On a record whose report
+ * states D4Z4 4 and 甲基化 28% while the boxes hold 6 and 41%: the
+ * passport printed 4 and 28% with 「报告读取」 and graded the record
+ * 基因确诊, while the assistant read 6 and 41%, flagged both
+ * `not_read_off_a_laboratory_report`, and `readGeneticConfirmation`
+ * (orchestrator/answer-guard.ts) — which takes a cell only where its
+ * flag is TRUE — answered `not_confirmed`. A genetically confirmed
+ * patient was being told by the assistant that they are not confirmed:
+ * the inverse error that file names as the worst outcome it can
+ * produce.
  *
- * FALSE IS STILL THE DEFAULT, and it stays the honest one: a value the
- * patient typed, a value quoted off a 病历摘要, and a value that no
- * longer matches the report it was autofilled from are all cells this
- * platform did not read off a laboratory report, and the redactor's
- * refusal is correct for every one of them. The autofill cannot move
- * any of the three into `true`: it fills EMPTY boxes only, so a cell it
- * wrote is the report's line by construction and a cell it left alone
- * is whatever the archive held.
+ * THE FLAG IS STILL `readGeneticEvidence(...).laboratory`, AND THE
+ * PRECEDENCE WIDENS NOTHING. `pickGeneticEvidenceDocument` takes a
+ * 病历摘要 quoting a repeat count when the laboratory's own report read
+ * nothing out, and a value taken off one lands in the cell exactly as a
+ * Southern blot's does — with the flag `false`, which is the split the
+ * passport draws when it prints 「转录自非基因报告文件」 over a value it
+ * will show but will not grade. A cell no document states keeps the
+ * archived value and its flag stays `false`, which is the refusal the
+ * redactor already defaults to: a value the patient typed and a value
+ * quoted off a 病历摘要 are both cells this platform did not read off a
+ * laboratory report.
  *
- * EVERY CELL THE AUTOFILL WRITES IS ANSWERED FOR, AND IT USED TO BE
- * TWO OF FOUR. `applyGeneticReportAutofill` copies 分型, D4Z4 重复数,
- * 单倍型 and 甲基化 out of the picked report into the registration
- * form's empty boxes; this function computed the answer for `d4z4` and
- * `haplotype` alone. So `buildProfileFields` wrote `fields.methylation`
- * with no flag beside it and the redactor, reading an absent flag as
- * `false`, asserted `not_read_off_a_laboratory_report` about a value
- * the passport, the share page, the referral pack, the PDF and the
- * registry export were all attributing to the laboratory report in the
- * same request — printed inside the same profile block as two sibling
- * readings that can only be minted when the flag is TRUE. A prompt
- * contradicting itself about one document is worse than either answer
- * alone, because nothing in it says the other exists. 分型 was the same
- * gap one cell further on, and it had no refusal at all.
+ * ALL FOUR CELLS THE AUTOFILL WRITES ARE ANSWERED FOR — 分型,
+ * D4Z4 重复数, 单倍型 and 甲基化 — because a prompt attributing two of one
+ * report's numbers to the laboratory while refusing the other two is
+ * contradicting itself about one document, with nothing in it saying
+ * the other answer exists.
+ *
+ * 诊断日期 IS NOT ONE OF THESE CELLS AND IS NOT REORDERED HERE. The
+ * passport resolves it column-first — `diagnosisDateFromColumn ||
+ * diagnosisDateFromDocument` — because `patient_profiles.diagnosis_date`
+ * is where the questionnaire's 确诊年份 is mirrored and a clinical
+ * diagnosis date is not a laboratory measurement. Flipping it would be a
+ * second precedence rule and would put this retriever out of step with
+ * the surface this one was written to match.
  */
-type GeneticCellOrigins = {
-  diagnosisType: boolean;
-  d4z4: boolean;
-  haplotype: boolean;
-  methylation: boolean;
-};
+type GeneticCellKey = 'diagnosisType' | 'd4z4' | 'haplotype' | 'methylation';
 
-const NO_LABORATORY_ORIGIN: GeneticCellOrigins = {
-  diagnosisType: false,
-  d4z4: false,
-  haplotype: false,
-  methylation: false,
-};
+interface ResolvedGeneticCell {
+  /** The value this platform holds for this cell: the picked document's
+   *  own line where it states one, the archived cell otherwise. */
+  readonly value: unknown;
+  /** Whether that value is one this platform read off the genetics
+   *  laboratory's own report. */
+  readonly fromLaboratoryReport: boolean;
+}
 
-const geneticCellsFromLaboratoryReport = (
+type ResolvedGeneticCells = Record<GeneticCellKey, ResolvedGeneticCell>;
+
+const resolveGeneticCells = (
   disease: Record<string, unknown> | null,
   documents: readonly GeneticEvidenceDocumentLike[],
-): GeneticCellOrigins => {
+): ResolvedGeneticCells => {
   const evidence = readGeneticEvidence(documents);
-  if (!evidence.laboratory) return NO_LABORATORY_ORIGIN;
-  const matches = (archived: unknown, line: string | null): boolean =>
-    line !== null &&
-    archived !== null &&
-    archived !== undefined &&
-    String(archived).trim() === line;
+  const resolve = (key: GeneticCellKey): ResolvedGeneticCell => {
+    const line = evidence[key];
+    return line !== null
+      ? { value: line, fromLaboratoryReport: evidence.laboratory }
+      : { value: disease?.[key], fromLaboratoryReport: false };
+  };
   return {
-    diagnosisType: matches(disease?.diagnosisType, evidence.diagnosisType),
-    d4z4: matches(disease?.d4z4, evidence.d4z4),
-    haplotype: matches(disease?.haplotype, evidence.haplotype),
-    methylation: matches(disease?.methylation, evidence.methylation),
+    diagnosisType: resolve('diagnosisType'),
+    d4z4: resolve('d4z4'),
+    haplotype: resolve('haplotype'),
+    methylation: resolve('methylation'),
   };
 };
 
@@ -258,7 +263,7 @@ const geneticCellsFromLaboratoryReport = (
  */
 const buildProfileFields = (
   row: ProfileRow,
-  fromLaboratoryReport: GeneticCellOrigins,
+  genetics: ResolvedGeneticCells,
 ): Record<string, unknown> => {
   const fields: Record<string, unknown> = {};
 
@@ -288,35 +293,47 @@ const buildProfileFields = (
     }
   }
 
+  // THE FOUR GENETICS CELLS, RESOLVED DOCUMENT-FIRST, and written
+  // OUTSIDE the `if (disease)` guard below on purpose: the cell's value
+  // no longer has to be sitting in `diseaseBackground` for this platform
+  // to hold one. (In practice the autofill creates that section when it
+  // fills a cell, so this is the same set of profiles — it is written
+  // this way so the guard stays what it says it is, a test for the
+  // questionnaire's own free-text answers.)
+  //
+  // Each cell travels with the answer to 「did this platform read this
+  // off a laboratory's own report」. No flag reaches a prompt — the
+  // redactor consumes them and drops all four (see `clinicalise`) —
+  // they exist so the reading beside the cell can be this platform's
+  // real position rather than a hardcoded refusal. See
+  // `resolveGeneticCells`, which decides the value and the flag in one
+  // step so the two cannot describe different sources.
+  if (typeof genetics.diagnosisType.value === 'string' && genetics.diagnosisType.value) {
+    fields.diagnosisType = genetics.diagnosisType.value;
+    fields.diagnosisTypeFromLaboratoryReport = genetics.diagnosisType.fromLaboratoryReport;
+  }
+  if (
+    genetics.d4z4.value !== undefined &&
+    genetics.d4z4.value !== null &&
+    genetics.d4z4.value !== ''
+  ) {
+    fields.d4z4 = genetics.d4z4.value;
+    fields.d4z4FromLaboratoryReport = genetics.d4z4.fromLaboratoryReport;
+  }
+  if (typeof genetics.haplotype.value === 'string' && genetics.haplotype.value) {
+    fields.haplotype = genetics.haplotype.value;
+    fields.haplotypeFromLaboratoryReport = genetics.haplotype.fromLaboratoryReport;
+  }
+  if (
+    genetics.methylation.value !== undefined &&
+    genetics.methylation.value !== null &&
+    genetics.methylation.value !== ''
+  ) {
+    fields.methylation = genetics.methylation.value;
+    fields.methylationFromLaboratoryReport = genetics.methylation.fromLaboratoryReport;
+  }
+
   if (disease) {
-    if (typeof disease.diagnosisType === 'string' && disease.diagnosisType) {
-      fields.diagnosisType = disease.diagnosisType;
-      fields.diagnosisTypeFromLaboratoryReport = fromLaboratoryReport.diagnosisType;
-    }
-    // Each genetics cell travels with the answer to 「did this platform
-    // read this off a laboratory's own report」. No flag reaches a
-    // prompt — the redactor consumes them and drops them all (see
-    // `clinicalise`) — they exist so the reading beside the cell can be
-    // this platform's real position rather than a hardcoded refusal.
-    // ALL FOUR CELLS THE AUTOFILL WRITES CARRY ONE; 分型 and 甲基化 used
-    // to travel bare, and an absent flag reads as `false`.
-    // See `geneticCellsFromLaboratoryReport`.
-    if (disease.d4z4 !== undefined && disease.d4z4 !== null && disease.d4z4 !== '') {
-      fields.d4z4 = disease.d4z4;
-      fields.d4z4FromLaboratoryReport = fromLaboratoryReport.d4z4;
-    }
-    if (typeof disease.haplotype === 'string' && disease.haplotype) {
-      fields.haplotype = disease.haplotype;
-      fields.haplotypeFromLaboratoryReport = fromLaboratoryReport.haplotype;
-    }
-    if (
-      disease.methylation !== undefined &&
-      disease.methylation !== null &&
-      disease.methylation !== ''
-    ) {
-      fields.methylation = disease.methylation;
-      fields.methylationFromLaboratoryReport = fromLaboratoryReport.methylation;
-    }
     if (typeof disease.onsetRegion === 'string' && disease.onsetRegion) {
       fields.onsetRegion = disease.onsetRegion;
     }
@@ -439,19 +456,25 @@ export class PatientProfileRetriever implements IRetriever {
      * 「你的档案里还没有 D4Z4 重复数」 about a number on the page the
      * patient was looking at.
      *
-     * IT ALSO FED THE CONFIRMATION GUARD THE WRONG FACTS.
-     * `geneticCellsFromLaboratoryReport` below asks whether an archived
-     * cell IS the line this platform read off the laboratory's own
-     * report; asked of an EMPTY cell it answered `false` for every
-     * report-derived profile, which is the state the redactor turns
-     * into `not_read_off_a_laboratory_report`. The guard was refusing
-     * to grade values it could not see.
+     * IT ALSO FED THE CONFIRMATION GUARD THE WRONG FACTS. The
+     * resolution below asks what this platform holds for each genetics
+     * cell; asked of an EMPTY cell it answered 「nothing, and not from a
+     * laboratory」 for every report-derived profile, which is the state
+     * the redactor turns into `not_read_off_a_laboratory_report`. The
+     * guard was refusing to grade values it could not see.
+     *
+     * WHAT THE AUTOFILL STILL CANNOT DO IS CORRECT A FULL BOX, and that
+     * is why the projection is not the last word on these four cells.
+     * `resolveGeneticCells` runs after it and applies the passport's
+     * document-first ordering, so a questionnaire answer the report
+     * contradicts does not survive into the assistant's copy of the
+     * record. See that function.
      *
      * THE DIRECTION MATTERS AND IT IS NOT WIDENED HERE. The autofill
      * exists so a patient does not retype what the report already says;
      * whether a value may be GRADED is a separate question, and it is
      * still `readGeneticEvidence(...).laboratory` that answers it. A
-     * cell filled from a 病历摘要 lands in the box exactly as one filled
+     * cell taken from a 病历摘要 lands in the box exactly as one taken
      * from a Southern blot does, and the flag beside it stays `false` —
      * the same split the passport draws when it prints
      * 「转录自非基因报告文件」 over a value it is showing but will not
@@ -473,9 +496,9 @@ export class PatientProfileRetriever implements IRetriever {
     };
 
     const disease = baselineSection(projectedRow.baseline_payload, 'diseaseBackground');
-    const fromLaboratoryReport = geneticCellsFromLaboratoryReport(disease, evidenceDocuments);
+    const genetics = resolveGeneticCells(disease, evidenceDocuments);
 
-    const fields = buildProfileFields(projectedRow, fromLaboratoryReport);
+    const fields = buildProfileFields(projectedRow, genetics);
     const chunkId = randomUUID();
 
     const chunk: RetrievedChunk = {

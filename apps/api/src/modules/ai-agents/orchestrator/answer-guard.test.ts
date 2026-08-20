@@ -2302,6 +2302,75 @@ describe('a severity claim attached to his cell by the possessive rather than by
 });
 
 // ---------------------------------------------------------------------
+// ...AND THE SAME CLAIM ON EVERYTHING OF HIS THAT IS NOT ONE OF THE FOUR
+// GENETICS CELLS.
+//
+// `patientCells` comes from `cellOfKey`, which knows four cells, so this
+// limb could not see a claim landing on a laboratory value, a timed test
+// or a self-test series — the two kinds of value this product collects
+// most. The names come from the platform's own tables:
+// `OCR_FIELD_LABELS_ZH` is what the renderer prints an OCR cell's label
+// from, and `metricLabel` is the Chinese the followups retriever builds
+// out of its own fixed protocol tables.
+describe('a severity claim attached to a laboratory value or a timed test', () => {
+  const BLOOD_PANEL: Record<string, unknown> = {
+    classifiedType: 'blood_panel',
+    documentType: 'blood_panel',
+    status: 'parsed',
+    reportDate: '2026-04-01',
+    fields: { classifiedType: 'blood_panel', ck: '693', ldh: '312' },
+  };
+  const STAIR_SERIES: Record<string, unknown> = {
+    metricKey: 'stair_climb',
+    metricLabel: '连续上 10 级台阶',
+    count: 6,
+  };
+  const withRecord = evidenceFor(
+    'precise',
+    [BLOOD_PANEL, STAIR_SERIES],
+    [],
+    [],
+    ['patient_reports', 'patient_followups'],
+  );
+
+  it.each([
+    // The analyte under the head of its printed label, and under the
+    // abbreviation the same label carries.
+    '你的肌酸激酶水平提示病情比较重。',
+    '你的 CK 水平提示病程进展会比较快。',
+    '你的乳酸脱氢酶属于发病比较早的那一类。',
+    // The series under the name the retriever gave the curve.
+    '你的连续上 10 级台阶越来越慢，进展是比较快的。',
+  ])('catches %s, which carries no digit at all', (sentence) => {
+    expect(inspectAnswer(sentence, withRecord).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // The fact half, unchanged: a value this turn holds nothing of his for
+  // is a sentence about the concept.
+  it('says nothing about a laboratory value this turn holds none of his', () => {
+    expect(inspectAnswer('你的肌酸激酶水平提示病情比较重。', evidenceFor('precise'))).toHaveLength(
+      0,
+    );
+  });
+
+  // ...and the same clause rule. The possessive and the name in one
+  // clause, the severity word in the next, is not a claim.
+  it('leaves the reading with the question handed on alone', () => {
+    expect(
+      inspectAnswer('你的肌酸激酶这一格我读到了，至于病情会不会进展，得看随访。', withRecord),
+    ).toHaveLength(0);
+  });
+
+  it('names the value in the excision reason, in this platform own Chinese', () => {
+    expect(inspectAnswer('你的肌酸激酶水平提示病情比较重。', withRecord)[0]?.because).toContain(
+      '「你的肌酸激酶」',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
 describe('an anaphor pointing back at his own value rather than at a band', () => {
   const evidence = evidenceFor('precise');
 
@@ -2745,6 +2814,93 @@ describe('a hedge standing after the claim it is supposed to soften', () => {
         evidence,
       ),
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// ...AND THE SAME HEDGE STANDING IN FRONT OF THE CLAIM IN THE **CLAUSE
+// BEFORE IT**.
+//
+// The position rule above measured the cancel ONCE, at the first
+// severity word in the segment, and a segment is a whole SENTENCE —
+// `segmentsOf` cuts at 。！？；and never at 「，」. So one disclaimed
+// clause disclaimed every clause beside it, and the refusal this
+// platform asks for became the password for the prediction it forbids.
+describe('a disclaimer in one clause and the claim in the next', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each([
+    // The refusal, correctly stated, and then the claim made anyway —
+    // on the band this reader is standing in.
+    '我不能拿你的 3 个重复单元判断轻重，1–3 这一档确实发病更早、病情更重。',
+    '这不是对你个人的预测，不过 1–3 个重复单元这一档进展确实比较快。',
+    // A table row is one segment and its cells are not one another's
+    // context, so a hedge in the first cell is not a licence in the
+    // third.
+    '| D4Z4 重复数 | 我不能替你下结论 | 1–3 这一档病情较重 |',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // ...AND THE CANCEL STILL REACHES THE CLAUSES THAT CONTINUE IT. What
+  // it stops at is a clause that plants the claim on one of HIS values;
+  // a clause carrying no digit of his was never check 1's business.
+  it.each([
+    // 、 is the enumeration comma — it joins ITEMS inside one predicate,
+    // never two predicates — so this stays one span and its 不能 governs
+    // all of it.
+    '我不能把你的 3 个重复单元、95% 甲基化值拿来判断「你病情严重不严重」。',
+    // 他 is the physician just named; the clause is what the referral
+    // consists of, not a claim standing beside it.
+    '至于 95% 这个数值对你的病情具体意味着什么，建议跟你的主治医生讨论，他会结合你的疾病进展来判断。',
+    '我不能拿你的 3 个重复单元下这个结论，进展快慢要由你的主治医生评估。',
+  ])('leaves %s alone', (sentence) => {
+    expect(inspectAnswer(sentence, evidence)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// THE 级 THIS PLATFORM PRINTS THAT IS NOT A VERDICT.
+//
+// The band knew three things that are not severity — 一级亲属, 三级医院,
+// 一级预防 — and all three FOLLOW the 级. The commonest 级 in this
+// product's own data precedes it, because it is a measurement's name:
+// the MRC grade `patient_measurements` holds and every surface prints
+// (「平均 3.5 级」 on the passport tile, 「- 平均肌力：3.5 级」 in the
+// export, 「三角肌 4-5级」 as the cell `parseScore` reads), and the stair
+// count `LITERAL_PROTOCOL_LABELS` writes on every stair row
+// (「连续上 10 级台阶」).
+describe('an MRC muscle grade and a stair count are not severity bands', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each([
+    // Reading his own self-test back to him — the thing the muscle
+    // self-test exists for.
+    '你的三角肌肌力是 3 级。',
+    '你的肌力：左侧 3 级、右侧 3 级。',
+    '肌力·三角肌 3 级，这是你上次自测记录的。',
+    'MRC 分级为 3 级。',
+    '你最近一次连续上 10 级台阶，用时和上个月差不多。',
+    '你记录的「四级台阶上下」是另一项测试，秒数不能和这条线放在一起看。',
+  ])('leaves %s alone', (sentence) => {
+    expect(inspectAnswer(sentence, evidence)).toHaveLength(0);
+  });
+
+  // ...AND THE OTHER DIRECTION. A severity verdict written as a grade is
+  // still a severity verdict, and the word 肌力 standing somewhere in the
+  // sentence does not buy it: what the exclusion asks is whether the
+  // grade is the READING of that measurement, which means nothing but a
+  // side, a group name or a copula stands between them.
+  it.each([
+    '你的肌力下降说明病情已经是 3 级了。',
+    '你的病情属于 3 级。',
+    '你的肌力还行，但病情已经是 3 级。',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
   });
 });
 
@@ -3269,6 +3425,144 @@ describe('the grade this check is asked of', () => {
     });
     expect(evidence.geneticConfirmation.state).toBe('no_genetics_this_turn');
     expect(confirmationHits('是的，你已经基因确诊了。', evidence)).toHaveLength(0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// A PROFILE HOLDING TWO GENETICS REPORTS THAT DISAGREE
+// ══════════════════════════════════════════════════════════════════════
+//
+// The passport grades ONE document — the one `pickGeneticEvidenceDocument`
+// names — and this check used to grade the UNION of whatever retrieval
+// returned. Both directions of that gap are pinned here.
+//
+// A patient with two genetics reports is an ordinary patient on this
+// platform: they re-test, or the hospital reissues the laboratory's
+// report, and both rows are typed `genetic_report`.
+
+/** The 2024 re-test: the contraction is on the OTHER allele. Every
+ *  surface prints 未经基因确诊（非允许型单倍型）off this one. */
+const RETEST_NON_PERMISSIVE: Record<string, unknown> = {
+  classifiedType: 'genetic_report',
+  documentType: 'genetic_report',
+  status: 'parsed',
+  title: '基因检测报告',
+  reportDate: '2024-05-06',
+  extractedText:
+    '检验项目：D4Z4 重复单元数及 4q35 单倍型分析\n检测方法：Southern blot\n' +
+    '检测结果：4q35 D4Z4 重复单元数 5；4q 单倍型 4qB\n参考值：见报告说明',
+  fields: {
+    classifiedType: 'genetic_report',
+    documentType: 'genetic_report',
+    geneticTestMethod: 'southern_blot',
+    d4z4Repeats: '5',
+    haplotype: '4qB',
+  },
+};
+
+/** The 2019 report on the same profile: 4 repeats on 4qA, which on its
+ *  own IS the passport's `trial_ready` conjunction.
+ *
+ *  IT CARRIES EXACTLY WHAT THE RE-TEST CARRIES, deliberately: the two
+ *  documents are equal on every ranking key the picker reads before
+ *  recency, so what decides between them is the order retrieval handed
+ *  them in — which is the ordinal these payloads are ranked on. A
+ *  fixture where one is richer would pass this test without ever
+ *  exercising that. */
+const EARLIER_PERMISSIVE: Record<string, unknown> = {
+  classifiedType: 'genetic_report',
+  documentType: 'genetic_report',
+  status: 'parsed',
+  title: '基因检测报告',
+  reportDate: '2019-03-02',
+  extractedText:
+    '检验项目：D4Z4 重复单元数及 4q35 单倍型分析\n检测方法：Southern blot\n' +
+    '检测结果：4q35 D4Z4 重复单元数 4；4q 单倍型 4qA\n参考值：见报告说明',
+  fields: {
+    classifiedType: 'genetic_report',
+    documentType: 'genetic_report',
+    geneticTestMethod: 'southern_blot',
+    d4z4Repeats: '4',
+    haplotype: '4qA',
+  },
+};
+
+const bothCells = () => new Set(['d4z4', 'haplotype']);
+
+describe('a profile holding two genetics reports that disagree', () => {
+  // D1. The OR: the turn was confirmed if ANY payload satisfied the
+  // conjunction, so the older 4qA report spoke for a record the passport
+  // grades off the newer 4qB one — and the assistant became the one
+  // surface saying the opposite thing.
+  it('grades the document the picker names, not whichever one confirms', () => {
+    // The retriever hands rows back parsed-first then newest-first, so
+    // the re-test is payload 0 and is the document the pick lands on.
+    expect(
+      readGeneticConfirmation([RETEST_NON_PERMISSIVE, EARLIER_PERMISSIVE], bothCells()),
+    ).toEqual({
+      state: 'not_confirmed',
+      shortfall: expect.stringContaining('不是允许型 4qA'),
+    });
+  });
+
+  it('...and says confirmed when the picked document is the one that confirms', () => {
+    expect(
+      readGeneticConfirmation([EARLIER_PERMISSIVE, RETEST_NON_PERMISSIVE], bothCells()).state,
+    ).toBe('confirmed');
+  });
+
+  // The pick is the PICKER'S and not the array's. A row whose parse has
+  // not landed carries no reading this platform stands behind, and it
+  // does not outrank one that has — the same ordering that stops a new
+  // upload from emptying a passport.
+  it('does not let a report whose parse never landed outrank one that did', () => {
+    const processing = { ...RETEST_NON_PERMISSIVE, status: 'processing' };
+    expect(readGeneticConfirmation([processing, EARLIER_PERMISSIVE], bothCells()).state).toBe(
+      'confirmed',
+    );
+  });
+
+  // ...and the laboratory outranks the transcription, ahead of how much
+  // either carries, exactly as `pickGeneticEvidenceDocument` documents.
+  it('grades the laboratory report and not the 病历摘要 sitting beside it', () => {
+    expect(
+      readGeneticConfirmation([SELF_ENTERED_REPORT, RETEST_NON_PERMISSIVE], bothCells()),
+    ).toEqual({
+      state: 'not_confirmed',
+      shortfall: expect.stringContaining('不是允许型 4qA'),
+    });
+  });
+
+  // D2, THE INVERSE OF THE SAME OR. A turn that brought back the
+  // 病历摘要 quoting the repeat count but not the genetics report holds a
+  // genetics cell, satisfies nothing, and used to answer `not_confirmed`
+  // — about a patient the passport calls 基因确诊. Nothing in that turn
+  // separates him from the patient this check exists for.
+  it('stands down on a turn whose only genetics is a transcription', () => {
+    expect(readGeneticConfirmation([SELF_ENTERED_REPORT], bothCells()).state).toBe(
+      'no_genetics_this_turn',
+    );
+  });
+
+  it('does not excise a confirmed patient own sentence on that turn', () => {
+    const evidence = evidenceFor('precise', [SELF_ENTERED_REPORT], [], [], ['patient_reports']);
+    expect(evidence.geneticConfirmation.state).toBe('no_genetics_this_turn');
+    expect(confirmationHits('是的，你已经算基因确诊了。', evidence)).toHaveLength(0);
+  });
+
+  // ...AND THE STAND-DOWN DOES NOT REACH THE RECORD CHECK 6 WAS WRITTEN
+  // FOR. A profile carrying 重复数 3 and 单倍型 4qA with both laboratory
+  // flags FALSE is not an absence of evidence: it is this platform
+  // having asked the passport's question over every document on file and
+  // answered no.
+  it('still grades the profile whose genetics cells are the registration form own boxes', () => {
+    expect(
+      readGeneticConfirmation([SELF_ENTERED_REPORT, SELF_ENTERED_PROFILE], bothCells()),
+    ).toEqual({
+      state: 'not_confirmed',
+      shortfall: expect.stringContaining('没有一份被本平台当成基因报告读数的记录'),
+    });
+    expect(confirmationHits('是的，你已经算基因确诊了。', unconfirmed())).toHaveLength(1);
   });
 });
 

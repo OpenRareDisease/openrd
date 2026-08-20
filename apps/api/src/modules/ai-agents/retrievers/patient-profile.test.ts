@@ -228,6 +228,17 @@ describe('the genetics cells carry where they came from', () => {
     ocr_payload: { fields: { classifiedType: documentType, documentType, ...fields } },
   });
 
+  const cellsFor = async (documentRows: unknown[]) => {
+    const result = await new PatientProfileRetriever(
+      sequencedPool([POPULATED_ROW], documentRows),
+    ).search({ question: '' }, makeCtx());
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    return {
+      d4z4: fields.d4z4,
+      haplotype: fields.haplotype,
+    };
+  };
+
   const flagsFor = async (documentRows: unknown[]) => {
     const result = await new PatientProfileRetriever(
       sequencedPool([POPULATED_ROW], documentRows),
@@ -246,12 +257,45 @@ describe('the genetics cells carry where they came from', () => {
     });
   });
 
-  it('refuses per cell when only one of them matches', async () => {
-    // A patient hand-corrected one box, or the report was re-parsed.
-    // The cell that no longer matches is not a value this platform
-    // read off anything.
+  /**
+   * THE CELL THE BOX AND THE REPORT DISAGREE ABOUT IS THE REPORT'S.
+   *
+   * SUPERSEDES 「refuses per cell when only one of them matches」, which
+   * stood here and pinned the opposite: over a report reading D4Z4 5
+   * beside an archived 3/22 it asserted `d4z4FromLaboratoryReport:
+   * false`, on the stated ground that 「a patient hand-corrected one
+   * box, or the report was re-parsed — the cell that no longer matches
+   * is not a value this platform read off anything」.
+   *
+   * THAT IS TRUE OF THE ARCHIVED STRING AND IT WAS THE WRONG THING TO
+   * SHOW. The retriever kept the box's 3/22 and refused to grade it,
+   * while the passport, the share page, the referral pack, the PDF and
+   * both registry exports printed the report's 5 with 「报告读取」 beside
+   * it — `buildReportInsights` resolves these cells document-first
+   * (`d4z4FromDocument || d4z4FromBaseline`) and `normaliseSource` in
+   * export/export-source.ts spells the reason out: the read-time
+   * autofill fills an EMPTY slot and never corrects a full one, so a
+   * patient who answered the questionnaire before uploading the
+   * corrected report keeps their old answer forever, which is an
+   * ordinary state and not an edge case.
+   *
+   * SUPERSEDED BY the product owner's decision of 2026-08-19, taken
+   * after this was measured on a record whose report states D4Z4 4 and
+   * 甲基化 28% while the boxes hold 6 and 41%: the passport graded that
+   * record 基因确诊 and the assistant, reading the boxes and refusing to
+   * grade them, told the patient they were NOT genetically confirmed.
+   * Document-first precedence, the passport's own ordering. The
+   * patient's typed value is not destroyed by this — it is still on
+   * their profile screen and in `baseline_payload` — it is no longer
+   * what the assistant reads.
+   */
+  it('takes the report’s own value for a cell the archived box disagrees with', async () => {
+    expect(await cellsFor([geneticsDocument({ d4z4Repeats: '5', haplotype: '4qA' })])).toEqual({
+      d4z4: '5',
+      haplotype: '4qA',
+    });
     expect(await flagsFor([geneticsDocument({ d4z4Repeats: '5', haplotype: '4qA' })])).toEqual({
-      d4z4: false,
+      d4z4: true,
       haplotype: true,
     });
   });
@@ -363,10 +407,11 @@ describe('the assistant reads the profile the platform serves', () => {
   /**
    * AND THE CONFIRMATION GUARD IS FED THE RIGHT FACTS BY IT.
    *
-   * `geneticCellsFromLaboratoryReport` asks whether an archived cell IS
-   * the line read off the laboratory's own report. Asked of an EMPTY
-   * cell it answered `false` for every report-derived profile — which
-   * is the state the redactor turns into
+   * `resolveGeneticCells` asks what this platform holds for each cell
+   * and whether it read that off the laboratory's own report. Before
+   * the projection ran here it was asked of an EMPTY cell and answered
+   * 「nothing, and not from a laboratory」 for every report-derived
+   * profile — which is the state the redactor turns into
    * `not_read_off_a_laboratory_report`, on the profile whose passport
    * says 报告读取.
    */
@@ -421,16 +466,122 @@ describe('the assistant reads the profile the platform serves', () => {
     expect(fields.d4z4FromLaboratoryReport).toBe(true);
   });
 
-  it('never overwrites a box the patient filled in', async () => {
+  /**
+   * A FULL BOX THE REPORT CONTRADICTS.
+   *
+   * SUPERSEDES 「never overwrites a box the patient filled in」, which
+   * asserted `d4z4: '3/22'` and `methylation: '12%'` off this same
+   * fixture — the archived answers — with both laboratory flags false,
+   * on a profile whose report reads 4 and 28%. Superseded by the same
+   * owner decision of 2026-08-19 recorded above `takes the report’s own
+   * value for a cell the archived box disagrees with`: the assistant
+   * reads what the passport prints, and the passport prints the
+   * document's cell.
+   *
+   * THE AUTOFILL'S OWN RULE IS UNCHANGED AND IS NOT WHAT THIS TESTS.
+   * `applyGeneticReportAutofill` still fills empty boxes only and still
+   * writes nothing to the archive; `baseline_payload` on disk keeps the
+   * patient's 3/22 and 12%, and their profile screen keeps showing
+   * them. What changed is which of the two the retriever hands the
+   * prompt.
+   */
+  it('hands over the report’s cell, not the archived answer it contradicts', async () => {
     const fields = await fieldsFor(POPULATED_ROW, [document()]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(true);
+    // The one box this fixture already agreed with the report on reads
+    // the same either way.
+    expect(fields.haplotype).toBe('4qA');
+    expect(fields.haplotypeFromLaboratoryReport).toBe(true);
+  });
+
+  /**
+   * A CELL NO DOCUMENT STATES KEEPS THE ARCHIVED ANSWER.
+   *
+   * Document-first is a precedence and not a deletion: where the picked
+   * report is silent about a cell, the patient's own answer is the only
+   * thing this platform holds and it is what the assistant reads —
+   * ungraded, which is the passport's `profile_column` slot and the
+   * refusal the redactor defaults to.
+   */
+  it('keeps the archived answer for a cell the report says nothing about', async () => {
+    const fields = await fieldsFor(POPULATED_ROW, [
+      document({ fields: { haplotype: '4qA', geneticTestMethod: 'Southern blot' } }),
+    ]);
     expect(fields.d4z4).toBe('3/22');
     expect(fields.d4z4FromLaboratoryReport).toBe(false);
     expect(fields.methylation).toBe('12%');
     expect(fields.methylationFromLaboratoryReport).toBe(false);
-    // The one box this fixture agrees with the report on keeps its
-    // laboratory flag: the archived string IS the report's line.
+    expect(fields.diagnosisType).toBe('FSHD1');
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(false);
+  });
+
+  /**
+   * A TRANSCRIPTION STILL WINS THE CELL AND STILL GRADES NOTHING.
+   *
+   * The precedence is 「the picked document's cell」, and
+   * `pickGeneticEvidenceDocument` picks a 病历摘要 when no genetics
+   * report read anything out. The value the patient sees on their
+   * passport comes off that page, so it is the value the assistant
+   * reads too — with every flag false, which is 「转录自非基因报告文件」
+   * on the passport and a refusal to grade everywhere else. This is the
+   * one shape where the precedence moves a value the patient typed out
+   * of the prompt WITHOUT a laboratory behind the replacement, and it
+   * is deliberate: two surfaces naming different numbers for one
+   * measurement is the defect, not which of them is better attested.
+   */
+  it('takes a transcribed cell over the archived answer and grades none of it', async () => {
+    const fields = await fieldsFor(POPULATED_ROW, [
+      document({
+        id: 'doc-summary',
+        classifiedType: 'medical_summary',
+        declaredType: 'other',
+        page: TRANSCRIPTION_PAGE,
+      }),
+    ]);
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(false);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(false);
+    expect(fields.haplotypeFromLaboratoryReport).toBe(false);
+    expect(fields.diagnosisTypeFromLaboratoryReport).toBe(false);
+  });
+
+  /**
+   * THE RECORD THE DECISION WAS MEASURED ON.
+   *
+   * Report: D4Z4 4, 甲基化 28%, 单倍型 4qA, Southern blot. Boxes: 6 and
+   * 41%. The passport grades this record 基因确诊 and prints 4 and 28%
+   * with 「报告读取」; the retriever used to hand the prompt 6 and 41%
+   * with `not_read_off_a_laboratory_report` on both, and
+   * `readGeneticConfirmation` — which takes a cell only where the flag
+   * is TRUE — then answered NOT confirmed to a genetically confirmed
+   * patient.
+   */
+  it('gives the confirmation guard the laboratory’s own two cells', async () => {
+    const fields = await fieldsFor(
+      {
+        ...POPULATED_ROW,
+        id: 'profile-disagreeing',
+        baseline_payload: {
+          ...POPULATED_ROW.baseline_payload,
+          diseaseBackground: {
+            ...POPULATED_ROW.baseline_payload.diseaseBackground,
+            d4z4: '6',
+            methylation: '41%',
+          },
+        },
+      },
+      [document()],
+    );
+    expect(fields.d4z4).toBe('4');
+    expect(fields.d4z4FromLaboratoryReport).toBe(true);
     expect(fields.haplotype).toBe('4qA');
     expect(fields.haplotypeFromLaboratoryReport).toBe(true);
+    expect(fields.methylation).toBe('28%');
+    expect(fields.methylationFromLaboratoryReport).toBe(true);
   });
 
   it('emits nothing for a profile with no form and no documents', async () => {

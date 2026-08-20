@@ -1500,21 +1500,46 @@ _NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明"
 #: COLUMN of a row that is a genuine result — 「血钾 6.8 H 危急值」 — and
 #: a contains-test would refuse the very row the banner exists to draw
 #: attention to.
+#:
+#: AND THE TWO COMMONEST CHINESE FOOTNOTE LEADS WERE MISSING FROM IT.
+#: 注意事项 and 温馨提示 head the footnote block on a Chinese laboratory
+#: report at least as often as 备注 does — 温馨提示 is what a hospital
+#: prints above the paragraph telling the patient when to collect the
+#: next specimen, and 注意事项 is what it prints above the panic
+#: thresholds. Neither was recognised as a footnote AT ALL: 注意事项
+#: begins with 注 and the one-character lead below needs a SEPARATOR
+#: behind it, which 意 is not. Measured on a synthetic 血常规 carrying
+#: both, with a haemoglobin of 155 and a platelet count of 249 printed
+#: above them: `plt: 20` off 「温馨提示: 血小板计数低于 20 为危急值」 —
+#: the panic threshold published as this patient's platelet count, on
+#: the panel a clinician scans for exactly that number.
 _NOTE_ROW_PREFIXES: Tuple[str, ...] = (
-    "附注", "备注", "注释", "说明",
+    "附注", "备注", "注释", "说明", "注意事项", "温馨提示",
     "危急值", "警戒值", "单位换算", "换算", "折算", "计算公式",
 )
 
-#: THE ONE-CHARACTER SPELLING, WHICH IS NOT A PREFIX ON ITS OWN. 注 opens
-#: 注意事项 and 注射用…, so a bare `startswith` on it would refuse rows
-#: that are neither footnotes nor anything like one. It is a footnote
-#: lead only where a SEPARATOR follows it, which is the same thing the
-#: colon in the old 「注:」 entry was standing in for — except that the
-#: colon was the only separator a laboratory was allowed to print, and
-#: 「1. 注、」「[注]」「※注 」 are the same word introduced the same way.
-_NOTE_ROW_SHORT_PREFIXES: Tuple[str, ...] = ("注",)
+#: THE LEADS THAT ARE NOT PREFIXES ON THEIR OWN. 注 opens 注射用… and
+#: 注意 opens 注意力, so a bare `startswith` on either would refuse rows
+#: that are neither footnotes nor anything like one — and 提示 is the
+#: name of a COLUMN on half the laboratory tables this file reads. Each
+#: is a footnote lead only where a SEPARATOR follows it, which is the
+#: same thing the colon in the old 「注:」 entry was standing in for —
+#: except that the colon was the only separator a laboratory was allowed
+#: to print, and 「1. 注、」「[注]」「※注 」 are the same word introduced the
+#: same way.
+#:
+#: THE COLUMN HEADING IS NOT DECIDED HERE. A line that is nothing but
+#: 提示 matches this class through the `$` branch, and `_row_label`
+#: settles it as the heading it is — `_TABLE_HEADER_CELLS` is consulted
+#: two rules ABOVE the note rule, which is the precedence
+#: `test_no_line_can_claim_two_labels` pins down. Leaving 提示 out of
+#: this class instead would have been the same decision taken by
+#: omission, and would have lost 「提示: …」 carrying a threshold.
+_NOTE_ROW_SHORT_PREFIXES: Tuple[str, ...] = ("注意", "注", "提示")
 
-#: What may stand between a one-character footnote lead and its content.
+#: What may stand between a `_NOTE_ROW_SHORT_PREFIXES` lead and its
+#: content — and the whole of what makes it a lead rather than the first
+#: characters of an ordinary word.
 #: The closing halves of `_NOTE_DECORATION_OPENERS` are here too, so that
 #: 「[注] …」 is read as the footnote it is rather than as a row whose
 #: first analyte is called 注].
@@ -1663,7 +1688,28 @@ _SCOPE_BLOCK = "block"
 #: its table — costs a handful of rows instead of the whole panel. A
 #: Chinese laboratory footnote block is one to four numbered items, so a
 #: real one never reaches this; a block that does was never a block.
-_NOTE_BLOCK_MAX_ROWS = 8
+#:
+#: THE PARAGRAPH ABOVE REASONS IN ITEMS AND THE FUSE COUNTED OCR LINES,
+#: which are not the same unit and are not even close to it on the layout
+#: this file exists to read. PaddleOCR returns a text box per line, and a
+#: footnote item is a SENTENCE — 「4. 中性粒细胞绝对值低于 0.5 / 为危急值,
+#: / 请立即通知临床医师」 is one item and three lines. So the four-item
+#: block the fuse was sized for is a dozen lines, the fuse blew in the
+#: middle of item three, and every item after it went back to being a
+#: candidate result row — which is the entire defect `_SCOPE_BLOCK` was
+#: added to close, reappearing at item four. Measured on a synthetic
+#: 血常规 laid out that way, with a haemoglobin of 155 printed above the
+#: block: `neut_abs: 0.5` off 「4. 中性粒细胞绝对值低于 0.5 为危急值」 —
+#: an agranulocytosis threshold published as this patient's neutrophil
+#: count.
+#:
+#: So the bound is written in the unit it is reasoned in, and converted
+#: once, here. Both halves stay deliberately small: what a misread
+#: heading costs is still a handful of rows, and a block longer than
+#: four items of four lines was never a footnote block.
+_NOTE_BLOCK_MAX_ITEMS = 4
+_NOTE_BLOCK_MAX_ITEM_LINES = 4
+_NOTE_BLOCK_MAX_ROWS = _NOTE_BLOCK_MAX_ITEMS * _NOTE_BLOCK_MAX_ITEM_LINES
 
 #: Kinds that ASSERT nothing about this patient, whatever they contain.
 #: A reading is never taken off one. A REFUSAL still is — the absence
@@ -1781,6 +1827,13 @@ def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple
       - 附注 / 备注 / 注释 / 说明 are in `_NOTE_SECTION_HEADERS` AND in
         `_NOTE_ROW_PREFIXES`. Harmless — both say NOTE — but harmless
         by coincidence rather than by decision.
+      - 提示 is a `_TABLE_HEADER_CELLS` column heading AND a footnote
+        lead (`_NOTE_ROW_SHORT_PREFIXES`), and that overlap is why the
+        heading test below stands two rules ABOVE the note test. A bare
+        提示 cell read as a footnote HEADER would open a `_SCOPE_BLOCK`
+        region over the table printed under it; a 提示 carrying content
+        never reaches `_is_bare_header` at all and is refused by rule 5,
+        which is where it asserts something.
 
     So the precedence is written down ONCE, here, and
     `test_no_line_can_claim_two_labels` fails if any pair of these lists
@@ -5397,6 +5450,51 @@ def _extract_medical_summary(lines: List[str], fields: List[Dict[str, Any]], nor
     }
 
 
+#: AN MRC GRADE AS AN EXAMINER WRITES IT — the grade, carrying either the
+#: ± modifier or THE OTHER END OF A RANGE.
+#:
+#: 「4-」 IS GRADE 4 MINUS AND 「4-5级」 IS AN INTERVAL. The same ASCII
+#: hyphen, and the only thing that tells them apart is whether a digit
+#: follows it. This pattern was `[0-5](?:[+-])?` — the modifier with no
+#: lookahead — so 「三角肌肌力4-5级」, an examiner declining to choose
+#: between grade 4 and grade 5, was read as the determinate 「4-」 with the
+#: 5 silently dropped, and `MRC_NORMALIZATION` then typed that 3.7: a
+#: number BELOW BOTH ENDS of the interval it was read off. It is
+#: published as `mrc_score`, carried onto `deltoid_strength` and its
+#: siblings by `_legacy_aliases`, and averaged into 平均肌力 on the
+#: passport, the share page, the referral pack and the markdown export.
+#: 「3-4级」 became 2.7 the same way. Nobody measured either number.
+#:
+#: THE SAME CELL WAS FIXED ON THE READER SIDE SEVERAL ROUNDS AGO —
+#: `STRENGTH_RANGE_CELL` and `parseScore` in
+#: apps/api/src/modules/patient-profile/profile.passport.ts — AND THAT
+#: FIX CANNOT REACH THIS ONE. That reader is handed whatever string this
+#: file publishes, and 「4-」 is a determinate grade in any vocabulary. A
+#: range refused downstream and manufactured upstream is not refused.
+#:
+#: THE ANSWER FOR A RANGE IS THE PRINTED RANGE AND NO NUMBER, which is
+#: the answer `parseScore` gives and the answer this file already gives
+#: for a written-out repeat count. The cell is published verbatim, so the
+#: page still shows what the examiner wrote; `MRC_NORMALIZATION` has no
+#: entry for it, so `_extract_physical_exam` types it with
+#: `NO_NORMALIZED_VALUE` and nothing downstream can average it.
+#:
+#: THE SEPARATOR IS `_RANGE_SEPARATOR` AND IS NOT SPELLED HERE. Every
+#: dash the modifier accepts has to be in the range class or 「4‐5级」 —
+#: U+2010, which is what an OCR pass hands back for a printed dash — is
+#: read as grade 4 MINUS all over again; that containment is what the
+#: TypeScript half spells out at `STRENGTH_RANGE_CELL`, and deriving the
+#: class rather than retyping it is what keeps the two in step. The range
+#: branch is tried FIRST for the same reason, and the modifier branch is
+#: still reached by backtracking when no digit follows the sign.
+_MRC_GRADE = rf"[0-5](?:\s*{_RANGE_SEPARATOR}\s*[0-5]|[+-])?"
+
+#: The same grade, reached across a side word. The gap excludes the grade
+#: digits themselves so that 「左侧」 binds to the next grade printed and
+#: not to one further down the sentence.
+_MRC_SIDE_GAP = r"[^0-5\n(]{0,12}"
+
+
 def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     sentences = _extract_sentences("\n".join(lines))
     muscle_strength: List[Dict[str, Any]] = []
@@ -5408,8 +5506,8 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         canonical_name, body_region = muscle
         side = _canonical_side(sentence)
 
-        left_match, _ = _find_regex(sentence, [r"(?:左|left)[^0-5\n(]{0,12}([0-5](?:[+-])?)"])
-        right_match, _ = _find_regex(sentence, [r"(?:右|right)[^0-5\n(]{0,12}([0-5](?:[+-])?)"])
+        left_match, _ = _find_regex(sentence, [rf"(?:左|left){_MRC_SIDE_GAP}({_MRC_GRADE})"])
+        right_match, _ = _find_regex(sentence, [rf"(?:右|right){_MRC_SIDE_GAP}({_MRC_GRADE})"])
 
         if left_match or right_match:
             if left_match:
@@ -5440,7 +5538,7 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
                 )
             continue
 
-        generic_match, _ = _find_regex(sentence, [r"([0-5](?:[+-])?)"])
+        generic_match, _ = _find_regex(sentence, [rf"({_MRC_GRADE})"])
         if generic_match:
             score = generic_match.group(1)
             muscle_strength.append(
@@ -5461,7 +5559,18 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
             _build_field(
                 "mrc_score",
                 item["mrc_score"],
-                normalized_value=item["mrc_numeric"],
+                # A GRADE THIS PLATFORM DECLINED TO TYPE SAYS SO. A range
+                # — and any modifier spelling `MRC_NORMALIZATION` does not
+                # list — has no numeric grade, and passing the ordinary
+                # `None` makes `_build_field` fall back to the PRINTED
+                # TEXT, which `_build_observations` then reads into
+                # `result.value_num`: exactly the hole `NO_NORMALIZED_VALUE`
+                # was added for, on the cell 平均肌力 is averaged from.
+                normalized_value=(
+                    item["mrc_numeric"]
+                    if item["mrc_numeric"] is not None
+                    else NO_NORMALIZED_VALUE
+                ),
                 side=item["side"],
                 body_region=item["body_region"],
                 source_text=item["source_text"],
@@ -8235,12 +8344,30 @@ def _read_qualitative_row(
     Returns the cell, `None` where no row was found (the caller falls
     back to its patterns), or `_AMBIGUOUS_QUALITATIVE` where the row was
     found and could not be read.
+
+    AND IT ASKS THE ROW MODEL FIRST, WHICH THE TWO TEXT ROW READERS WERE
+    THE LAST READERS IN THIS FILE NOT TO DO. `_extract_lab_value` has
+    consulted `_result_row_mask` since the mask was written, and
+    `_panel_haystacks` blanks a refused line before a pattern ever sees
+    it — so on a page with a footnote block the numeric side declines
+    twice and these two read the block anyway, and whatever they return
+    REPLACES the pattern's answer outright (see `_extract_text_panel`).
+    A footnote naming an analyte and quoting its reference is exactly
+    the shape both of these recognise: measured on a synthetic 尿常规
+    whose 备注 block reads 「尿蛋白 阴性 为参考值」, `urine_protein: 阴性`
+    on a patient whose printed result is 阳性 — the reference verdict
+    published as the patient's own, which is the defect
+    `_pick_qualitative_cell` exists to prevent, arriving through the
+    door in front of it.
     """
     keywords = [word.lower().strip() for word in vocabulary.get(field_name, ()) if word and word.strip()]
     if not keywords:
         return None
     competing = _competing_analyte_keywords(vocabulary, field_name)
+    is_result_row = _result_row_mask(lines)
     for index, line in enumerate(lines):
+        if not is_result_row[index]:
+            continue
         span = _analyte_match_span(line.lower(), keywords, competing)
         if span is None or _starts_no_row(line):
             continue
@@ -8254,9 +8381,16 @@ def _read_qualitative_row(
         # `_ends_the_row` the numeric scan uses, with the same exception
         # the flag cells needed: a verdict is not the next analyte,
         # however much `_looks_like_analyte` thinks 「阴性」 is a name.
+        #
+        # AND A FOOTNOTE ENDS THE ROW HERE TOO — the same boundary
+        # `_extract_lab_value` puts on its own forward scan. A banner
+        # printed between an analyte cell and its verdict cell is not
+        # this row's next column.
         for offset in range(1, 5):
             next_index = index + offset
             if next_index >= len(lines):
+                break
+            if not is_result_row[next_index]:
                 break
             candidate = lines[next_index].strip()
             if not candidate:
@@ -8343,6 +8477,14 @@ def _read_free_text_row(
     could be a reading (the caller falls back to its patterns), or
     `_AMBIGUOUS_QUALITATIVE` where the row was found and this platform
     cannot say which of its cells is the patient's.
+
+    THE ROW MODEL IS ASKED FIRST, for the reason spelled out in
+    `_read_qualitative_row`: a footnote block is prose that NAMES an
+    analyte and states what its reading should be, and this reader wins
+    outright over the pattern that `_panel_haystacks` already protected.
+    Measured on a synthetic 尿常规 whose 备注 block reads 「尿颜色 淡黄色
+    为参考值」: `urine_color: 淡黄色` for a patient whose printed colour
+    is 深黄色.
     """
     keywords = [word.lower().strip() for word in vocabulary.get(field_name, ()) if word and word.strip()]
     if not keywords:
@@ -8373,7 +8515,10 @@ def _read_free_text_row(
             or _starts_no_row(stripped)
         )
 
+    is_result_row = _result_row_mask(lines)
     for index, line in enumerate(lines):
+        if not is_result_row[index]:
+            continue
         span = _analyte_match_span(line.lower(), keywords, competing)
         if span is None or _starts_no_row(line):
             continue
@@ -8385,6 +8530,8 @@ def _read_free_text_row(
         for offset in range(1, 5):
             next_index = index + offset
             if next_index >= len(lines):
+                break
+            if not is_result_row[next_index]:
                 break
             candidate = lines[next_index].strip()
             if not candidate:

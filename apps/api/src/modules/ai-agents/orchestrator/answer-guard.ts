@@ -202,10 +202,12 @@ import {
   PRINTED_NUMBER,
   RANGE_SEPARATOR_SOURCE,
 } from '../../../utils/clinical-notation.js';
+import { MUSCLE_GROUP_LABELS, SIDE_LABELS } from '../../patient-profile/export/labels.js';
 import type { GeneticEvidenceDocumentLike } from '../../patient-profile/genetic-evidence.js';
 import {
   GENETIC_FIELD_KEYS,
   isLaboratoryGeneticReport,
+  pickGeneticEvidenceDocument,
   pickReading,
 } from '../../patient-profile/genetic-evidence.js';
 import {
@@ -214,7 +216,7 @@ import {
   parsePermissiveHaplotype,
   readSizeCell,
 } from '../../patient-profile/profile.passport.js';
-import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
+import { HARD_DELETE_KEYS_LOWER, OCR_FIELD_LABELS_ZH } from '../security/allowlist.js';
 
 // ------------------------------------------------------------ normalisation
 
@@ -292,6 +294,52 @@ const CELL_NAMES = Object.keys(CELL_TERMS);
 const cellOfKey = (key: string): string | null => {
   const lower = key.toLowerCase();
   return CELL_NAMES.find((cell) => lower.includes(CELL_TERMS[cell].keyMatch)) ?? null;
+};
+
+/**
+ * WHICH PAYLOAD KEY'S **VALUE** IS ITSELF A CHINESE NAME FOR ONE OF THIS
+ * PATIENT'S SERIES.
+ *
+ * One key, and it is deliberately one: `metricLabel` is built by
+ * `patient-followups.ts` out of its own fixed label tables and is
+ * documented there as 「no part of it is the patient's own protocol
+ * string」. `reportTypeLabel` is NOT here — it names a document class
+ * (「基因检测报告」), not a measurement, so a severity claim cannot land
+ * on it and admitting it would only add a phrase to match against.
+ *
+ * Matched case-insensitively, as `cellOfKey` matches its own.
+ */
+const PATIENT_SERIES_LABEL_KEYS: ReadonlySet<string> = new Set(['metriclabel']);
+
+/**
+ * The names a Chinese sentence would use for the cell a platform label
+ * spells 「肌酸激酶 CK」.
+ *
+ * THE HEAD AND THE ABBREVIATION, NOT EVERY WORD IN THE LABEL. The model
+ * writes 「你的肌酸激酶」 or 「你的 CK」; it does not write the row label
+ * back. Taking every whitespace part would also admit the two suffixes
+ * `analyteSiblingLabels` appends — 「…异常标记」, 「…参考区间」 — as terms
+ * of their own, which name no measurement and would sit in this set
+ * matching any sentence that happens to use the words.
+ *
+ * A ONE-CHARACTER TERM IS DROPPED (钾, 钠, 氯, 钙, 镁), for the reason
+ * `noteIdentifier` states about its own set: a single character is too
+ * short to be anything but noise in a substring test — 钙 is inside
+ * 钙化 and 钾 inside 低钾血症, and this limb decides to WITHHOLD.
+ */
+const LATIN_ABBREVIATION = /^[A-Za-z][A-Za-z0-9/\-]{1,9}$/u;
+
+const analyteTerms = (label: string): string[] => {
+  const parts = label
+    .replace(/[（(][^）)]*[）)]/gu, ' ')
+    .split(/\s+/u)
+    .filter((part) => part.length >= 2 && part.length <= 32);
+  const head = parts[0];
+  const terms = head ? [head] : [];
+  for (const part of parts.slice(1)) {
+    if (LATIN_ABBREVIATION.test(part)) terms.push(part);
+  }
+  return terms;
 };
 
 /** Chinese for the cell, used in the excision notice. */
@@ -595,6 +643,48 @@ export interface GuardEvidence {
    * HIS cell.
    */
   patientCells: ReadonlySet<string>;
+  /**
+   * ...AND THE SAME FACT FOR EVERYTHING ON HIS RECORD THAT IS NOT ONE OF
+   * THE FOUR GENETICS CELLS: the Chinese THIS PLATFORM names his
+   * laboratory values, his timed tests and his self-test series in.
+   *
+   * `patientCells` above is the whole vocabulary the possessive limb of
+   * check 1 had, and `CELL_TERMS` holds four cells — so a claim landing
+   * on anything else on his record was not recognised as being about him
+   * at all:
+   *
+   *   「你的肌酸激酶偏高，说明病情比较重」
+   *   「你的连续上 10 级台阶越来越慢，进展是比较快的」
+   *
+   * Neither carries a digit, so check 1's number limb has nothing to
+   * fire on; neither names a genetics cell, so the possessive limb had
+   * nothing either. Both are the forbidden claim, written about the two
+   * kinds of value this product collects MOST — a blood panel and the
+   * daily record form — and both published.
+   *
+   * THE NAMES ARE THE PLATFORM'S OWN AND THEY ARE IMPORTED, which is why
+   * this is a fact and not a fifth lexicon:
+   *
+   *   - `OCR_FIELD_LABELS_ZH` (security/allowlist.ts) is THE table the
+   *     renderer prints an OCR cell's label from — 「肌酸激酶 CK」,
+   *     「乳酸脱氢酶 LDH」, 「脂肪浸润」. If the model is writing about a
+   *     laboratory value of his at all, this is the wording it read.
+   *   - `metricLabel` on a followups payload is a Chinese label the
+   *     retriever built out of its own fixed tables (`METRIC_LABELS`,
+   *     `TIMED_TEST_LABELS`, `LITERAL_PROTOCOL_LABELS`) — 「肌力·三角肌」,
+   *     「连续上 10 级台阶」 — and no part of it is the patient's own
+   *     text. It names the CURVE, which is exactly the granularity a
+   *     progression claim lands on.
+   *
+   * AND ONLY WHERE THE TURN HOLDS A VALUE FOR IT, the same restriction
+   * `patientCells` carries: these are collected in the payload walk, off
+   * leaves that actually have a value, so 「肌酸激酶」 in an answer to a
+   * patient with no blood panel on file is a sentence about the concept
+   * and this limb never sees it.
+   *
+   * Sorted, so an unchanged turn produces an unchanged set.
+   */
+  patientValueTerms: readonly string[];
   /**
    * THIS PLATFORM'S OWN GRADE OF THIS RECORD'S GENETICS, for check 6.
    * See `readGeneticConfirmation`.
@@ -1543,13 +1633,70 @@ const collectConversationNumbers = (
  * were both exported to end. There is no threshold, no allele name and
  * no field spelling in this block that this file chose.
  *
- * THE TWO ITEMS MUST COME OFF THE SAME RECORD. The passport grades ONE
- * document (`pickGeneticEvidenceDocument`), so a haplotype off the
+ * THE TWO ITEMS MUST COME OFF THE SAME RECORD, AND IT MUST BE THE
+ * RECORD THE PASSPORT PICKED — NOT WHICHEVER ONE OF THIS TURN'S
+ * PAYLOADS HAPPENS TO SATISFY THE CONJUNCTION.
+ *
+ * The first half was here from the start: a haplotype off the
  * registration form paired with a count off a genetics report is not a
- * confirmation — it is the cross-document mixing the whole
- * laboratory gate exists to refuse. The conjunction is therefore asked
- * per payload, and the turn is confirmed only if some ONE payload
- * satisfies all of it.
+ * confirmation, it is the cross-document mixing the whole laboratory
+ * gate exists to refuse. So the conjunction was asked per payload — and
+ * then the turn was called confirmed if SOME payload satisfied it,
+ * which is an OR over documents where the passport has a PICK. Two
+ * documents is not a hypothetical on this platform: a patient who
+ * re-tests, or who uploads the laboratory's report and the hospital's
+ * reissue of it, has two rows typed `genetic_report`, and
+ * `pickGeneticEvidenceDocument` exists precisely because every reader
+ * that decided for itself which one to believe had drifted from every
+ * other reader. Rendered, with a 2019 report reading 3 repeats on a 4qA
+ * allele and a 2024 re-test reading the contraction on the 4qB allele:
+ * the passport, the share page, the referral pack and the anaesthetist's
+ * card all print 未经基因确诊（非允许型单倍型）off the 2024 report, and
+ * this check found the 2019 one, said `confirmed`, and stood down — so
+ * the assistant was again the one surface saying the opposite thing,
+ * which is the exact defect the guard was built to end.
+ *
+ * AND THE INVERSE, off the same OR. The check graded whatever subset of
+ * records this turn's retrieval happened to return, and the stand-down
+ * only covered a turn holding NO genetics cell at all. A turn that
+ * brought back the 病历摘要 quoting the repeat count but not the
+ * genetics report itself holds a genetics cell, satisfies nothing, and
+ * answered `not_confirmed` — about a patient every other surface calls
+ * 基因确诊. That is the excision the block at the bottom of this comment
+ * calls the worst outcome this file can produce, reached from a turn
+ * that looked like it held a fact.
+ *
+ * ONE FIX FOR BOTH: ask the passport's question of the passport's
+ * document. `pickGeneticEvidenceDocument` is exported and is the ONLY
+ * answer to 「which document is this profile's genetic evidence」 on this
+ * platform; the report-scope payloads are rebuilt into the document
+ * shape it takes, it names one, and that one is graded. Nothing else in
+ * the turn votes.
+ *
+ * WHAT THE PICK IS RANKED ON HERE, AND THE ONE KEY THAT IS NOT REAL.
+ * `metadata.fields` is all this function is given (see
+ * `BuildGuardEvidenceInput.patientPayloads`), and the retriever's
+ * `documentId` / `uploadedAt` live one level up in `metadata`, so they
+ * are not in it. Every ranking key the picker reads FIRST — does it say
+ * anything, is it the laboratory's, did the parse land, how much does
+ * it carry — is inside `fields` and is real. Only the last two are not:
+ * `uploadedAt` is null for every candidate, so the recency comparison
+ * is a tie for all of them and the `id` tiebreak decides. That `id` is
+ * the payload's ORDINAL in this turn's array, which is the retriever's
+ * own order — `ORDER BY (pd.status = 'parsed') DESC, pd.uploaded_at
+ * DESC` in retrievers/patient-reports.ts — so the lowest ordinal is the
+ * parsed, most recent row, which is what `b.time - a.time` would have
+ * chosen anyway. It is written down as an ordinal rather than left to a
+ * stable sort so that the next reader can see it is a decision.
+ *
+ * WHAT IS STILL OPEN, stated rather than approximated: the passport
+ * picks over the profile's WHOLE document set and this picks over the
+ * rows retrieval returned, so a turn that brought back a genetics
+ * report which is not the passport's evidence document grades the wrong
+ * one. Closing it needs `documentId` and `uploadedAt` carried into
+ * `patientPayloads` (a change in run.ts, which is not this file's), and
+ * even then a subset is a subset. What it costs is bounded by the
+ * stand-down below.
  *
  * THE PROFILE SCOPE ANSWERS THE LABORATORY QUESTION WITH A FLAG rather
  * than with a document, and that flag is the passport reader's own
@@ -1567,8 +1714,8 @@ const collectConversationNumbers = (
  * WHAT IT DOES WHEN THE TURN HOLDS NOTHING, AND WHY THAT IS A STAND-DOWN
  * RATHER THAN A REFUSAL.
  *
- * `no_genetics_this_turn` — no patient payload carried a D4Z4 or a
- * haplotype cell at all — makes check 6 stand down, exactly as check 2
+ * `no_genetics_this_turn` — the turn holds nothing this platform would
+ * grade the diagnosis off — makes check 6 stand down, exactly as check 2
  * stands down when `ungradedCells` is empty. It is the same rule and it
  * has a sharper reason here: the inverse error is the worst outcome
  * this file can produce. A patient whose genetics ARE confirmed asking
@@ -1582,6 +1729,39 @@ const collectConversationNumbers = (
  * fails toward PUBLICATION: what closes it is the retrieval rule in
  * `companion-tools.ts` that decides `get_my_reports` runs, which is
  * that file's decision and not this one's.
+ *
+ * ...AND 「NOTHING」 IS NOW THE RIGHT SET RATHER THAN THE EMPTY ONE.
+ *
+ * The condition used to be 「no payload carried a D4Z4 or a haplotype
+ * KEY」, which is a question about spellings and not about evidence. A
+ * turn holding one document — a 病历摘要 transcribing a repeat count off
+ * a genetics report the retrieval did not return — passed it, and then
+ * had nothing this platform grades a diagnosis off. That is not a
+ * confirmed record and it is not an unconfirmed one; it is a turn with
+ * no fact in it, wearing a genetics cell. So the stand-down is now the
+ * two states where the turn genuinely cannot answer:
+ *
+ *   - the picked document is not the laboratory's own report, AND
+ *   - no profile-scope payload carried a genetics cell either.
+ *
+ * The second half is what keeps the record this check was written for
+ * inside the check. `geneticCellsFromLaboratoryReport` in
+ * retrievers/patient-profile.ts runs the passport's own reader over the
+ * profile's WHOLE document set, so a profile payload carrying 重复数 3
+ * and 单倍型 4qA with both laboratory flags FALSE is not an absence of
+ * evidence — it is this platform having asked the question over
+ * everything on file and answered no. That payload still grades, still
+ * comes out `not_confirmed`, and the sentence 「你已经算基因确诊了」 over
+ * the registration form's own boxes is still cut.
+ *
+ * WHAT THE STAND-DOWN COSTS, stated: a patient whose only genetics is a
+ * transcription IS unconfirmed on every other surface, and on a turn
+ * that retrieved only that transcription this check no longer says so.
+ * What still holds there is check 2 — `laboratoryReadCells` is a union
+ * and does not include a transcribed cell, so 「你的重复数落在 FSHD1 的
+ * 范围里」 and 「4qA 是允许型」 are still excised off that same turn. The
+ * whole-diagnosis sentence is the part that goes unguarded, and it goes
+ * unguarded in the direction this file fails in everywhere else.
  */
 export type GeneticConfirmationState = 'confirmed' | 'not_confirmed' | 'no_genetics_this_turn';
 
@@ -1609,27 +1789,42 @@ const isRecordValue = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
- * A reports-scope payload — the shape `buildReportFields` hands over,
- * one document per chunk.
+ * A reports-scope payload REBUILT INTO A DOCUMENT, because that is the
+ * shape the one picker on this platform takes.
  *
  * The document-like shape and the question asked of it are copied from
  * `chunkDocument` / `chunkIsLaboratoryGeneticReport` in
  * security/pii-redactor.ts, which is the reader that decides whether the
- * `_clinical` rows in this same turn's prompt say anything at all. The
- * `id` and `uploadedAt` members are required by the shape and read by
- * nothing on this path: they are `pickGeneticEvidenceDocument`'s
- * ordering keys and no pick is being made here.
+ * `_clinical` rows in this same turn's prompt say anything at all.
+ *
+ * `id` IS THE PAYLOAD'S ORDINAL AND `uploadedAt` IS NULL, and both are
+ * load-bearing rather than filler — see 「WHAT THE PICK IS RANKED ON
+ * HERE」 in the block above `GeneticConfirmationState` for why the
+ * ordinal is the retriever's own recency order and why a null date is
+ * the honest value rather than a guess off `reportDate`, which is the
+ * LABORATORY's date and not the row's arrival.
  *
  * Returns null — 「this is not a reports payload」 — rather than a pair of
  * nulls, so the profile reader below gets its turn.
  */
-const reportScopeLaboratoryCells = (
+interface ReportScopeDocument extends GeneticEvidenceDocumentLike {
+  /** `isLaboratoryGeneticReport` of this document, asked once here and
+   *  carried, exactly as `GeneticEvidenceReading.laboratory` carries it
+   *  for the passport's own pick. */
+  readonly laboratory: boolean;
+  readonly cells: LaboratoryGeneticCells;
+}
+
+const reportScopeDocument = (
   payload: Record<string, unknown>,
-): LaboratoryGeneticCells | null => {
+  ordinal: number,
+): ReportScopeDocument | null => {
   if (!isRecordValue(payload.fields)) return null;
   const fields = payload.fields;
   const document: GeneticEvidenceDocumentLike = {
-    id: '',
+    // Zero-padded so the picker's final tiebreak — a STRING comparison
+    // on `id` — orders 2 ahead of 10 the way the array does.
+    id: String(ordinal).padStart(4, '0'),
     uploadedAt: null,
     documentType: typeof payload.documentType === 'string' ? payload.documentType : null,
     status: typeof payload.status === 'string' ? payload.status : null,
@@ -1638,12 +1833,22 @@ const reportScopeLaboratoryCells = (
       extractedText: typeof payload.extractedText === 'string' ? payload.extractedText : null,
     },
   };
-  if (!isLaboratoryGeneticReport(document)) return { d4z4: null, haplotype: null };
+  const laboratory = isLaboratoryGeneticReport(document);
   return {
-    d4z4: pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats),
-    haplotype: pickReading(fields, GENETIC_FIELD_KEYS.haplotype),
+    ...document,
+    laboratory,
+    cells: laboratory
+      ? {
+          d4z4: pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats),
+          haplotype: pickReading(fields, GENETIC_FIELD_KEYS.haplotype),
+        }
+      : { d4z4: null, haplotype: null },
   };
 };
+
+const reportScopeLaboratoryCells = (
+  payload: Record<string, unknown>,
+): LaboratoryGeneticCells | null => reportScopeDocument(payload, 0)?.cells ?? null;
 
 /** A profile-scope payload. See the block above on the two flags. */
 const profileScopeLaboratoryCells = (payload: Record<string, unknown>): LaboratoryGeneticCells => ({
@@ -1651,6 +1856,19 @@ const profileScopeLaboratoryCells = (payload: Record<string, unknown>): Laborato
   haplotype:
     payload.haplotypeFromLaboratoryReport === true ? pickReading(payload, ['haplotype']) : null,
 });
+
+/**
+ * Does this profile-scope payload carry a genetics cell AT ALL —
+ * whatever the laboratory flag beside it says?
+ *
+ * The flag decides how the cell is GRADED; this decides whether the
+ * platform has an answer to grade. A profile carrying 重复数 3 with the
+ * flag false is this platform having asked the passport's question over
+ * every document on file and answered 「not off a laboratory report」,
+ * which is a fact and not an absence — see the stand-down block above.
+ */
+const profileScopeCarriesGenetics = (payload: Record<string, unknown>): boolean =>
+  pickReading(payload, ['d4z4']) !== null || pickReading(payload, ['haplotype']) !== null;
 
 /**
  * The two cells whose `_clinical` row can be this platform DECLINING to
@@ -1727,18 +1945,43 @@ export const readGeneticConfirmation = (
   if (!cellsOnFile.has('d4z4') && !cellsOnFile.has('haplotype')) {
     return { state: 'no_genetics_this_turn', shortfall: '' };
   }
-  // The record that came CLOSEST, because that is the one whose
-  // shortfall is worth telling the model and the patient about: a
-  // 病历摘要 sitting beside a genetics report should not have the pack's
-  // sentence read off the 病历摘要.
-  let closest = SHORTFALL_ZH.length - 1;
-  for (const payload of payloads) {
-    const cells = reportScopeLaboratoryCells(payload) ?? profileScopeLaboratoryCells(payload);
-    const shortfall = shortfallOf(cells);
-    if (shortfall === 0) return { state: 'confirmed', shortfall: '' };
-    if (shortfall < closest) closest = shortfall;
-  }
-  return { state: 'not_confirmed', shortfall: SHORTFALL_ZH[closest] ?? '' };
+
+  // THE TURN'S RECORDS, SPLIT THE WAY THE TWO READERS ABOVE SPLIT THEM.
+  // A payload is a reports-scope DOCUMENT or it is not; what is not goes
+  // to the profile reader, which is the arrangement `laboratoryReadCells`
+  // already runs and the reason those two readers exist in this order.
+  const documents: ReportScopeDocument[] = [];
+  // The FIRST profile-scope payload carrying genetics, and there is only
+  // ever one profile: `patient_profile` returns a single chunk for a
+  // single row, so a second one would be the same projection twice and
+  // would carry the same two cells.
+  let profileCells: LaboratoryGeneticCells | null = null;
+  payloads.forEach((payload, ordinal) => {
+    const document = reportScopeDocument(payload, ordinal);
+    if (document) documents.push(document);
+    else if (profileCells === null && profileScopeCarriesGenetics(payload)) {
+      profileCells = profileScopeLaboratoryCells(payload);
+    }
+  });
+
+  // ONE DOCUMENT, NAMED BY THE ONE PICKER. Not 「the record that came
+  // closest」, which was an OR wearing a ranking: the closest record is
+  // the one whose shortfall reads best, and the passport does not grade
+  // the record that reads best.
+  const picked = pickGeneticEvidenceDocument(documents);
+  // Only the LABORATORY's own report can carry the passport's answer. A
+  // pick that is a transcription is the honest pick for DISPLAY — it is
+  // the patient's only copy of the number — and it is not a laboratory's
+  // sentence, so it grades nothing here. See `pickGeneticEvidenceDocument`
+  // on why it yields there and why the yield is carried rather than lost.
+  const cells: LaboratoryGeneticCells | null = picked?.laboratory ? picked.cells : profileCells;
+  // The turn holds a genetics cell and nothing this platform grades a
+  // diagnosis off. See 「...AND 「NOTHING」 IS NOW THE RIGHT SET」 above.
+  if (cells === null) return { state: 'no_genetics_this_turn', shortfall: '' };
+
+  const shortfall = shortfallOf(cells);
+  if (shortfall === 0) return { state: 'confirmed', shortfall: '' };
+  return { state: 'not_confirmed', shortfall: SHORTFALL_ZH[shortfall] ?? '' };
 };
 
 /**
@@ -1823,6 +2066,8 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
    *  is a single character is too short to be anything but noise in a
    *  substring test. */
   const identifiers = new Map<string, Set<string>>();
+  /** See `patientValueTerms` on `GuardEvidence`. */
+  const valueTerms = new Set<string>();
   const noteIdentifier = (cell: string, value: unknown): void => {
     if (typeof value !== 'string' && typeof value !== 'number') return;
     const text = String(value).trim();
@@ -1850,6 +2095,25 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     if (cell !== null) {
       onFile.add(cell);
       noteIdentifier(cell, value);
+      return;
+    }
+    // ...AND THE SAME QUESTION FOR EVERYTHING THAT IS NOT ONE OF THE
+    // FOUR CELLS. See `patientValueTerms`. Reached only on a leaf that
+    // HAS a value, which is what makes it a fact about this patient
+    // rather than a vocabulary this file happens to know.
+    if (PATIENT_SERIES_LABEL_KEYS.has(key.toLowerCase())) {
+      // The value IS the platform's Chinese name for the curve, whole:
+      // 「连续上 10 级台阶」 does not survive being cut into words.
+      const label = String(value).trim();
+      if (label.length >= 2 && label.length <= 32) valueTerms.add(label);
+      return;
+    }
+    // `typeof === 'string'` and not `!== undefined`: the key comes off a
+    // payload this file did not write, and `toString` / `constructor`
+    // are keys every object literal answers to with a FUNCTION.
+    const analyte = OCR_FIELD_LABELS_ZH[key];
+    if (typeof analyte === 'string') {
+      for (const term of analyteTerms(analyte)) valueTerms.add(term);
     }
   };
   for (const payload of input.patientPayloads) walk(payload, '', 0);
@@ -1983,6 +2247,7 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     corpusChunkCount: input.corpusTexts.length,
     recordIntervals,
     patientCells,
+    patientValueTerms: [...valueTerms].sort(),
     cellIdentifiers: new Map([...identifiers].map(([cell, set]) => [cell, [...set]])),
     // Read off the RAW payloads, and off `onFile` rather than off the
     // projection: a cell strict consent stripped out of the prompt is
@@ -2207,6 +2472,102 @@ const SEVERITY_AXIS = '(?:早(?!期)|晚|重|轻|快|慢|差)';
  *        register that is covered and buys back two sentences that
  *        should reach the patient.
  */
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ * THE 级 THIS PLATFORM PRINTS THAT IS NOT A VERDICT ABOUT HOW BAD IT IS.
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * 级 had three exclusions — 一级亲属, 三级医院, 一级预防 — and every one
+ * of them is a word that FOLLOWS the 级. The commonest 级 in this
+ * product's own data follows nothing: it PRECEDES the number, because it
+ * is a measurement's name.
+ *
+ * THE MRC / MMT MUSCLE GRADE. This platform structurally holds one —
+ * `patient_measurements`, MUSCLE_GROUPS scored 0-5 — and prints it on
+ * every surface it has: 「平均 3.5 级」 on the clinical passport tile and
+ * the share page, 「- 平均肌力：3.5 级」 in the markdown export, 「三角肌
+ * 4-5级」 as the examination cell `parseScore` reads in profile.passport.ts,
+ * and 「肌力·三角肌」 as `get_my_records`' own metric label. Every one of
+ * those matched the band. So on a patient whose strength readings are 3
+ * and 4, the sentence
+ *
+ *   「你的三角肌肌力是 4 级，胫骨前肌是 3 级。」
+ *
+ * — this platform reading his own measurements back to him, the thing
+ * the muscle self-test exists for — carried a 「severity band」 and one of
+ * his own numbers, and check 1 excised it. An MRC grade is a
+ * MEASUREMENT of a muscle, not a verdict on a disease, and reading one
+ * as the other is reading the value backwards.
+ *
+ * AND THE STAIRS, which are the same shape and were the same silence:
+ * `LITERAL_PROTOCOL_LABELS` in retrievers/patient-followups.ts writes
+ * 「连续上 10 级台阶」 on every stair row the daily form has ever posted,
+ * `TIMED_TEST_LABELS` names one test 「四级台阶上下」, and 抗重力 is scored
+ * over 「上一级台阶 / 下一级台阶」. There the exclusion IS on the right,
+ * beside the three that were already there, because 台阶 is what follows
+ * the 级.
+ *
+ * BOTH DIRECTIONS, WHICH IS WHY THIS IS A LEAD AND NOT A WORD LIST.
+ * 「你的肌力下降说明病情已经是 3 级了」 is a severity verdict written as a
+ * grade and it must still fire — so the exclusion is not 「the sentence
+ * mentions 肌力」 and not 「肌力 stands anywhere in the clause」. It is
+ * 「the grade is the reading OF that measurement」, which in Chinese means
+ * the measurement's name and the number are separated by nothing but the
+ * material a row label puts between them: a side, a group name, a
+ * copula, the 级 of the reading before it in a list, and the digits of a
+ * decimal average or of a 4-5 range. 下降说明病情已经是 is not that
+ * material, so the verdict above keeps its violation.
+ *
+ * THE NAMES ARE IMPORTED, NOT RETYPED. `MUSCLE_GROUP_LABELS` and
+ * `SIDE_LABELS` in patient-profile/export/labels.ts are the one place
+ * this platform spells a muscle group and a side, and that file exists
+ * because 「the label a receiver sees for `deltoid` cannot differ」
+ * between two readers. A group appended there extends this exclusion on
+ * its own — which is the failure `METRIC_LABELS` in patient-followups.ts
+ * already records having had (face and abdominal were appended to the
+ * enum and a hand-copied table stopped short of both).
+ *
+ * The connective half IS a register list and fails toward WITHHOLDING,
+ * which for an exclusion means the opposite direction to the rest of
+ * this file and is worth saying out loud: a linking word missing from it
+ * costs a true sentence about the patient's own strength, not an escape
+ * hatch. It is kept as tight as the printed shapes allow for exactly
+ * that reason.
+ */
+const MUSCLE_GRADE_MARKER = `(?:${['肌力', 'MMT', 'MRC', ...Object.values(MUSCLE_GROUP_LABELS)]
+  .map(escapeForRegex)
+  .join('|')})`;
+
+const MUSCLE_GRADE_LINK = `(?:${[
+  // Spacing, digits, brackets, ：, ·, the 、 of an enumeration and the
+  // dash of 「4-5 级」. NOT a clause mark: ，。；！？| is where a new
+  // predicate starts, and a grade on the far side of one is not this
+  // measurement's reading.
+  '[^\\u4e00-\\u9fffA-Za-z，,。；;！？!?\\n|]',
+  ...Object.values(SIDE_LABELS).map(escapeForRegex),
+  ...Object.values(MUSCLE_GROUP_LABELS).map(escapeForRegex),
+  '级',
+  '平均',
+  '分别',
+  '各项',
+  '各',
+  '评估',
+  '测定',
+  '测得',
+  '自测',
+  '记录',
+  '分级',
+  '是',
+  '为',
+  '约',
+  '达',
+  '到',
+  '和',
+  '与',
+  '及',
+  '的',
+].join('|')}){0,16}`;
+
 const SEVERITY_BAND = [
   // 轻度 / 中度 / 重度 / 中重度 / 轻中度 / 极重度
   '(?:极重|中重|轻中|轻|中|重)度',
@@ -2214,8 +2575,11 @@ const SEVERITY_BAND = [
   '(?:极重|中间|婴儿|儿童|青少年|成人|经典|轻|中|重)型',
   // 中期 / 晚期 / 中晚期 / 进展期 / 终末期 — see the note on 早期.
   '(?:中晚|晚|中|进展|终末|平台|稳定)期',
-  // 2 级 / Ⅱ 级 / 三级 — the band written as a grade number.
-  '(?:[0-9０-９]{1,2}|[IVXivx]{1,4}|[ⅠⅡⅢⅣⅤ]|[一二三四五六])\\s*级(?!亲属|医院|预防)',
+  // 2 级 / Ⅱ 级 / 三级 — the band written as a grade number, and NOT the
+  // MRC grade or the stair count this platform prints with the same
+  // character. See the block above.
+  `(?<!${MUSCLE_GRADE_MARKER}${MUSCLE_GRADE_LINK})` +
+    '(?:[0-9０-９]{1,2}|[IVXivx]{1,4}|[ⅠⅡⅢⅣⅤ]|[一二三四五六])\\s*级(?!亲属|医院|预防|台阶)',
 ].join('|');
 
 const SEVERITY_WORD = new RegExp(
@@ -2333,17 +2697,138 @@ const CLAIM_DISCLAIMED =
  * Asked of the ASSERTED text (the topic clause already stripped) so all
  * the positions are measured on one string.
  *
+ * ---------------------------------------------------------------------
+ * ...AND THE CANCEL SCOPES ITS OWN CLAUSE, NOT THE WHOLE SENTENCE.
+ *
+ * The position rule above was measured ONCE, at the FIRST severity word
+ * in the segment, and its verdict then covered everything after it.
+ * Under the rule as written that is not an oversight you can fix by
+ * looking at every match instead: 「a disclaimer somewhere before it」 is
+ * monotone in position, so if one stands ahead of the first severity
+ * word it stands ahead of all of them, and the segment stands down
+ * whole. And a segment is a SENTENCE — `segmentsOf` cuts only at
+ * 。！？；, never at 「，」 — so one disclaimed clause disclaimed every
+ * clause beside it:
+ *
+ *   「我不能拿你的 3 个重复单元判断轻重，1–3 这一档确实发病更早、
+ *    病情更重。」
+ *
+ * The first clause is the platform's own refusal, correctly stated. The
+ * second is the prediction this check exists for, delivered whole to a
+ * reader whose count is 3 — and the refusal in front of it was the
+ * password. Same shape as the trailing 不过 the block above closed, in
+ * the other direction, and it survived that fix because the fix only
+ * asked WHERE the disclaimer stood and never asked WHICH claim it was
+ * standing in front of.
+ *
+ * SO THE SPAN IS THE CLAUSE — BUT ONLY WHERE THE CLAUSE PLANTS THE
+ * CLAIM ON HIS OWN NUMBER, WHICH IS THE FACT THIS CHECK IS BUILT ON
+ * ANYWAY.
+ *
+ * 「Every clause carrying a severity word carries its own cancel」 was
+ * tried first and it is too strict, because a disclaimer legitimately
+ * governs the clauses that CONTINUE it. This file has that sentence
+ * pinned, from a live answer:
+ *
+ *   「至于 95% 这个数值对你的病情具体意味着什么，建议跟你的主治医生讨论，
+ *    他会结合你的疾病进展来判断。」
+ *
+ * The 进展 is in the third clause, the referral is in the second, and
+ * 他 is the physician who was just named — the clause is what the
+ * referral consists of, not a claim standing beside it. A clause-local
+ * rule deletes this platform's own recommendation off the screen.
+ *
+ * What separates it from the escape is the fact, not the punctuation. A
+ * disclaimer can qualify what follows it; what it cannot do is
+ * pre-authorise a NEW claim landing on the reader's own value. So the
+ * cancel reaches forward across clauses as it always did, and it stops
+ * at one thing: a clause that carries a severity word, carries no cancel
+ * of its own ahead of it, AND carries one of HIS numbers or a band
+ * around one. 「1–3 这一档确实发病更早」 is that clause — 1–3 is the band
+ * this reader stands in. 「他会结合你的疾病进展来判断」 is not: it has no
+ * digit of his in it at all, which is exactly why check 1 would never
+ * have fired on it standing alone either.
+ *
+ * Same fact, same two readers (`carriesNumber` / `carriesBandAround`),
+ * asked one clause down instead of once for the whole segment — so
+ * nothing was added to `SEVERITY_WORD` and nothing was added to
+ * `CLAIM_DISCLAIMED` to buy this.
+ *
+ * WHAT IT MISSES, stated: a claim clause whose number arrives by
+ * INHERITANCE rather than literally — the lead-in / bullet carry
+ * `withInherited` performs one level up — is not seen as carrying his
+ * number here, so an earlier disclaimer still cancels it. Bullets and
+ * table rows are separate segments, so the case needs the lead-in and
+ * the claim in one sentence with the digit only in the lead-in, and it
+ * fails toward publication. Closing it means carrying the inherited
+ * text into this function, which is a wider change than the escape
+ * above is worth.
+ *
+ * 「、」 IS NOT A CLAUSE BOUNDARY HERE, AND IT IS THE WHOLE REASON THIS
+ * HAS ITS OWN SPLIT INSTEAD OF REUSING `CLAUSE_BOUNDARY`. 、 is the
+ * enumeration comma: it joins ITEMS inside one predicate and never two
+ * predicates. The sentence this file has pinned since the check was
+ * written —
+ *
+ *   「我不能把你的 3 个重复单元、95% 甲基化值拿来判断「你病情严重不
+ *    严重」」
+ *
+ * — is one clause with a two-item object, its 不能 governs the whole of
+ * it, and splitting on 、 would put 严重 in a 「clause」 with no
+ * disclaimer in it and delete the platform's own position off the
+ * screen. Cutting at 、 is the false-positive direction this check has
+ * been caught in twice; cutting at ，is the escape it has been caught
+ * in twice. They are different marks and they are treated differently.
+ *
+ * 「|」 IS one, because a markdown table row arrives here as a single
+ * segment and its cells are not one another's context — the same reason
+ * check 3 reads a row cell by cell.
+ *
  * IT IS STILL A REGISTER LIST ON BOTH HALVES and still incomplete by
  * construction — but the incompleteness now costs a sentence that should
  * have been cut rather than an escape hatch, which is the direction this
  * file's lists are supposed to fail in and the direction this one was
  * failing in backwards.
  */
-const claimIsNotAsserted = (asserted: string): boolean => {
-  const severity = asserted.search(SEVERITY_WORD);
-  if (severity < 0) return false;
-  const before = asserted.slice(0, severity);
-  return CLAIM_DISCLAIMED.test(before) || INTERROGATIVE.test(before);
+const DISCLAIMER_SCOPE_BOUNDARY = /[，,；;：:。！？!?—…\n|]|——/u;
+
+/** The asserted text cut where a cancel stops reaching. See above on
+ *  why this is not `clausesOf`: 、 is in that one and must not be in
+ *  this one. */
+const disclaimerScopesOf = (asserted: string): string[] =>
+  asserted
+    .split(new RegExp(DISCLAIMER_SCOPE_BOUNDARY.source, 'gu'))
+    .filter((scope) => scope.trim() !== '');
+
+const claimIsNotAsserted = (asserted: string, evidence: GuardEvidence): boolean => {
+  const first = asserted.search(SEVERITY_WORD);
+  if (first < 0) return false;
+  const opening = asserted.slice(0, first);
+  if (!CLAIM_DISCLAIMED.test(opening) && !INTERROGATIVE.test(opening)) return false;
+
+  // The opening cancel stands, and it reaches everything that follows —
+  // except a clause that makes the claim OVER AGAIN on one of his own
+  // values. EVERY clause is asked, the one holding the first severity
+  // word included: 「这不是对你个人的预测，不过 1–3 这一档进展确实比较
+  // 快」 puts the opening cancel in clause one and the first severity
+  // word in clause two, so exempting the clause the cancel was measured
+  // against would exempt the claim itself.
+  for (const scope of disclaimerScopesOf(asserted)) {
+    const severity = scope.search(SEVERITY_WORD);
+    if (severity < 0) continue;
+    // Its own cancel, measured the same way and inside the clause. A
+    // marker standing ahead of the first severity word in a clause
+    // stands ahead of every later one in that clause, which is the
+    // monotonicity the segment-wide version was relying on and the only
+    // place it is actually true.
+    const before = scope.slice(0, severity);
+    if (CLAIM_DISCLAIMED.test(before) || INTERROGATIVE.test(before)) continue;
+    const landsOnHim = evidence.numbers.some(
+      (number) => carriesNumber(scope, number.value) || carriesBandAround(scope, number.value),
+    );
+    if (landsOnHim) return false;
+  }
+  return true;
 };
 
 /**
@@ -2558,6 +3043,17 @@ const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
  * it. So the fact does the work here exactly as the number set does it
  * one limb up; nothing was added to `SEVERITY_WORD`.
  *
+ * ...AND THE FACT IS NOT ONLY THE FOUR GENETICS CELLS. `patientCells`
+ * comes from `cellOfKey`, which knows d4z4 / haplotype / methylation /
+ * ecori and nothing else, so this limb could not see a claim landing on
+ * a laboratory value, a timed test or a self-test series — the two
+ * kinds of value this product collects most. 「你的肌酸激酶水平提示病情
+ * 比较重」 and 「你的连续上 10 级台阶越来越慢，进展是比较快的」 have no
+ * digit for the limb above and named nothing this limb knew, and both
+ * published. `patientValueTerms` is that same fact for those, off the
+ * platform's own label tables and off values the turn actually holds —
+ * see its block on `GuardEvidence`.
+ *
  * AND IT IS ASKED OF THE CLAUSE, for the reason the block above
  * `possessiveAttachedToCell` gives at length: a possessive binds inside
  * its own clause. The clause is also what keeps the honest sentence
@@ -2577,13 +3073,24 @@ const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
 const possessedCellCarryingTheClaim = (
   segment: string,
   cells: ReadonlySet<string>,
+  /** The Chinese this platform names his OTHER values in — a laboratory
+   *  analyte, a timed test, a self-test series. Same fact, same clause
+   *  rule; see `patientValueTerms`. Matched verbatim as a substring,
+   *  because these are the platform's own printed names and the model is
+   *  restating them. */
+  valueTerms: readonly string[],
 ): string | null => {
-  if (cells.size === 0) return null;
+  if (cells.size === 0 && valueTerms.length === 0) return null;
   for (const clause of clausesOf(segment)) {
     if (!POSSESSIVE.test(clause)) continue;
     if (!SEVERITY_WORD.test(clause)) continue;
+    // The four cells first, so the excision notice keeps the wording it
+    // has for them.
     for (const cell of cells) {
       if (cellTermsPresent(clause, cell)) return cell;
+    }
+    for (const term of valueTerms) {
+      if (clause.includes(term)) return term;
     }
   }
   return null;
@@ -3724,7 +4231,7 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     //
     // NO POPULATION ESCAPE. See the block above SEVERITY_WORD.
     const asserted = text.replace(TOPIC_CLAUSE, '');
-    if (SEVERITY_WORD.test(asserted) && !claimIsNotAsserted(asserted)) {
+    if (SEVERITY_WORD.test(asserted) && !claimIsNotAsserted(asserted, evidence)) {
       const hit = evidence.numbers.find(
         (number) =>
           carriesNumber(withInherited, number.value) ||
@@ -3743,7 +4250,11 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
       } else {
         // ...and the same claim with no digit in it at all, attached to
         // his cell by 你的 instead. See `possessedCellCarryingTheClaim`.
-        const cell = possessedCellCarryingTheClaim(asserted, evidence.patientCells);
+        const cell = possessedCellCarryingTheClaim(
+          asserted,
+          evidence.patientCells,
+          evidence.patientValueTerms,
+        );
         if (cell !== null) {
           add({
             kind: 'severity_from_patient_number',
