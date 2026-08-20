@@ -1540,9 +1540,14 @@ _NOTE_ROW_SHORT_PREFIXES: Tuple[str, ...] = ("注意", "注", "提示")
 #: What may stand between a `_NOTE_ROW_SHORT_PREFIXES` lead and its
 #: content — and the whole of what makes it a lead rather than the first
 #: characters of an ordinary word.
-#: The closing halves of `_NOTE_DECORATION_OPENERS` are here too, so that
-#: 「[注] …」 is read as the footnote it is rather than as a row whose
-#: first analyte is called 注].
+#: The closing brackets are here too, so that 「[注] …」 is read as the
+#: footnote it is rather than as a row whose first analyte is called
+#: 注]. This class is deliberately NOT the complement rule
+#: `_is_row_content` states for row decoration: a lead is recognised by
+#: what follows it, and widening THAT to 「any non-content character」
+#: would make 注 a footnote lead in front of punctuation this file has
+#: never measured. Decoration is stripped from the front of a line and
+#: can only refuse a note; a lead separator ADMITS one.
 _NOTE_LEAD_SEPARATOR = r"[)）\]】、.。,，:：\s]"
 
 _NOTE_ROW_LEAD = re.compile(
@@ -1575,29 +1580,95 @@ _NOTE_ROW_LEAD = re.compile(
 #: marker」, so a strip that goes too far can refuse a note, never invent
 #: one.
 #:
-#: NO DASH IN EITHER CLASS. A dash is a RANGE SEPARATOR in this file and
-#: it is spelled in exactly one place — `_RANGE_DASHES` — which
+#: NO DASH IS SPELLED IN EITHER DIRECTION. A dash is a RANGE SEPARATOR
+#: in this file and it is written down in exactly one place —
+#: `_RANGE_DASHES` — which
 #: `test_no_reader_spells_a_separator_or_comparator_by_hand` enforces.
-#: A leading dash on a footnote is not worth an exception to that.
-_NOTE_DECORATION_OPENERS = r"(（\[【"
-_ROW_MARKER_PREFIX = re.compile(
-    rf"^(?:[\s*※★☆#·•◆■{_NOTE_DECORATION_OPENERS}]"
-    r"|(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[)）\]】.。、,，:：])+"
+#: The rule below reaches a leading dash without naming one, which is
+#: the only way this class was ever allowed to have an opinion about it.
+#:
+#: AND THE THIRD WIDENING BY VOCABULARY IS THE ONE THAT WAS NOT TAKEN.
+#: The class above enumerated its markers — a handful of bullets, four
+#: bracket openers, an ASCII or Chinese ordinal — and the marker a Chinese
+#: laboratory actually prints in front of a numbered footnote is the
+#: CIRCLED digit: 「①注: 血清钾低于 2.8 为危急值」, 「⑴备注: …」, and the
+#: full-width stop in 「1．备注: …」. None of the three was stripped, so
+#: `_leads_a_note` never saw the 注 standing behind it and the line was
+#: labelled PLAIN — which is the row kind that may carry a reading.
+#: Measured on a synthetic 生化 whose only potassium figure is that
+#: threshold: `potassium: 2.8` published as this patient's plasma
+#: level — the panic value shown as the reading, on the analyte a
+#: clinician scans a 生化 for — and on a synthetic genetics page whose
+#: own conclusion reads 「未见 4q35 D4Z4 阵列缩短, 结果在正常范围」 over
+#: a printed count of 18: `diagnosis_type: FSHD1` off 「①备注: D4Z4 重复
+#: 单元数低于 10 个即为缩短, 符合 FSHD1 分子诊断标准」, onto the
+#: passport, the exports and `patient_profiles` via
+#: `applyGeneticReportAutofill`.
+#:
+#: ADDING ①⑴㈠⒈ WOULD HAVE BEEN THE SAME FIX A THIRD TIME. A marker is
+#: not a member of a set — it is whatever a page prints WHERE CONTENT
+#: WOULD OTHERWISE START — so the class is written as the complement of
+#: content, and content is the only half of that pair a row model can
+#: state positively: letters (CJK included) and DECIMAL digits are what
+#: a row's own text is made of. ① (U+2460) and ⑴ (U+2474) are `No`, ㈠
+#: is `So`, 「．」 is punctuation, and none of them is either. Nothing
+#: has to be added when the next page prints ⒈ or ▪.
+#:
+#: THE ONE MARKER MADE OF CONTENT CHARACTERS KEEPS ITS TERMINATOR, and
+#: the terminator is read the same way. A bare digit run IS content —
+#: 「1 白细胞计数(WBC) 6.69」 must not lose its 1 — so an ordinal is
+#: decoration only where punctuation follows it, and 「punctuation」 is
+#: 「decoration that is not whitespace」 rather than a fourth list, which
+#: is what lets 「1.」「1、」「1)」「1．」 all answer the same question the
+#: same way.
+_ROW_MARKER_ORDINAL = re.compile(
+    r"^(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*(?P<terminator>\S)"
 )
 
-#: The other half of the same decoration, on a line that is NOTHING but a
-#: bracketed header — 「【备注】」, 「(附注):」. Stripped only when the
-#: question being asked is 「is this a footnote header」.
-_ROW_MARKER_SUFFIX = re.compile(r"[)）\]】:：。.、,，\s]+$")
+
+def _is_row_content(char: str) -> bool:
+    """Is `char` part of what a row SAYS, rather than decoration on it?
+
+    THE POSITIVE HALF OF THE PAIR, because it is the half that can be
+    stated. What a row says is made of letters and decimal digits; a
+    bullet, a bracket, an ordinal's full stop and a circled numeral are
+    what a page puts AROUND that. See `_ROW_MARKER_ORDINAL`.
+    """
+    return char.isalpha() or char.isdecimal()
 
 
 def _note_undecorated(line: str) -> str:
     """`line` with a page's footnote decoration taken off both ends.
 
-    Bullets, ordinals and brackets. See `_ROW_MARKER_PREFIX` for why an
-    ordinal is decoration and why it has to carry its own terminator.
+    Bullets, ordinals, brackets and every enclosed numeral a page has
+    ever been printed with. See `_ROW_MARKER_ORDINAL` for why decoration
+    is defined as the complement of content and why the one marker made
+    of content characters still has to carry its own terminator.
+
+    NOTHING DOWNSTREAM READS THIS TEXT. It exists only to answer 「does
+    this line lead with a footnote marker」 — the remainder still has to
+    open with a lead in `_NOTE_ROW_PREFIXES` or `_NOTE_ROW_LEAD` — so a
+    strip that goes too far can refuse a note, never invent one.
+
+    NO DASH IS SPELLED HERE. A leading dash is decoration under the
+    complement rule without this file naming one, so `_RANGE_DASHES`
+    stays the only place a separator is written down.
     """
-    return _ROW_MARKER_SUFFIX.sub("", _ROW_MARKER_PREFIX.sub("", line.strip()))
+    text = line.strip()
+    while text:
+        if not _is_row_content(text[0]):
+            text = text[1:].lstrip()
+            continue
+        ordinal = _ROW_MARKER_ORDINAL.match(text)
+        if ordinal and not _is_row_content(ordinal.group("terminator")):
+            text = text[ordinal.end():].lstrip()
+            continue
+        break
+    # The other half of the same decoration, on a line that is NOTHING
+    # but a bracketed header — 「【备注】」, 「(附注):」.
+    while text and not _is_row_content(text[-1]):
+        text = text[:-1].rstrip()
+    return text
 
 
 def _leads_a_note(line: str) -> bool:
@@ -5487,12 +5558,122 @@ def _extract_medical_summary(lines: List[str], fields: List[Dict[str, Any]], nor
 #: class rather than retyping it is what keeps the two in step. The range
 #: branch is tried FIRST for the same reason, and the modifier branch is
 #: still reached by backtracking when no digit follows the sign.
-_MRC_GRADE = rf"[0-5](?:\s*{_RANGE_SEPARATOR}\s*[0-5]|[+-])?"
+#:
+#: AND THE REFUSAL HELD FOR ONE SPELLING OF THE RANGE OUT OF THE TWO AN
+#: EXAMINER WRITES. 「4级-5级」 — 级 repeated on both bounds, which is how
+#: a Chinese neurologist writes an interval at least as often as
+#: 「4-5级」 — did not reach the range branch at all: the character after
+#: the 4 is 级, not a separator, so the branch failed, the modifier
+#: branch failed on the same character, and the pattern settled for the
+#: bare 「4」. Measured on a synthetic 查体 line 「三角肌肌力4级-5级」:
+#: `mrc_score: 4` typed 4.0 — the examiner's refusal to choose published
+#: as the determinate LOWER end, carried onto `deltoid_strength` and
+#: averaged into 平均肌力 on the passport, the share page, the referral
+#: pack and the markdown export. 「4级至5级」 was the same.
+#:
+#: So the unit may stand INSIDE the interval, and the published cell is
+#: the interval with the interior unit taken out — 「4-5」, the one
+#: notation this platform already publishes for 「4-5级」, rather than a
+#: sixth spelling of the same uncertainty. See `_mrc_grade_cell`.
+#:
+#: THE MODIFIER SIGN IS TWO CHARACTERS WIDE AND WAS SPELLED ONE. An OCR
+#: pass over a form typed with a Chinese IME hands back 「4＋级」 (U+FF0B)
+#: and 「4－级」 (U+FF0D), and `[+-]` matched neither: the modifier was
+#: dropped and the cell published as the bare 「4」, typed 4.0 where the
+#: examiner wrote 4+ (4.3) or 4- (3.7). A number nobody measured, again,
+#: on the cell 平均肌力 is averaged from. The full-width minus is already
+#: a `_RANGE_DASHES` member, so the range branch still claims 「4－5级」
+#: before the modifier branch is reached —
+#: `test_the_minus_signs_are_all_range_separators` pins that containment
+#: rather than restating the class.
+_MRC_UNIT = "级"
+
+#: THE ± MODIFIER, AS THE PAGE PRINTS IT AND AS THIS PLATFORM PUBLISHES
+#: IT. Every minus spelling here is a `_RANGE_DASHES` member by
+#: construction, which is what keeps the range branch ahead of the
+#: modifier branch; the folding to the ASCII pair happens once, in
+#: `_mrc_grade_cell`, so `MRC_NORMALIZATION` keeps one key per grade
+#: instead of one per printing.
+_MRC_PLUS_SIGNS = "+＋"
+_MRC_MINUS_SIGNS = "-－"
+_MRC_MODIFIER = rf"[{re.escape(_MRC_PLUS_SIGNS + _MRC_MINUS_SIGNS)}]"
+
+_MRC_GRADE = (
+    rf"[0-5](?:(?:\s*{_MRC_UNIT})?\s*{_RANGE_SEPARATOR}\s*[0-5]|{_MRC_MODIFIER})?"
+)
+
+
+def _mrc_grade_cell(printed: str) -> str:
+    """The grade as this platform publishes it, from the grade as printed.
+
+    Two folds and no third. The unit is taken out of the INTERIOR of an
+    interval, so 「4级-5级」 and 「4-5级」 reach `MRC_NORMALIZATION` and the
+    passport as the same cell; and a full-width ± modifier is folded to
+    the ASCII pair `MRC_NORMALIZATION` is keyed by, so 「4＋」 is typed
+    4.3 rather than silently becoming grade 4.
+
+    THE SEPARATOR IS NOT FOLDED. 「4~5」 and 「4至5」 stay as the examiner
+    wrote them: both are already refused a number, the cell is what the
+    page shows, and rewriting a separator here would put a spelling on
+    record that nothing printed.
+    """
+    cell = re.sub(rf"[\s{_MRC_UNIT}]", "", printed)
+    if len(cell) == 2 and not cell[1].isdecimal():
+        return cell[0] + ("+" if cell[1] in _MRC_PLUS_SIGNS else "-")
+    return cell
+
 
 #: The same grade, reached across a side word. The gap excludes the grade
 #: digits themselves so that 「左侧」 binds to the next grade printed and
 #: not to one further down the sentence.
 _MRC_SIDE_GAP = r"[^0-5\n(]{0,12}"
+
+#: WHAT MAKES A GRADE-SHAPED NUMBER AN MRC GRADE — and the whole of what
+#: was missing.
+#:
+#: The reader searched the WHOLE SENTENCE for `[0-5]` with nothing tying
+#: that digit to a strength measurement, so on any sentence naming a
+#: muscle the first grade-shaped number in ordinary examiner prose was
+#: published as the muscle's strength. Measured on synthetic 查体 lines:
+#: 「双侧三角肌肌力检查配合欠佳, 患者共有3个兄弟姐妹同患此病」 published
+#: `mrc_score: 3` typed 3.0 — a SIBLING COUNT as a bilateral deltoid
+#: grade, on a patient whose strength the examiner recorded as not
+#: measurable — and 「三角肌无力已4年, 未行肌力测定」 published 4.0 off
+#: the DURATION of the weakness, on a line that says in words that no
+#: grade was taken. Both land on `deltoid_strength` and in 平均肌力.
+#:
+#: A grade is a number wearing the GRADE UNIT, or a number introduced by
+#: the name of the MEASUREMENT. Nothing else is one: an examiner who
+#: means grade 4 writes 「4级」, and an examiner who omits the unit writes
+#: 「肌力4」 or 「MMT 4」. Both anchors are tried, unit first, because 级 is
+#: the character that makes a digit a grade whoever wrote the line and
+#: wherever the label sits.
+#:
+#: THE LABEL GAP STOPS AT A CLAUSE BOUNDARY, which is what keeps
+#: 「肌力检查配合欠佳, 患者共有3个…」 from binding 肌力 to the 3 in the
+#: NEXT clause. A label introduces what follows it, and it stops
+#: introducing at the comma.
+#:
+#: THE COST OF THE ANCHOR IS A SENTENCE THAT STATES A GRADE WITH NEITHER
+#: MARK, and there is no such sentence: this reader only considers
+#: sentences that already name a muscle, and a muscle named beside a
+#: bare digit with no 级 and no 肌力 anywhere is prose, not a
+#: measurement. What the anchor removes is a grade this file was
+#: MANUFACTURING, and no strength this platform can show has an origin.
+_MRC_ANCHOR_LABEL = "(?:肌力|MMT|MRC)"
+_MRC_LABEL_GAP = r"[^0-5\n,;.、()]{0,4}"
+
+
+def _mrc_grade_patterns(prefix: str = "") -> List[str]:
+    """The grade patterns, in the order the anchors settle a tie.
+
+    `prefix` is what has to stand before the grade — a side word and its
+    gap, or nothing at all for the sentence-wide read.
+    """
+    return [
+        rf"{prefix}({_MRC_GRADE})\s*{_MRC_UNIT}",
+        rf"{prefix}{_MRC_ANCHOR_LABEL}{_MRC_LABEL_GAP}({_MRC_GRADE})",
+    ]
 
 
 def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -5506,12 +5687,16 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         canonical_name, body_region = muscle
         side = _canonical_side(sentence)
 
-        left_match, _ = _find_regex(sentence, [rf"(?:左|left){_MRC_SIDE_GAP}({_MRC_GRADE})"])
-        right_match, _ = _find_regex(sentence, [rf"(?:右|right){_MRC_SIDE_GAP}({_MRC_GRADE})"])
+        left_match, _ = _find_regex(
+            sentence, _mrc_grade_patterns(rf"(?:左|left){_MRC_SIDE_GAP}")
+        )
+        right_match, _ = _find_regex(
+            sentence, _mrc_grade_patterns(rf"(?:右|right){_MRC_SIDE_GAP}")
+        )
 
         if left_match or right_match:
             if left_match:
-                score = left_match.group(1)
+                score = _mrc_grade_cell(left_match.group(1))
                 muscle_strength.append(
                     {
                         "muscle_name": canonical_name,
@@ -5524,7 +5709,7 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
                     }
                 )
             if right_match:
-                score = right_match.group(1)
+                score = _mrc_grade_cell(right_match.group(1))
                 muscle_strength.append(
                     {
                         "muscle_name": canonical_name,
@@ -5538,9 +5723,9 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
                 )
             continue
 
-        generic_match, _ = _find_regex(sentence, [rf"({_MRC_GRADE})"])
+        generic_match, _ = _find_regex(sentence, _mrc_grade_patterns())
         if generic_match:
-            score = generic_match.group(1)
+            score = _mrc_grade_cell(generic_match.group(1))
             muscle_strength.append(
                 {
                     "muscle_name": canonical_name,

@@ -392,10 +392,73 @@ const mapDeletionError = (error: unknown): unknown => {
  *  instead of silently cutting off. */
 export const EXPORT_MAX_SUBMISSION_PAGES = 50;
 export const EXPORT_MAX_AUDIT_ROWS = 5000;
+/** A fall a day for eight years. Beyond the diary's own MAX_FALL_ROWS
+ *  (400) because that one bounds a screen and this one bounds a file
+ *  the patient keeps. */
+export const EXPORT_MAX_FALL_ROWS = 3000;
+/** Two scales, minutes to administer, superseded rows included. A
+ *  patient could not reach this by hand; a script could. */
+export const EXPORT_MAX_INSTRUMENT_ROWS = 2000;
 /** Minimum spacing between two exports from the same user — the
  *  export fans out into dozens of paged queries, so it gets a
  *  cooldown instead of riding the generic auth rate limit. */
 export const EXPORT_COOLDOWN_MS = 60_000;
+
+/**
+ * WHAT THE PORTABILITY FILE DOES NOT CARRY, SAID IN THE FILE.
+ *
+ * export/envelope.ts already argues this for the three research
+ * formats: 「An empty `omissions` array would be the claim that nothing
+ * was left out」. The PIPL body is not a conformant third-party
+ * document and has no such envelope, so for a long time it made that
+ * claim by having no list at all — its docstring said 「everything the
+ * platform stores about the caller」 and the privacy screen says 「全部
+ * 档案、记录、报告清单与授权历史」, and neither was true.
+ *
+ * The falls diary and the instrument administrations were the two
+ * clinical categories missing outright; those are now CARRIED, not
+ * declared, because they are the patient's own record and they travel
+ * fine. What is left below is everything else this platform stores
+ * against an account, each with the reason it stays out. A reader who
+ * finds a category here has been told; a category in neither the body
+ * nor this list is the bug.
+ *
+ * `notes.documents` says the first entry too, in the wording it has
+ * had since v1. The duplication is deliberate — that key is what
+ * existing readers look at, and this list has to be complete on its
+ * own to be worth anything.
+ */
+export const EXPORT_OMISSIONS: ReadonlyArray<{ category: string; reasonZh: string }> = [
+  {
+    category: '报告原件',
+    reasonZh:
+      '报告的原始文件（图片 / PDF）不放进这个 JSON：它们可以任意大，塞进来会让这份文件下载不动。profile.documents 列出了每一份的标题、类型、上传时间与校验值，原件在「报告详情」页逐份下载。',
+  },
+  {
+    category: '登录手机号与邮箱',
+    reasonZh:
+      '账号的登录标识不写进这个文件。它是这份文件万一外流时最直接的再识别入口，而这份文件是要被下载、转发、存进网盘的。你自己填在档案里的联系方式在 profile.contactPhone 与 profile.contactEmail。',
+  },
+  {
+    category: '注销申请记录',
+    reasonZh:
+      '是否申请过注销、预定清除时间，属于账号生命周期状态而不是健康记录，在「我的 → 注销账号」页实时可见。',
+  },
+  {
+    category: '安全审计日志',
+    reasonZh:
+      '登录、管理员查阅你的档案、分享链接被打开等操作记录，按合规要求单独留存，其中含其他人（管理员）的操作信息，因此不随本文件导出。需要查阅可以单独申请。',
+  },
+  {
+    category: '短信验证码与登录风控记录',
+    reasonZh: '一次性验证码与失败次数属于安全凭据，保存期以分钟计，导出它们只会削弱账号安全。',
+  },
+  {
+    category: '早期版本遗留的数据表',
+    reasonZh:
+      '社区帖子、旧版问答会话与旧版报告索引来自更早的版本，当前版本没有任何写入路径，因此本文件不包含它们。',
+  },
+];
 
 /** The slice of the AI AuditLogger the export needs. Injected as an
  *  interface (rather than importing the class) so the profile module
@@ -730,25 +793,61 @@ export class PatientProfileController {
    * Full data export (data-portability right, 个保法可携带权): one
    * JSON document holding everything the platform stores about the
    * caller — profile with all nested records + document metadata,
-   * consent state and full consent history, sharing preferences,
-   * the submission timeline, and the scrubbed AI audit trail.
+   * the falls diary, every instrument administration, consent state
+   * and full consent history, the agreement-acceptance history,
+   * sharing preferences and every passport share ever minted, the
+   * submission timeline, and the scrubbed AI audit trail.
+   *
+   * FORMAT VERSION 2. v1 carried none of the four sections named
+   * below, and carried no statement that it did not. It was
+   * ADDITIVELY wrong — a v1 reader's keys all still mean what they
+   * meant — but a v1 file is not a complete record, and a consumer
+   * has to be able to tell which one it is holding. Every v1 key
+   * keeps its name, its shape and its position.
+   *
+   *   `falls`                     — patient_falls, the diary. The
+   *     timeline twin of each fall was always here (it is a
+   *     `patient_followup_events` row of type `fall`), so v1 files
+   *     show the patient that they fell and lose every answer they
+   *     gave about it: activity, place, hands full, got up unaided,
+   *     injured. Full history, no window — see
+   *     `listFallDiaryForExport`.
+   *   `instrumentAdministrations` — instrument_administrations plus
+   *     instrument_item_responses. Brooke and Vignos: the scales this
+   *     product administers to the patient. Absent from v1 entirely,
+   *     including the item-level answers they gave.
+   *   `legalAcceptances`          — legal_document_acceptances, with
+   *     withdrawals. The screen says 授权历史 and v1 answered with AI
+   *     consent only.
+   *   `passportShares`            — passport_share_links +
+   *     passport_pickup_codes: every door the patient opened into
+   *     their own record, revoked and expired included, tokens never.
    *
    * Document binaries are NOT inlined (they can be arbitrarily
    * large); their metadata lists every file and the detail screen
-   * offers per-file download. Loops are bounded so a pathological
-   * account can't hold the connection forever: submissions cap at
+   * offers per-file download. That, and everything else this platform
+   * holds against the account and does not put in this file, is
+   * enumerated in `omissions` — see EXPORT_OMISSIONS for why the
+   * document says so rather than leaving the reader to notice.
+   *
+   * Loops are bounded so a pathological account can't hold the
+   * connection forever: submissions cap at
    * EXPORT_MAX_SUBMISSION_PAGES pages, audit at
-   * EXPORT_MAX_AUDIT_ROWS rows, and the payload says so via
-   * `truncation` flags instead of silently cutting off.
+   * EXPORT_MAX_AUDIT_ROWS rows, falls at EXPORT_MAX_FALL_ROWS and
+   * instruments at EXPORT_MAX_INSTRUMENT_ROWS, and the payload says
+   * so via `truncation` flags instead of silently cutting off.
    *
    * `?format=` switches this endpoint to one of the portable
    * research/clinical formats instead (see ./export). Those are a
    * DIFFERENT job: the default body is the PIPL portability answer —
    * everything we hold, in our own shape — while a `format` response
    * is one document in somebody else's shape, with an explicit
-   * statement of what it could not carry. The default body is
-   * unchanged when `format` is absent, down to the field order,
-   * because that response is a legal obligation and not a feature.
+   * statement of what it could not carry. Adding `?format=` still
+   * does not touch the default body — that promise is what the note
+   * below the cooldown is about — but the default body itself is a
+   * legal obligation rather than a feature, which is exactly why it
+   * grew to v2 the moment it was found to be short of what the
+   * product tells patients it contains.
    */
   exportMyData = async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user.id;
@@ -770,7 +869,7 @@ export class PatientProfileController {
 
       // Deliberately outside the cooldown below, and deliberately NOT
       // stamping it. That throttle exists because the full export
-      // fans out into ~75 paged queries; a portable document costs
+      // fans out into ~100 paged queries; a portable document costs
       // exactly one getProfileByUserId — the same query GET /me
       // already serves with no throttle at all. Sharing the budget
       // would mean a patient who exported their PIPL bundle then gets
@@ -790,9 +889,10 @@ export class PatientProfileController {
       return;
     }
 
-    // Per-user cooldown: the export fans out into up to ~75 paged
-    // queries, so an authenticated caller in a retry loop is a real
-    // DB-load hazard. Same single-instance in-memory pattern as
+    // Per-user cooldown: the export fans out into up to ~100 paged
+    // queries (v2 added the falls diary, the instrument pages and two
+    // authorisation reads to the count), so an authenticated caller in
+    // a retry loop is a real DB-load hazard. Same pattern as
     // inFlightOcrJobs; a legitimate user exports once, not per
     // minute. Entries are pruned on each pass so the map can't grow
     // beyond the set of users active within one cooldown window.
@@ -812,10 +912,27 @@ export class PatientProfileController {
       throw new AppError('Patient profile not found', 404);
     }
 
-    const [consent, consentHistory, sharingPreferences] = await Promise.all([
+    const [
+      consent,
+      consentHistory,
+      sharingPreferences,
+      fallDiary,
+      instrumentAdministrations,
+      legalAcceptances,
+      passportShares,
+    ] = await Promise.all([
       this.service.getConsentDetails(userId),
       this.service.getConsentHistory(userId, { limit: 500 }),
       this.service.getSharingPreferences(userId),
+      // The four categories v1 dropped without saying so. In the same
+      // Promise.all as their siblings on purpose: they are the same
+      // one-shot reads against the same pool, and putting them after
+      // it would add four round trips to an endpoint that already has
+      // a cooldown for being expensive.
+      this.service.listFallDiaryForExport(userId, EXPORT_MAX_FALL_ROWS),
+      this.service.listInstrumentAdministrationsForExport(userId, EXPORT_MAX_INSTRUMENT_ROWS),
+      this.service.listLegalAcceptancesForExport(userId),
+      this.service.listPassportSharesForExport(userId),
     ]);
 
     const submissions: unknown[] = [];
@@ -849,7 +966,7 @@ export class PatientProfileController {
     }
 
     res.status(200).json({
-      formatVersion: 1,
+      formatVersion: 2,
       exportedAt: new Date().toISOString(),
       profile,
       consent,
@@ -857,14 +974,29 @@ export class PatientProfileController {
       sharingPreferences,
       submissions,
       aiAuditTrail,
+      falls: fallDiary.falls,
+      instrumentAdministrations: instrumentAdministrations.administrations,
+      legalAcceptances: legalAcceptances.acceptances,
+      passportShares: passportShares.shares,
       truncation: {
         submissions: submissionsTruncated,
         aiAuditTrail: auditTruncated,
         consentHistory: consentHistory.length >= 500,
+        falls: fallDiary.truncated,
+        instrumentAdministrations: instrumentAdministrations.truncated,
+        legalAcceptances: legalAcceptances.truncated,
+        passportShares: passportShares.truncated,
       },
+      omissions: EXPORT_OMISSIONS,
       notes: {
         documents:
           '文档原始文件不包含在本导出中；profile.documents 列出全部文件元数据，可在报告详情页逐份下载原件。',
+        // The reader has to be able to find the omission list without
+        // knowing it exists. Same argument as `portableFormats`
+        // below: a statement of what is missing that only a source
+        // reader can locate is not a statement to the patient.
+        omissions:
+          '本文件没有收录的内容，逐条列在 omissions 里，每条写明原因；omissions 之外没有其他被略过的类别。',
         // Discovery. Without this line the three portable formats are
         // reachable only by someone who has read the source, which
         // makes "the record is portable" true in the code and false

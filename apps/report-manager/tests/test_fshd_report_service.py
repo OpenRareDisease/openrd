@@ -7005,6 +7005,46 @@ class AnMmtGradeRangeIsNotADeterminateGradeTest(unittest.TestCase):
         _, result = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
         self.assertEqual(result["deltoid_strength"], "L4-5 / R4")
 
+    def test_the_unit_may_stand_on_both_bounds_of_the_range(self):
+        """「4级-5级」 is how a Chinese examiner writes the same refusal
+        to choose, and the range branch never saw it: the character
+        after the 4 is 级, so the pattern settled for the bare 「4」."""
+        grade = self._grade("体格检查: 三角肌肌力4级-5级。")
+        self.assertEqual(grade["field_value"], "4-5")
+        self.assertIsNone(grade["normalized_value"])
+
+    def test_every_separator_reads_as_a_range_with_the_unit_repeated(self):
+        separators = tuple(fshd_report_service._RANGE_DASHES) + tuple(
+            fshd_report_service._RANGE_WORDS
+        )
+        for separator in separators:
+            with self.subTest(separator=separator):
+                grade = self._grade(f"体格检查: 三角肌肌力4级{separator}5级。")
+                self.assertEqual(grade["field_value"], f"4{separator}5", separator)
+                self.assertIsNone(grade["normalized_value"], separator)
+
+    def test_a_full_width_modifier_is_the_modifier_it_prints(self):
+        """「4＋级」 was published as the bare 「4」 and typed 4.0 — the
+        examiner wrote 4+, which is 4.3."""
+        for printed, cell, typed in (
+            ("4\uff0b", "4+", 4.3),
+            ("4\uff0d", "4-", 3.7),
+            ("3\uff0d", "3-", 2.7),
+        ):
+            with self.subTest(printed=printed):
+                grade = self._grade(f"体格检查: 三角肌肌力{printed}级。")
+                self.assertEqual(grade["field_value"], cell, printed)
+                self.assertEqual(grade["normalized_value"], typed, printed)
+
+    def test_the_minus_signs_are_all_range_separators(self):
+        """The containment the range branch depends on: every dash the ±
+        modifier accepts is in the range class, so 「4－5级」 is claimed as
+        an interval before the modifier branch is ever reached."""
+        self.assertTrue(
+            set(fshd_report_service._MRC_MINUS_SIGNS)
+            <= set(fshd_report_service._RANGE_DASHES)
+        )
+
     def test_a_side_still_binds_to_its_own_grade(self):
         fields, _ = self._fields("体格检查: 三角肌肌力左侧4-5级,右侧4级。")
         by_side = {
@@ -7014,6 +7054,176 @@ class AnMmtGradeRangeIsNotADeterminateGradeTest(unittest.TestCase):
         }
         self.assertEqual(by_side["left"], ("4-5", None))
         self.assertEqual(by_side["right"], ("4", 4.0))
+
+
+class AFootnoteMarkerIsNotAVocabularyTest(unittest.TestCase):
+    """THE FOURTH ROUND OF 「ADD THE MARKER THE LAST PAGE PRINTED」.
+
+    The decoration class enumerated its markers, so the one a Chinese
+    laboratory prints in front of a numbered footnote — the CIRCLED
+    digit, and the full-width stop after an ordinal — was not stripped,
+    `_leads_a_note` never saw the lead standing behind it, and the line
+    was labelled PLAIN: the row kind that may carry a reading.
+
+    Decoration is now the complement of content, so the markers below
+    are examples and not a list to keep in sync. Synthetic throughout.
+    """
+
+    #: Every one of these is printed in front of a footnote item on some
+    #: page. The empty string is the same footnote with no marker at all,
+    #: which has always been read correctly and is here as the control.
+    MARKERS = ("", "1. ", "1、", "(1) ", "[1] ", "*", "※", "★", "①", "②",
+               "⑴", "㈠", "⒈", "1．", "２．", "一、")
+
+    NEGATIVE_GENETICS = (
+        "示例医学检验所 FSHD1 基因检测报告单",
+        "检测方法: Southern blot",
+        "检测结果: D4Z4 重复单元数 18",
+        "检测结论: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围。",
+    )
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(self.NEGATIVE_GENETICS + rows),
+            "genetic_test",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院检验报告单", "检验目的: 生化") + rows),
+            "other",
+            "Biochemistry.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_content_is_stated_positively_and_decoration_is_what_is_left(self):
+        for char in "1一A血q５":
+            self.assertTrue(fshd_report_service._is_row_content(char), char)
+        for char in "①⑴㈠⒈．、)]*※★ -":
+            self.assertFalse(fshd_report_service._is_row_content(char), char)
+
+    def test_every_marker_leaves_the_footnote_a_footnote(self):
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                line = f"{marker}备注: D4Z4 重复单元数低于 10 个即为缩短"
+                self.assertTrue(fshd_report_service._leads_a_note(line), marker)
+
+    def test_a_marked_footnote_is_not_this_patients_type(self):
+        """The defining sentence supplies the 分型 the report EXCLUDES,
+        onto the passport and into patient_profiles."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                summary = self._genetic(
+                    f"{marker}备注: D4Z4 重复单元数低于 10 个即为缩短,"
+                    " 符合 FSHD1 分子诊断标准。",
+                )
+                self.assertIsNone(summary["diagnosis_type"], marker)
+                self.assertEqual(summary["d4z4_repeat_pathogenic"], 18, marker)
+
+    def test_a_marked_footnote_is_not_this_patients_plasma_level(self):
+        """The panic threshold published as the reading — the precise
+        defect the note vocabulary was written for."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                panel = self._panel(
+                    "肌酸激酶(CK) 693 40-200",
+                    f"{marker}注: 血清钾低于 2.8 为危急值, 请立即通知临床医师",
+                )
+                self.assertEqual(panel.get("ck"), 693, marker)
+                self.assertNotIn("potassium", panel)
+
+    def test_an_ordinal_still_has_to_carry_its_own_terminator(self):
+        """A digit run with a NAME after it is a table's row index, and
+        「1 白细胞计数(WBC) 6.69」 must not lose its 1."""
+        row = "1 白细胞计数(WBC) 6.69 3.5-9.5"
+        self.assertEqual(fshd_report_service._note_undecorated(row), row)
+        self.assertFalse(fshd_report_service._leads_a_note(row))
+        panel = self._panel(row)
+        self.assertEqual(panel.get("wbc"), 6.69)
+
+    def test_a_chinese_numeral_inside_a_word_is_not_an_ordinal(self):
+        self.assertEqual(
+            fshd_report_service._note_undecorated("十二指肠溃疡病史"),
+            "十二指肠溃疡病史",
+        )
+
+    def test_a_marked_row_that_leads_no_note_still_carries_its_reading(self):
+        """Stripping decoration answers ONE question. A row that is a
+        reading is still a reading with an ordinal in front of it."""
+        for marker in self.MARKERS:
+            with self.subTest(marker=marker):
+                panel = self._panel(f"{marker}肌酸激酶(CK) 693 40-200")
+                self.assertEqual(panel.get("ck"), 693, marker)
+
+
+class AnMrcGradeIsAnchoredToTheMeasurementTest(unittest.TestCase):
+    """THE FIRST GRADE-SHAPED NUMBER IN THE SENTENCE WAS THE STRENGTH.
+
+    The reader searched the whole sentence for `[0-5]` with nothing
+    tying that digit to 肌力 or to 级, so on any sentence naming a muscle
+    a number out of ordinary examiner prose was published as the
+    muscle's MRC grade — onto `deltoid_strength` and into 平均肌力 on the
+    passport, the share page, the referral pack and the export.
+    Synthetic throughout.
+    """
+
+    #: The page is a physical exam whatever the sentence under test says,
+    #: so what is measured here is the READER and not the classifier.
+    PAGE = ("神经科专科查体记录", "四肢肌力检查")
+
+    def _grades(self, sentence):
+        result = analyze_fshd_report(
+            "\n".join(self.PAGE + (sentence,)), "other", "physical.jpeg"
+        )
+        return [
+            f
+            for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "mrc_score"
+        ]
+
+    def test_a_sibling_count_is_not_a_deltoid_grade(self):
+        self.assertEqual(
+            self._grades(
+                "体格检查: 双侧三角肌肌力检查配合欠佳, 患者共有 3 个兄弟姐妹同患此病。"
+            ),
+            [],
+        )
+
+    def test_a_duration_in_years_is_not_a_grade(self):
+        self.assertEqual(
+            self._grades("体格检查: 三角肌无力已 4 年, 未行肌力测定。"), []
+        )
+
+    def test_the_grade_unit_is_an_anchor(self):
+        grades = self._grades("体格检查: 三角肌肌力 4 级。")
+        self.assertEqual(
+            [(g["field_value"], g["normalized_value"]) for g in grades], [("4", 4.0)]
+        )
+
+    def test_the_measurement_name_is_an_anchor_when_the_unit_is_omitted(self):
+        for sentence in ("体格检查: 三角肌肌力 4。", "体格检查: 三角肌 MMT 4。"):
+            with self.subTest(sentence=sentence):
+                grades = self._grades(sentence)
+                self.assertEqual(
+                    [(g["field_value"], g["normalized_value"]) for g in grades],
+                    [("4", 4.0)],
+                    sentence,
+                )
+
+    def test_the_label_does_not_reach_across_a_clause_boundary(self):
+        """A label introduces what follows it, and it stops introducing
+        at the comma."""
+        self.assertEqual(
+            self._grades("体格检查: 三角肌肌力未测, 病程 4 年。"), []
+        )
+
+    def test_a_side_still_binds_to_its_own_anchored_grade(self):
+        grades = self._grades("体格检查: 三角肌肌力左侧 4 级, 右侧 5 级。")
+        self.assertEqual(
+            {g["side"]: g["field_value"] for g in grades}, {"left": "4", "right": "5"}
+        )
 
 
 if __name__ == "__main__":

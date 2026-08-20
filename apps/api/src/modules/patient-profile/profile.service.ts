@@ -6,6 +6,15 @@ import {
   requestAccountDeletion,
   type DeletionRequestStatus,
 } from './account-deletion.js';
+import type { FallDTO } from './falls/falls.service.js';
+import {
+  FALL_DIARY_SQL,
+  isFallActivity,
+  isFallLocation,
+  type FallDiaryRow,
+} from './falls/falls.sql.js';
+import { InstrumentsService, type AdministrationDTO } from './instruments/instruments.service.js';
+import { PassportShareService, type PassportShareLink } from './passport-share.service.js';
 import { applyGeneticReportAutofill } from './profile.autofill.js';
 import {
   buildClinicalPassportExport,
@@ -170,6 +179,83 @@ const DELETABLE_RECORD_TABLES: Record<DeletableRecordKind, string> = {
   symptom_score: 'patient_symptom_scores',
   followup_event: 'patient_followup_events',
 };
+
+/**
+ * The falls diary's live predicate takes a window in days, and the
+ * portability export is NOT a window.
+ *
+ * Every other reader of `patient_falls` is a screen or a summary and
+ * legitimately asks 「最近」 — the diary caps at 730 days for the reason
+ * falls.schema.ts records. A file handed over under 个保法可携带权 has
+ * no such horizon: a fall the patient logged in 2019 is part of the
+ * record they are entitled to take with them, and answering with the
+ * last two years would be the same silent drop this section exists to
+ * close, just smaller.
+ *
+ * FALL_DIARY_SQL requires `$2`, so this passes one wide enough that no
+ * storable row can fall outside it. `occurred_on` is a DATE and
+ * `fallDateString` refuses future dates, so every row that exists is in
+ * the past; 400,000 days is ~1,095 years, which no patient's past is.
+ */
+const EXPORT_FALLS_WINDOW_DAYS = 400_000;
+
+/**
+ * `PassportShareService.list` ends in `LIMIT 50`. Mirrored here — not
+ * imported, because it is a literal inside that query — so the export
+ * can say it was capped instead of presenting a truncated list of
+ * doors as the complete one.
+ *
+ * If that literal ever changes, this flag mis-reports by exactly the
+ * difference and nothing else breaks; the list itself is whatever the
+ * one query returns.
+ */
+const PASSPORT_SHARE_LIST_LIMIT = 50;
+
+/** Item responses come back from `listAdministrations` already
+ *  attached; 200 is that endpoint's own schema ceiling per call. */
+const EXPORT_INSTRUMENT_PAGE_SIZE = 200;
+
+/** One acceptance row per (document, version) the user ever tapped
+ *  through, withdrawals included. Bounded anyway — the CHECK admits
+ *  four document ids — so this cap only ever fires on a pathological
+ *  account. */
+const EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS = 500;
+
+/** One row of `legal_document_acceptances`, as the portability export
+ *  carries it.
+ *
+ *  `withdrawnAt` is carried rather than filtered, which is the one way
+ *  this read differs from both live readers in legal.service.ts. They
+ *  ask 「is this consent in force」 and must drop withdrawn rows; this
+ *  asks 「what did I authorise and when did I take it back」, and a
+ *  withdrawal the patient cannot see in their own授权历史 is the half
+ *  of the story they are most likely to need. */
+export interface LegalAcceptanceExportDTO {
+  document: string;
+  version: string;
+  acceptedAt: string;
+  withdrawnAt: string | null;
+}
+
+/** Same shape `GET /me/falls` returns, field for field, so the export
+ *  and the diary screen cannot disagree about one fall. Built here
+ *  rather than imported because `toFallDTO` is private to
+ *  falls.service.ts; `FallDTO` itself is imported, so a drift in that
+ *  shape is a compile error rather than a quiet difference. */
+const toExportFallDTO = (row: FallDiaryRow): FallDTO => ({
+  id: row.id,
+  occurredOn: row.occurred_on,
+  daysAgo: Math.max(0, row.fall_day_age),
+  activity: isFallActivity(row.activity) ? row.activity : null,
+  location: isFallLocation(row.location) ? row.location : null,
+  handsFull: row.hands_full,
+  gotUpUnaided: row.got_up_unaided,
+  injured: row.injured,
+  createdAt:
+    row.created_at instanceof Date
+      ? row.created_at.toISOString()
+      : new Date(row.created_at).toISOString(),
+});
 
 export interface PatientMedicationDTO {
   id: string;
@@ -4222,5 +4308,180 @@ export class PatientProfileService {
     removeFile: (storageUri: string) => Promise<void>,
   ): Promise<number> {
     return purgeDueAccountDeletions(this.pool, removeFile, this.logger);
+  }
+
+  /* ==================================================================
+   * PIPL 可携带权 — the record categories PatientProfileDTO does NOT
+   * carry.
+   * ==================================================================
+   *
+   * `getProfileByUserId` loads eight patient_* tables into one DTO, and
+   * for a while that set really was 「everything the platform stores
+   * about the caller」. Two features shipped afterwards and did not
+   * join it, both because they were deliberately built OUTSIDE this
+   * class: the falls diary (its write is a two-row transaction, see
+   * falls.service.ts) and the instrument engine (its rows are
+   * immutable, see instruments.service.ts). Neither appears in
+   * `PatientProfileDTO`, so `GET /me/data-export` — whose docstring
+   * claimed to hold everything, and whose button the privacy screen
+   * describes as 「把全部档案、记录、报告清单与授权历史下载成一个文件」
+   * — handed patients a file with every fall they recorded and every
+   * scale this product administered to them missing, and nothing in
+   * the file saying so.
+   *
+   * A patient reading that file sees 病程时间线 entries of type `fall`
+   * (the diary's twin event IS in `profile.followupEvents`) with none
+   * of what they answered about them, and no Brooke or Vignos grade at
+   * all. Both readings are wrong in the direction that matters: the
+   * record looks thinner than it is.
+   *
+   * The readers below exist so the export can carry those categories
+   * without merging either engine's write invariants into this class.
+   * They are EXPORT-shaped, not screen-shaped: no window, superseded
+   * rows included, and an explicit row cap the caller reports as a
+   * truncation flag rather than a short list presented as a whole one.
+   * Every bound is passed IN, so all of the export's limits stay
+   * legible in one place — profile.controller.ts.
+   */
+
+  /** Lazily composed, not constructed in `constructor`, so an account
+   *  that never exports never builds them. Both take the same pool and
+   *  logger this service already holds. */
+  private instrumentsForExport: InstrumentsService | null = null;
+  private passportSharesForExport: PassportShareService | null = null;
+
+  private instrumentsReader(): InstrumentsService {
+    this.instrumentsForExport ??= new InstrumentsService({
+      pool: this.pool,
+      logger: this.logger,
+    });
+    return this.instrumentsForExport;
+  }
+
+  private passportSharesReader(): PassportShareService {
+    this.passportSharesForExport ??= new PassportShareService(this.pool, this.logger);
+    return this.passportSharesForExport;
+  }
+
+  /**
+   * Every live diary entry the patient ever wrote, oldest fall
+   * included — see EXPORT_FALLS_WINDOW_DAYS for why this read has no
+   * window when every other reader of the table does.
+   *
+   * `FALL_DIARY_SQL` is imported rather than re-written: it carries the
+   * retraction rule (a diary row whose timeline twin was deleted is
+   * NOT live), and a second copy of that predicate is how the export
+   * would come to hand back falls the patient believes they retracted.
+   *
+   * Reads `maxRows + 1` so 「there are more」 is observed rather than
+   * inferred from a full page.
+   */
+  async listFallDiaryForExport(
+    userId: string,
+    maxRows: number,
+  ): Promise<{ falls: FallDTO[]; truncated: boolean }> {
+    const result = await this.pool.query<FallDiaryRow>(`${FALL_DIARY_SQL}\n       LIMIT $3`, [
+      userId,
+      String(EXPORT_FALLS_WINDOW_DAYS),
+      maxRows + 1,
+    ]);
+    const rows = result.rows ?? [];
+    return {
+      falls: rows.slice(0, maxRows).map(toExportFallDTO),
+      truncated: rows.length > maxRows,
+    };
+  }
+
+  /**
+   * Every instrument administration, item responses attached.
+   *
+   * `includeSuperseded: true`, which is the opposite of what a trend
+   * line wants and the only correct choice here. A completed
+   * administration is immutable (migration 022) and a correction is a
+   * NEW row naming the one it replaces; exporting only the survivors
+   * would hand the patient a history with their own corrections
+   * silently deleted — and `supersedesId` / `supersededById` travel
+   * with each row, so a reader can still draw the live series.
+   */
+  async listInstrumentAdministrationsForExport(
+    userId: string,
+    maxRows: number,
+  ): Promise<{ administrations: AdministrationDTO[]; truncated: boolean }> {
+    const reader = this.instrumentsReader();
+    const administrations: AdministrationDTO[] = [];
+    let truncated = false;
+
+    for (let offset = 0; offset < maxRows; offset += EXPORT_INSTRUMENT_PAGE_SIZE) {
+      const pageSize = Math.min(EXPORT_INSTRUMENT_PAGE_SIZE, maxRows - offset);
+      const page = await reader.listAdministrations(userId, {
+        limit: pageSize,
+        offset,
+        includeSuperseded: true,
+      });
+      administrations.push(...page);
+      if (page.length < pageSize) break;
+      if (offset + pageSize >= maxRows) truncated = true;
+    }
+
+    return { administrations, truncated };
+  }
+
+  /**
+   * 协议签署记录: which version of which document this account accepted,
+   * and when it was withdrawn.
+   *
+   * Queried here rather than through legal.service.ts because both of
+   * that module's readers answer a different question — 「is this
+   * consent in force right now」 — and are `DISTINCT ON (document)` with
+   * `withdrawn_at IS NULL`. Its own comment says the full history 「is
+   * not exposed over HTTP, because nothing needs it yet」. The
+   * portability export needs it: an authorisation the patient took
+   * back is part of what they authorised, and the newest row per
+   * document is not a history.
+   */
+  async listLegalAcceptancesForExport(
+    userId: string,
+  ): Promise<{ acceptances: LegalAcceptanceExportDTO[]; truncated: boolean }> {
+    const result = await this.pool.query<{
+      document: string;
+      version: string;
+      accepted_at: Date | string;
+      withdrawn_at: Date | string | null;
+    }>(
+      `SELECT document, version, accepted_at, withdrawn_at
+         FROM legal_document_acceptances
+        WHERE user_id = $1
+        ORDER BY accepted_at DESC
+        LIMIT $2`,
+      [userId, EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS + 1],
+    );
+    const rows = result.rows ?? [];
+    return {
+      acceptances: rows.slice(0, EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS).map((row) => ({
+        document: row.document,
+        version: row.version,
+        acceptedAt: new Date(row.accepted_at).toISOString(),
+        withdrawnAt: row.withdrawn_at === null ? null : new Date(row.withdrawn_at).toISOString(),
+      })),
+      truncated: rows.length > EXPORT_MAX_LEGAL_ACCEPTANCE_ROWS,
+    };
+  }
+
+  /**
+   * 谁能看我的临床护照: every share link and pickup code this account
+   * ever minted, revoked and expired ones included, with no token or
+   * code digest in any of them (`PassportShareService.list` projects
+   * neither).
+   *
+   * Reuses that method rather than re-querying, because it is the one
+   * definition of 「every door into this record」 — it LEFT JOINs the
+   * pickup codes so a code read aloud in a clinic is a row in the same
+   * list as a link forwarded in WeChat.
+   */
+  async listPassportSharesForExport(
+    userId: string,
+  ): Promise<{ shares: PassportShareLink[]; truncated: boolean }> {
+    const shares = await this.passportSharesReader().list(userId);
+    return { shares, truncated: shares.length >= PASSPORT_SHARE_LIST_LIMIT };
   }
 }

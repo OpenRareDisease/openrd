@@ -478,13 +478,15 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     expect(itemOf(diagnosis, 'diagnosis.d4z4')?.provenanceZh).toContain('管理员');
     // The fields the administrator did NOT touch keep their own string
     // exactly — a blanket disclaimer would be the same lie in reverse.
-    // 单倍型 has no box on any patient form, so its string may not offer
-    // the questionnaire as an author; the fixture's genetic report reads
-    // the same 4qA that is in the archive, so what it names instead is
-    // the report, and the marked fields above are what shows the whole
-    // sentence is dropped when a marker refutes it.
+    // 单倍型 draws no box on the registration screen, and its string
+    // used to conclude from that 「所以它不是患者填写的问卷答案」 and go
+    // on to ATTRIBUTE the archived value to the report. Both halves are
+    // gone: `PUT /me/baseline` takes the cell from any client on the
+    // patient's own credentials, so the only thing the refusal rules
+    // out is an administrator, and the fixture's report reading the
+    // same 4qA settles nothing about who wrote the archive's copy.
     expect(itemOf(diagnosis, 'diagnosis.haplotype')?.provenanceZh).toBe(
-      '本平台档案中记录的值。患者的表单不为这一项提供输入框，本平台后台也不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。本平台只从该患者上传的文件中被认定为这份档案基因证据的那一份读取这几项基因结果，其余上传件不参与；那一份的这一项与档案里这个值完全相同，而读取档案时那一份的解析结果会补上档案里空着的这一项，不留记录。所以这个值是基因报告的解析结果 —— 只是没有记录能指出是哪一次读取写进去的。',
+      '本平台档案中记录的值。患者的注册表单不为这一项提供输入框，但患者本人的基线保存接口（PUT /me/baseline）接受这一栏并原样写入档案，所以患者用自己的凭据仍然可以把值写进来，写进来之后与读取报告补上的值在库里没有区别；本平台后台不允许代填（服务端拒绝写入并点名字段），所以可以排除的是管理员代填，不能排除患者自己写入。本平台只从该患者上传的文件中被认定为这份档案基因证据的那一份读取这几项基因结果，其余上传件不参与；那一份的这一项与档案里这个值完全相同。所以这个值是患者自己写进去的，还是基因报告的解析结果，本平台区分不了。',
     );
   });
 
@@ -511,11 +513,20 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     const methylation = provenanceOf('diagnosis.methylation');
 
     // 建档表单 draws a D4Z4 box and draws none for the other two, and
-    // the back office refuses all three. So the questionnaire may be
-    // offered as a possible author on exactly one of them.
+    // the back office refuses all three. What the missing box does NOT
+    // buy is a statement that the patient cannot be the author: all
+    // three cells are on `baselineProfileSchema` and all three go
+    // through `applyPatientBaselineWrite`, which filters nothing. So
+    // the difference the sentences may state is 表单 vs 接口, and the
+    // one thing all three may rule out is the administrator.
     expect(d4z4).toContain('基线问卷为这一项提供输入框');
     expect(haplotype).toContain('不为这一项提供输入框');
     expect(methylation).toContain('不为这一项提供输入框');
+    [haplotype, methylation].forEach((provenance) => {
+      expect(provenance).toContain('PUT /me/baseline');
+      expect(provenance).toContain('不能排除患者自己写入');
+      expect(provenance).not.toContain('不是患者填写的问卷答案');
+    });
 
     // 甲基化 is on no report in this fixture, so nothing can be named
     // as its author and the sentence says so — which is what the
@@ -698,8 +709,16 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     };
 
     // The fixture's genetic report reads 4qA. An archive holding the
-    // same string is the state the autofill produces on its own.
-    expect(haplotypeOf('4qA')).toContain('这个值是基因报告的解析结果');
+    // same string is the state the autofill produces on its own — and
+    // it is ALSO the state a patient produces by PUTting 4qA at
+    // /me/baseline, which is why the sentence names both and settles
+    // neither. It used to end 「所以这个值是基因报告的解析结果」, a
+    // laboratory's name on a string this platform cannot tell from the
+    // patient's own entry, sent to the receiver most likely to read it
+    // as corroboration.
+    expect(haplotypeOf('4qA')).toContain('本平台区分不了');
+    expect(haplotypeOf('4qA')).toContain('患者自己写进去的');
+    expect(haplotypeOf('4qA')).toContain('基因报告的解析结果');
     expect(haplotypeOf('4qA')).not.toContain('来源无法确定');
 
     // An archive value the report does not support keeps 来源无法确定,
@@ -768,15 +787,13 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     // beside: this profile has no genetics report at all.
     expect(itemOf(diagnosis, 'diagnosis.geneticallyConfirmed')?.value).toBe(false);
 
-    // 单倍型 has no box, so its tail is the one that ATTRIBUTES the
-    // value — and what it may attribute it to is this platform's read
-    // of a named document, not a laboratory.
+    // 单倍型 takes the same tail as the other three now, and the
+    // alternative it offers beside the patient may not be a laboratory.
     const haplotype = provenanceOf('diagnosis.haplotype');
     expect(haplotype).not.toContain('基因报告的解析结果');
     expect(haplotype).toContain('本平台对那一份的解析结果');
-    // D4Z4 has one, so its tail still ends at 区分不了 — and the
-    // alternative it offers beside the patient may not be a laboratory
-    // either.
+    // D4Z4 ends at 区分不了 too — and the alternative it offers beside
+    // the patient may not be a laboratory either.
     const d4z4 = provenanceOf('diagnosis.d4z4');
     expect(d4z4).toContain('本平台区分不了');
     expect(d4z4).not.toContain('基因报告的解析结果');
@@ -797,7 +814,7 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     // 基因报告 is gone from the vocabulary.
     const fromLaboratory =
       itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.haplotype')?.provenanceZh ?? '';
-    expect(fromLaboratory).toContain('这个值是基因报告的解析结果');
+    expect(fromLaboratory).toContain('基因报告的解析结果');
     expect(fromLaboratory).not.toContain('转录自非基因报告文件');
   });
 
@@ -890,10 +907,10 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
    * That is why it is not a fifth entry in the genetic table: the exact
    * string comparison those four conclude from would read 2014 against
    * 2014-03-02 as a disagreement and tell a registry the archive is not
-   * that reading. This sentence prints the date and concludes nothing
-   * from comparing them.
+   * that reading. What this sentence compares is the two YEARS, and it
+   * says which comparison it made.
    */
-  it('确诊年份不拿年份去和报告上的日期做逐字比对', () => {
+  const yearProvenanceWithReportDate = (reportDate: string) => {
     const [genetic, ...rest] = EXPORT_FIXTURE_PROFILE.documents;
     const result = build({
       documents: [
@@ -902,22 +919,61 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
           ocrPayload: {
             fields: {
               ...(genetic.ocrPayload as { fields: Record<string, unknown> }).fields,
-              diagnosisDate: '2014-03-02',
+              diagnosisDate: reportDate,
             },
           },
         },
         ...rest,
       ] as PatientProfileDTO['documents'],
     } as Partial<PatientProfileDTO>);
-    const year = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year')?.provenanceZh ?? '';
+    return itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year')?.provenanceZh ?? '';
+  };
+
+  it('确诊年份不拿年份去和报告上的日期做逐字比对', () => {
+    // The archive's year is 2014, so this date agrees with it.
+    const year = yearProvenanceWithReportDate('2014-03-02');
 
     expect(year).toContain('那一份的诊断日期是「2014-03-02」');
-    expect(year).toContain('本平台取其中的年份');
+    expect(year).toContain('其中的年份与本次导出的年份相同');
     expect(year).toContain('区分不了');
     // The conclusion the genetic three draw from an exact mismatch, and
     // the one this pair may not be put through.
     expect(year).not.toContain('逐字比对');
     expect(year).not.toContain('不完全一致');
+  });
+
+  /**
+   * …AND WHERE THE TWO YEARS DIFFER, THE AUTOFILL IS NOT A POSSIBLE
+   * AUTHOR AND MAY NOT BE OFFERED AS ONE.
+   *
+   * `applyGeneticReportAutofill` writes `foundation.diagnosisYear` only
+   * into an EMPTY slot, so an exported 2014 cannot have come off a
+   * document dated 2019-05-03 — the same 先填问卷、后传报告 shape the
+   * genetic cells have. The sentence used to print the date and then
+   * offer 「某一次读取用那个日期补上的」 regardless, which told a registry
+   * a 2014 it received might have been taken from a 2019 it can see.
+   */
+  it('报告上的诊断日期年份与导出年份不同时，不把自动补填说成可能的来源', () => {
+    const year = yearProvenanceWithReportDate('2019-05-03');
+
+    expect(year).toContain('那一份的诊断日期是「2019-05-03」');
+    expect(year).toContain('其中的年份是 2019，与本次导出的 2014 不一致');
+    expect(year).toContain('不可能取自那一份');
+    expect(year).toContain('来源无法确定');
+    expect(year).not.toContain('区分不了');
+    // Still not a literal string comparison — that is the other defect
+    // and it stays closed.
+    expect(year).not.toContain('逐字比对');
+  });
+
+  /** A date this platform cannot read a year out of gets no verdict
+   *  either way, rather than a guess in the permissive direction. */
+  it('读不出年份的诊断日期上不作比对，也说明自己没作', () => {
+    const year = yearProvenanceWithReportDate('去年春天');
+
+    expect(year).toContain('那一份的诊断日期是「去年春天」');
+    expect(year).toContain('没有从这个写法里读出可比对的年份');
+    expect(year).toContain('来源无法确定');
   });
 
   it('确诊年份是「记不清了」时不给它安一个来源', () => {

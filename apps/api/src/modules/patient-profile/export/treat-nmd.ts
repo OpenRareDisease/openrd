@@ -3,8 +3,10 @@ import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   diagnosisTypeSourceZh,
   diagnosisYearProvenanceZh,
+  geneticCellSourceZh,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
+  geneticEvidenceResultValue,
   geneticResultValue,
   geneticValueProvenanceZh,
   heldDatePrecision,
@@ -332,11 +334,54 @@ export const buildTreatNmdExport = (
         geneticResultValue(source, 'd4z4'),
         geneticValueProvenanceZh(source, 'd4z4'),
       ),
+      // …AND THE SAME CELL AS THE EVIDENCE DOCUMENT STATES IT, on the
+      // terms `diagnosis.typeFromGeneticEvidence` above already
+      // established for 分型.
+      //
+      // THE KEY IS WHAT A RECEIVER MAPS ON. `diagnosis.d4z4` is the
+      // ARCHIVE's line, and where the two disagree it says so — but it
+      // says so in an enum and a Chinese paragraph, and a registry
+      // indexing 「this patient's D4Z4 repeat count」 reads the value.
+      // Over the ordinary先填问卷、后传报告 profile it therefore filed
+      // the questionnaire's count while the passport, the markdown
+      // export, the share page, the referral pack and the FHIR
+      // Observation all carried the laboratory's.
+      //
+      // AND THE GREY ZONE ONLY EXISTS HERE. The archive item's
+      // `qualifier` is null whenever its `reading` is not `result`,
+      // correctly — the 8–10 verdict belongs to the number the passport
+      // graded — so in the disagreement case the one machine-readable
+      // flag a trial site can filter on reached the FHIR bundle and not
+      // this document. `geneticEvidenceResultValue` carries it on the
+      // value it is about.
+      item(
+        'diagnosis.d4z4FromGeneticEvidence',
+        'D4Z4 重复单元数（读自基因证据文件）',
+        geneticEvidenceResultValue(source, 'd4z4'),
+        `${geneticCellSourceZh(source, 'd4z4', 'diagnosis.d4z4')}${geneticEvidenceDocumentZh(source)}`,
+      ),
       item(
         'diagnosis.haplotype',
         '4q 单倍型',
         geneticResultValue(source, 'haplotype'),
         geneticValueProvenanceZh(source, 'haplotype'),
+      ),
+      // THE 单倍型 IS THE WORST OF THE THREE TO GET FROM THE ARCHIVE,
+      // because nothing else in the product contradicts it.
+      // `readBaselineDiseaseBackground` in profile.passport.ts does not
+      // read `diseaseBackground.haplotype` at all — 「nothing on the
+      // passport family renders a 单倍型 value」 — so the archived
+      // string reaches exactly one reader, this document, and reaches
+      // it as a genotype. A stale 4qB sitting beside a report that read
+      // 4qA is not a near miss: 4qB is the allele that argues against
+      // the diagnosis this same document asserts, and no surface a
+      // patient or clinician holds would have shown them the
+      // disagreement.
+      item(
+        'diagnosis.haplotypeFromGeneticEvidence',
+        '4q 单倍型（读自基因证据文件）',
+        geneticEvidenceResultValue(source, 'haplotype'),
+        `${geneticCellSourceZh(source, 'haplotype', 'diagnosis.haplotype')}${geneticEvidenceDocumentZh(source)}`,
       ),
       // 甲基化 IS NOT A BARE STRING ANY MORE EITHER, and for the reason
       // the two above are not: this is the FSHD2 discriminator, and a
@@ -354,6 +399,32 @@ export const buildTreatNmdExport = (
         '甲基化',
         source.geneticEvidence.methylation,
         `${geneticValueProvenanceZh(source, 'methylation')}${METHYLATION_NOT_JUDGED_ZH}`,
+      ),
+      // 甲基化 GETS THE SIBLING TOO, for the reason the two above do:
+      // the passport resolves this cell document-first
+      // (`methylationFromDocument || methylationFromBaseline`) and
+      // prints the document's string on all four human-facing surfaces,
+      // while this document carried the archive's. It is the FSHD2
+      // discriminator, so 「which of the two numbers is this patient's」
+      // is a question a registry acts on.
+      //
+      // A BARE STRING, like its archive sibling and for the same
+      // reason: `GENETIC_RESULT_ITEMS` has no 甲基化 entry because
+      // nothing here reads the cell and nothing here refuses it, so
+      // there is no `readsAsResult` to report. What it gains is the
+      // same refusal sentence, which is the whole of what this platform
+      // has to say about the number.
+      //
+      // READ OFF `geneticEvidenceRecord.methylationValue`, which is the
+      // passport's own record of the one document
+      // `pickGeneticEvidenceDocument` named — the same field the
+      // passport, the markdown export, the share page and the referral
+      // pack print — and not a second parse.
+      item(
+        'diagnosis.methylationFromGeneticEvidence',
+        '甲基化（读自基因证据文件）',
+        source.geneticEvidenceRecord.methylationValue,
+        `${geneticCellSourceZh(source, 'methylation', 'diagnosis.methylation')}${geneticEvidenceDocumentZh(source)}${METHYLATION_NOT_JUDGED_ZH}`,
       ),
       // THE ONE GENETIC READING WITH NO ARCHIVE LINE.
       //

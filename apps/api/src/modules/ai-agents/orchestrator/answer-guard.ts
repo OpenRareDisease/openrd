@@ -2754,15 +2754,56 @@ const CLAIM_DISCLAIMED =
  * nothing was added to `SEVERITY_WORD` and nothing was added to
  * `CLAIM_DISCLAIMED` to buy this.
  *
- * WHAT IT MISSES, stated: a claim clause whose number arrives by
- * INHERITANCE rather than literally — the lead-in / bullet carry
- * `withInherited` performs one level up — is not seen as carrying his
- * number here, so an earlier disclaimer still cancels it. Bullets and
- * table rows are separate segments, so the case needs the lead-in and
- * the claim in one sentence with the digit only in the lead-in, and it
- * fails toward publication. Closing it means carrying the inherited
- * text into this function, which is a wider change than the escape
- * above is worth.
+ * ---------------------------------------------------------------------
+ * ...AND THE CLAUSE THAT INHERITS HIS NUMBER FROM THE CLAUSE IN FRONT OF
+ * IT IS REACHED, WHICH IS WHAT THE FIRST VERSION OF THIS SCOPE MISSED.
+ *
+ * The paragraph that stood here recorded the hole and left it open: a
+ * claim clause whose number arrives by INHERITANCE rather than
+ * literally is not seen as carrying his number, so an earlier
+ * disclaimer still cancels it. Driven against the running stack on a
+ * patient whose count is 3, that is not a corner — it is the FIRST
+ * shape the model reaches for once the disclaimer has to stand in front
+ * of the claim:
+ *
+ *   「我不能拿你的 3 个重复单元判断轻重，这一档确实发病更早、病情更重。」
+ *
+ * The 3 is in the lead-in clause, the prognosis is in the next one, and
+ * the next one says 这一档 — it points back at the value the same
+ * sentence just stated. Asked clause-locally it carries no digit at all,
+ * so the refusal in front of it went on being the password, and the
+ * clause-scope fix that was supposed to take the password away handed
+ * it back in a different spelling.
+ *
+ * THE CUT AND THE INHERITANCE ARE NOT THE SAME EDGE, which is the whole
+ * of this. A disclaimer stops reaching at a clause that makes the claim
+ * over again; a REFERENT reaches wherever an anaphor points at it. So
+ * the scope split decides only where the cancel dies, and a claim scope
+ * that POINTS BACK at something it did not state itself is judged
+ * carrying the text of the scopes before it in the same segment.
+ *
+ * THE POINTER IS `pointsAtAnEarlierSegment`, unchanged and not widened
+ * — the same predicate `inspectAnswer` already uses to carry a band
+ * across a sentence boundary one level up, applied one level down at
+ * the clause boundaries of a single sentence. It is a closed
+ * demonstrative class (这个区间 / 这一档 / 这个数值 / 这个结果) gated on
+ * the scope NOT naming a band or a value of its own, so a clause that
+ * supplies its own referent borrows nothing.
+ *
+ * AND THE FACT IS STILL THE HALF THAT DECIDES. The borrow only ever
+ * ADDS text for `carriesNumber` / `carriesBandAround` to look in, and
+ * they still require the number they find to be one of HIS. This file's
+ * pinned recommendation is untouched by it —
+ * 「至于 95% 这个数值对你的病情具体意味着什么，建议跟你的主治医生讨论，
+ *  他会结合你的疾病进展来判断。」 — because 他 is the physician who was
+ * just named and points at no value, so the third clause borrows
+ * nothing and check 1 would never have fired on it standing alone.
+ *
+ * WHAT IT STILL MISSES, stated: a demonstrative the class does not hold
+ * (「那一档」 is 这一档 written with the far demonstrative and is not in
+ * `BAND_ANAPHORA`), and a claim clause that inherits with no pointer at
+ * all. Both fail toward publication, and both are a widening of that
+ * closed class rather than of anything here.
  *
  * 「、」 IS NOT A CLAUSE BOUNDARY HERE, AND IT IS THE WHOLE REASON THIS
  * HAS ITS OWN SPLIT INSTEAD OF REUSING `CLAUSE_BOUNDARY`. 、 is the
@@ -2813,7 +2854,8 @@ const claimIsNotAsserted = (asserted: string, evidence: GuardEvidence): boolean 
   // 快」 puts the opening cancel in clause one and the first severity
   // word in clause two, so exempting the clause the cancel was measured
   // against would exempt the claim itself.
-  for (const scope of disclaimerScopesOf(asserted)) {
+  const scopes = disclaimerScopesOf(asserted);
+  for (const [index, scope] of scopes.entries()) {
     const severity = scope.search(SEVERITY_WORD);
     if (severity < 0) continue;
     // Its own cancel, measured the same way and inside the clause. A
@@ -2823,8 +2865,13 @@ const claimIsNotAsserted = (asserted: string, evidence: GuardEvidence): boolean 
     // place it is actually true.
     const before = scope.slice(0, severity);
     if (CLAIM_DISCLAIMED.test(before) || INTERROGATIVE.test(before)) continue;
+    // ...AND THE NUMBER IT POINTS AT, where it points rather than
+    // prints. The cancel dies at this clause; the referent does not.
+    // See the block above on why these are two different edges.
+    const referent = pointsAtAnEarlierSegment(scope) ? scopes.slice(0, index).join(' ') : '';
+    const judged = referent === '' ? scope : `${scope} ${referent}`;
     const landsOnHim = evidence.numbers.some(
-      (number) => carriesNumber(scope, number.value) || carriesBandAround(scope, number.value),
+      (number) => carriesNumber(judged, number.value) || carriesBandAround(judged, number.value),
     );
     if (landsOnHim) return false;
   }
@@ -2873,12 +2920,35 @@ const claimIsNotAsserted = (asserted: string, evidence: GuardEvidence): boolean 
 const GRADING_WORD =
   /偏高|偏低|过高|过低|很高|很低|太高|太低|极高|极低|相当高|非常高|高出|低于|超出|超标|异常|正常范围|典型范围|常规范围|正常水平|明显升高|明显降低|属于高|属于低|高甲基化|低甲基化|分级|哪一档|这一档|程度很|水平很|读成|比较少见|不太常见|允许型|致病范围|发病范围|FSHD\s*[0-9]?\s*的?\s*范围|范围之上|说不准的区间/u;
 
-/** A negation reaching FORWARD over the grading word. 「我没办法把这个数值
- *  解读成「高」或「低」」 is a refusal to grade and must survive; 「95% 高出
- *  常规预期，我没有办法解释」 is a grade followed by a disclaimer and must
- *  not. Position is what separates them, so the marker only cancels a
- *  grading word that comes after it. */
-const NEGATION = /不|没|无法|拒绝|未|别|勿/u;
+/**
+ * A negation reaching FORWARD over the grading word. 「我没办法把这个数值
+ * 解读成「高」或「低」」 is a refusal to grade and must survive; 「95% 高出
+ * 常规预期，我没有办法解释」 is a grade followed by a disclaimer and must
+ * not. Position is what separates them, so the marker only cancels a
+ * grading word that comes after it.
+ *
+ * 「不过」 IS NOT A NEGATION, AND UNTIL THE CANCEL WAS SCOPED TO A CLAUSE
+ * IT DID NOT MATTER. This is a list of bare CHARACTERS, so 不 matched
+ * inside 不过 — and 不过 is the concessive 「but」, the word a Chinese
+ * sentence uses to introduce the very clause it is about to assert.
+ * While the cancel was measured once over the whole segment the 不 of a
+ * later 不过 was always behind an earlier, real refusal and changed
+ * nothing. Measured per clause it becomes the clause's OWN cancel:
+ *
+ *   「我没办法把你的甲基化 95% 解读成「高」或者「低」，不过 95% 确实在
+ *    FSHD1 的典型范围里。」
+ *
+ * — the refusal in clause one, the grade in clause two, and 不过 in
+ * front of the grade standing down the check that was written for it.
+ * 不光 / 不仅 / 不只 are the same shape (「not only X, but also Y」) and
+ * negate nothing that follows either.
+ *
+ * The same exclusion `CONFIRMATION_NEGATED` already carries, for the
+ * same reason and spelt the same way — see the note there. Both lists
+ * decide to WITHHOLD, so narrowing one can only ever cut a sentence
+ * that was publishing.
+ */
+const NEGATION = /不(?!过|光|仅|只)|没|无法|拒绝|未|别|勿/u;
 
 /**
  * A sentence ASSERTING a cause.
@@ -2961,11 +3031,85 @@ const carriesBandAround = (segment: string, value: number): boolean => {
 const INTERROGATIVE =
   /是否|是不是|有没有|算不算|会不会|意味着什么|代表什么|说明什么|哪一|哪个|哪种|吗/u;
 
-const gradingIsNotAsserted = (segment: string): boolean => {
+/**
+ * ---------------------------------------------------------------------
+ * ...AND THE CANCEL SCOPES ITS OWN CLAUSE, NOT THE WHOLE SEGMENT — THE
+ * SAME FIX `claimIsNotAsserted` WAS GIVEN, ON THE CHECK IT WAS COPIED
+ * FROM.
+ *
+ * Check 1's escape and this one are the same escape, and this one is
+ * where the position rule was written FIRST: the block above
+ * `DISCLAIMER_SCOPE_BOUNDARY` cites this function by name as the
+ * neighbour that already had it. Then check 1 was given clause scope
+ * and this sibling was not, so the shape check 1 now cuts still
+ * published here.
+ *
+ * The position rule below was measured ONCE, at the FIRST grading word
+ * in the segment, and its verdict then covered everything after it.
+ * That is not fixable by looking at every match instead: 「a negation
+ * somewhere before it」 is monotone in position, so a marker standing
+ * ahead of the first grading word stands ahead of all of them and the
+ * segment stands down whole. And a segment is a SENTENCE — `segmentsOf`
+ * cuts only at 。！？；, never at 「，」 — so THIS PLATFORM'S OWN REFUSAL
+ * SENTENCE, standing in front of a reading, cancelled the check for
+ * every clause beside it:
+ *
+ *   「我没办法把你的甲基化 95% 解读成「高」或者「低」，不过 95% 确实在
+ *    FSHD1 的典型范围里。」
+ *   「这一格本平台不下结论，甲基化 95% 属于高甲基化。」
+ *   「我不能替你判断甲基化，你的 95% 明显升高。」
+ *
+ * Every one of them opens with the position this platform holds —
+ * correctly stated, in the model's voice — and then draws the line on
+ * the one cell this platform permanently refuses to grade. The refusal
+ * was the password for the grade, which is the same trade the trailing
+ * 不过 bought on check 1 and the same one the clause-scope fix took
+ * away there.
+ *
+ * SO THE SPAN IS THE CLAUSE — BUT ONLY WHERE THE CLAUSE GRADES HIS OWN
+ * CELL, which is the fact this check is built on anyway. 「Every clause
+ * carrying a grading word carries its own cancel」 is too strict for the
+ * reason check 1 states at length: a refusal legitimately governs the
+ * clauses that CONTINUE it, and this file has such a sentence pinned —
+ * 「我没办法把你的甲基化值解读成「高」或者「低」，本平台不给这一格分级。」
+ * The second clause is the refusal restated, not a grade standing
+ * beside it.
+ *
+ * What separates them is the fact, not the punctuation. So the cancel
+ * reaches forward across clauses as it always did, and it stops at one
+ * thing: a clause that carries a grading word, carries no cancel of its
+ * own ahead of it, AND attaches that grade to the ungraded cell by one
+ * of the three ties `inspectAnswer` already grades on — his number, the
+ * possessive, or the cell's own identifier. Same fact, same three
+ * readers, asked one clause down instead of once for the whole segment,
+ * so nothing was added to `GRADING_WORD` and nothing to `NEGATION` to
+ * buy it.
+ *
+ * `disclaimerScopesOf` rather than `clausesOf`, for the reason that
+ * function's own note gives: 、 is the enumeration comma and joins ITEMS
+ * inside one predicate — 「你的甲基化、你的重复数我都不做分级」 is one
+ * clause with a two-item object — while 「|」 is a boundary because a
+ * markdown row's cells are not one another's context.
+ */
+const gradingIsNotAsserted = (segment: string, cell: string, evidence: GuardEvidence): boolean => {
   const grading = segment.search(GRADING_WORD);
   if (grading < 0) return false;
-  const before = segment.slice(0, grading);
-  return NEGATION.test(before) || INTERROGATIVE.test(before);
+  const opening = segment.slice(0, grading);
+  if (!NEGATION.test(opening) && !INTERROGATIVE.test(opening)) return false;
+
+  // The opening cancel stands, and it reaches everything that follows —
+  // except a clause that draws the line OVER AGAIN on his own cell.
+  // EVERY clause is asked, the one holding the first grading word
+  // included: the cancel may sit in the clause before it, which is the
+  // shape this fix exists for.
+  for (const scope of disclaimerScopesOf(segment)) {
+    const asserted = scope.search(GRADING_WORD);
+    if (asserted < 0) continue;
+    const before = scope.slice(0, asserted);
+    if (NEGATION.test(before) || INTERROGATIVE.test(before)) continue;
+    if (gradeAttachedToCell(scope, cell, evidence)) return false;
+  }
+  return true;
 };
 
 function cellTermsPresent(segment: string, cell: string): boolean {
@@ -3017,6 +3161,29 @@ const clausesOf = (segment: string): string[] =>
 
 const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
   clausesOf(segment).some((clause) => POSSESSIVE.test(clause) && cellTermsPresent(clause, cell));
+
+/**
+ * IS THIS TEXT'S GRADE LANDING ON **HIS** COPY OF THE CELL — the three
+ * ties check 2 grades on, asked in one place.
+ *
+ * They were spelt inline in `inspectAnswer` and are now asked twice: of
+ * the whole segment, which decides whether the cell is implicated at
+ * all, and of one clause at a time inside `gradingIsNotAsserted`, which
+ * decides whether an earlier refusal still reaches this clause. Two
+ * copies of a three-way tie is how the two questions come to disagree
+ * about what 「about his cell」 means, so there is one.
+ *
+ *   - HIS NUMBER for that cell — the projection's own value, so 95 is
+ *     the methylation and a bare 4 is not the haplotype.
+ *   - THE POSSESSIVE, bound inside its clause. The weak tie; see
+ *     `possessiveAttachedToCell`.
+ *   - THE CELL'S OWN IDENTIFIER — 4qA, which is neither a number nor
+ *     reachable by the possessive. See `cellIdentifiers`.
+ */
+const gradeAttachedToCell = (text: string, cell: string, evidence: GuardEvidence): boolean =>
+  evidence.numbers.some((number) => number.cell === cell && carriesNumber(text, number.value)) ||
+  possessiveAttachedToCell(text, cell) ||
+  (evidence.cellIdentifiers.get(cell) ?? []).some((identifier) => text.includes(identifier));
 
 /**
  * CHECK 1 WITHOUT THE DIGIT: THE CLAIM ATTACHED TO HIS CELL BY THE
@@ -4266,21 +4433,18 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     }
 
     // 2. A grade on a cell this platform declines to grade.
-    if (!gradingIsNotAsserted(text) && GRADING_WORD.test(text)) {
+    //
+    // ASKED PER CELL, BECAUSE THE CANCEL IS. The three ties — his
+    // number, the possessive, the cell's own identifier (「4qA 是允许型」
+    // names this reader's cell as squarely as 「你的单倍型是允许型」 does)
+    // — are `gradeAttachedToCell`; whether an earlier refusal still
+    // reaches the clause that grades is `gradingIsNotAsserted`, and that
+    // question is now about THIS cell, so it cannot be answered once
+    // outside the loop.
+    if (GRADING_WORD.test(text)) {
       for (const cell of evidence.ungradedCells) {
-        const byNumber = evidence.numbers.some(
-          (number) => number.cell === cell && carriesNumber(text, number.value),
-        );
-        const byName = possessiveAttachedToCell(text, cell);
-        // ...AND BY THE CELL'S OWN VALUE, which for the haplotype is
-        // neither a number nor reachable by the possessive. See
-        // `cellIdentifiers`: 「4qA 是允许型」 names this reader's cell as
-        // squarely as 「你的单倍型是允许型」 does, and it is the form the
-        // model published on the record this platform refused to read.
-        const byIdentifier = (evidence.cellIdentifiers.get(cell) ?? []).some((identifier) =>
-          text.includes(identifier),
-        );
-        if (!byNumber && !byName && !byIdentifier) continue;
+        if (!gradeAttachedToCell(text, cell, evidence)) continue;
+        if (gradingIsNotAsserted(text, cell, evidence)) continue;
         add({
           kind: 'ungraded_cell_graded',
           sentence: segment.text.trim(),

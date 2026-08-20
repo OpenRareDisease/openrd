@@ -12,6 +12,8 @@ import {
 import { EXPORT_FIXTURE_PROFILE } from './export/__fixtures__/profile.fixture.js';
 import { DOCUMENT_TYPES } from './profile.constants.js';
 import {
+  EXPORT_MAX_FALL_ROWS,
+  EXPORT_MAX_INSTRUMENT_ROWS,
   PatientProfileController,
   _canonicalizeDocumentType,
   _buildContentDisposition,
@@ -1449,6 +1451,12 @@ describe('PatientProfileController.exportMyData — full data export', () => {
     profile?: unknown;
     auditPages?: unknown[][];
     submissionBatches?: Array<{ items: unknown[]; total: number }>;
+    /** The four categories v1 dropped. Defaulted to empty-but-present
+     *  so every existing case still exercises the assembly. */
+    fallDiary?: { falls: unknown[]; truncated: boolean };
+    instruments?: { administrations: unknown[]; truncated: boolean };
+    legalAcceptances?: { acceptances: unknown[]; truncated: boolean };
+    passportShares?: { shares: unknown[]; truncated: boolean };
   }) => {
     const submissionBatches = overrides.submissionBatches ?? [{ items: [], total: 0 }];
     let submissionCall = 0;
@@ -1462,6 +1470,18 @@ describe('PatientProfileController.exportMyData — full data export', () => {
         submissionCall += 1;
         return Promise.resolve({ page: submissionCall, pageSize: 100, ...batch });
       }),
+      listFallDiaryForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.fallDiary ?? { falls: [], truncated: false }),
+      listInstrumentAdministrationsForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.instruments ?? { administrations: [], truncated: false }),
+      listLegalAcceptancesForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.legalAcceptances ?? { acceptances: [], truncated: false }),
+      listPassportSharesForExport: vi
+        .fn()
+        .mockResolvedValue(overrides.passportShares ?? { shares: [], truncated: false }),
     } as unknown as PatientProfileService;
 
     const auditPages = overrides.auditPages ?? [[]];
@@ -1505,7 +1525,7 @@ describe('PatientProfileController.exportMyData — full data export', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(payload.formatVersion).toBe(1);
+    expect(payload.formatVersion).toBe(2);
     expect(payload.profile).toEqual({ id: 'p1', documents: [] });
     expect(payload.consent).toEqual({ personal: true });
     expect(payload.consentHistory).toHaveLength(1);
@@ -1516,8 +1536,145 @@ describe('PatientProfileController.exportMyData — full data export', () => {
       submissions: false,
       aiAuditTrail: false,
       consentHistory: false,
+      falls: false,
+      instrumentAdministrations: false,
+      legalAcceptances: false,
+      passportShares: false,
     });
     expect(auditReader.listByUser).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE DEFECT THIS SECTION EXISTS FOR.
+   *
+   * v1 answered the portability right with a file that had no
+   * `patient_falls` and no `instrument_administrations` in it and said
+   * nothing about either — so a patient who had recorded twelve falls
+   * and taken Brooke four times downloaded 「全部…记录」 and got
+   * neither. Asserting the keys is not enough: an empty array in the
+   * right place is exactly what the bug looked like from outside, so
+   * these assert the ROWS reach the body.
+   */
+  it('carries the falls diary and every instrument administration', async () => {
+    const fall = {
+      id: 'fall-1',
+      occurredOn: '2024-03-02',
+      daysAgo: 500,
+      activity: 'walking',
+      location: 'home_indoor',
+      handsFull: false,
+      gotUpUnaided: false,
+      injured: true,
+      createdAt: '2024-03-02T04:00:00.000Z',
+    };
+    const administration = {
+      id: 'adm-1',
+      instrumentKey: 'brooke_upper_extremity',
+      instrumentVersion: '1.0.0',
+      scoredValue: 3,
+      supersedesId: null,
+      supersededById: 'adm-2',
+      responses: [{ itemCode: 'brooke_1', responseValue: 3 }],
+    };
+    const { controller, service } = buildExportController({
+      profile: { id: 'p1' },
+      fallDiary: { falls: [fall], truncated: false },
+      instruments: { administrations: [administration], truncated: false },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.falls).toEqual([fall]);
+    expect(payload.instrumentAdministrations).toEqual([administration]);
+    // Bounds are the controller's to own, and they are the ones the
+    // docstring names.
+    expect(service.listFallDiaryForExport).toHaveBeenCalledWith('user-1', EXPORT_MAX_FALL_ROWS);
+    expect(service.listInstrumentAdministrationsForExport).toHaveBeenCalledWith(
+      'user-1',
+      EXPORT_MAX_INSTRUMENT_ROWS,
+    );
+  });
+
+  it('carries the agreement-acceptance history and every passport share', async () => {
+    const acceptance = {
+      document: 'privacy_policy',
+      version: '2026-08-02',
+      acceptedAt: '2026-08-02T01:00:00.000Z',
+      withdrawnAt: '2026-08-10T02:00:00.000Z',
+    };
+    const share = {
+      id: 'share-1',
+      label: '门诊',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      expiresAt: '2026-08-08T00:00:00.000Z',
+      revokedAt: null,
+      openedCount: 2,
+      lastOpenedAt: '2026-08-03T00:00:00.000Z',
+      pickup: null,
+    };
+    const { controller } = buildExportController({
+      profile: { id: 'p1' },
+      legalAcceptances: { acceptances: [acceptance], truncated: false },
+      passportShares: { shares: [share], truncated: false },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.legalAcceptances).toEqual([acceptance]);
+    expect(payload.passportShares).toEqual([share]);
+    // A withdrawn acceptance is part of 授权历史, not a row to hide.
+    expect(payload.legalAcceptances[0].withdrawnAt).toBe('2026-08-10T02:00:00.000Z');
+    // No share token or pickup code may ride along in the file.
+    expect(JSON.stringify(payload.passportShares)).not.toContain('token');
+    expect(JSON.stringify(payload.passportShares)).not.toContain('"code"');
+  });
+
+  it('reports a truncated section as truncated instead of as a whole one', async () => {
+    const { controller } = buildExportController({
+      profile: { id: 'p1' },
+      fallDiary: { falls: [{ id: 'fall-1' }], truncated: true },
+      instruments: { administrations: [], truncated: true },
+      legalAcceptances: { acceptances: [], truncated: true },
+      passportShares: { shares: [], truncated: true },
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.truncation).toMatchObject({
+      falls: true,
+      instrumentAdministrations: true,
+      legalAcceptances: true,
+      passportShares: true,
+    });
+  });
+
+  /**
+   * The corollary envelope.ts states for the portable formats and this
+   * body had no way to state at all: a document that lists what it left
+   * out is claiming those are the only things it left out. So the list
+   * has to be present, non-empty, reasoned, and findable by a reader
+   * who does not already know it exists.
+   */
+  it('declares what it does not carry, in the document', async () => {
+    const { controller } = buildExportController({ profile: { id: 'p1' } });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(Array.isArray(payload.omissions)).toBe(true);
+    expect(payload.omissions.length).toBeGreaterThan(0);
+    for (const omission of payload.omissions as Array<{ category: string; reasonZh: string }>) {
+      expect(omission.category.length).toBeGreaterThan(0);
+      // A category with no reason is a shrug, not a declaration.
+      expect(omission.reasonZh.length).toBeGreaterThan(10);
+    }
+    const categories = (payload.omissions as Array<{ category: string }>).map((o) => o.category);
+    expect(categories).toContain('报告原件');
+    expect(categories).toContain('安全审计日志');
+    expect(payload.notes.omissions).toContain('omissions');
   });
 
   it('pages through the audit trail until a short batch', async () => {

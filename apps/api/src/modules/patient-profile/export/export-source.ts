@@ -688,7 +688,6 @@ const GENETIC_BASELINE_VALUE_ORIGINS: Record<
      * `diagnosisTypeMarkerPath`.
      */
     readonly markerPath: (source: NormalisedSource) => string | null;
-    readonly patientFormDrawsABox: boolean;
     /** The archived value this sentence is about, as the export holds
      *  it — the string compared against the report's reading. */
     readonly archived: (source: NormalisedSource) => string | null;
@@ -701,7 +700,6 @@ const GENETIC_BASELINE_VALUE_ORIGINS: Record<
 > = {
   diagnosisType: {
     markerPath: diagnosisTypeMarkerPath,
-    patientFormDrawsABox: true,
     archived: (source) => source.diagnosisTypeRawZh,
     locationZh: (source) =>
       `本平台档案中记录的「${source.diagnosisTypeRawZh}」，本次导出的分型由它归一而来`,
@@ -712,24 +710,21 @@ const GENETIC_BASELINE_VALUE_ORIGINS: Record<
   },
   d4z4: {
     markerPath: () => 'diseaseBackground.d4z4',
-    patientFormDrawsABox: true,
     archived: (source) => source.geneticEvidence.d4z4,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
     storeClauseZh: () => GENETIC_VALUE_WITH_BOX_CLAUSE_ZH,
   },
   haplotype: {
     markerPath: () => 'diseaseBackground.haplotype',
-    patientFormDrawsABox: false,
     archived: (source) => source.geneticEvidence.haplotype,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
-    storeClauseZh: () => GENETIC_VALUE_NO_BOX_CLAUSE_ZH,
+    storeClauseZh: () => GENETIC_VALUE_NO_FORM_BOX_CLAUSE_ZH,
   },
   methylation: {
     markerPath: () => 'diseaseBackground.methylation',
-    patientFormDrawsABox: false,
     archived: (source) => source.geneticEvidence.methylation,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
-    storeClauseZh: () => GENETIC_VALUE_NO_BOX_CLAUSE_ZH,
+    storeClauseZh: () => GENETIC_VALUE_NO_FORM_BOX_CLAUSE_ZH,
   },
 };
 
@@ -762,10 +757,51 @@ const GENETIC_VALUE_WITH_BOX_CLAUSE_ZH =
 const GENETIC_TYPE_FROM_PROFILE_COLUMN_CLAUSE_ZH =
   '这个值不在基线问卷的分型栏位里——那一栏是空的——而在患者档案主记录上的基因突变自由文本栏；本平台在读取档案时也会用这份档案基因证据的解析结果补上空着的这一栏，不留记录。本导出的基线字段来源清单（fieldOrigins）只覆盖基线问卷的栏位，不覆盖这一栏，所以这个值没有出现在那份清单上并不说明它是谁写的。';
 
-/** What follows it for a field with no box anywhere. What it rules out
- *  holds whatever the reports say. */
-const GENETIC_VALUE_NO_BOX_CLAUSE_ZH =
-  '患者的表单不为这一项提供输入框，本平台后台也不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。';
+/**
+ * What follows the location for 单倍型 and 甲基化: no box on the
+ * patient's form, and a write path that takes them anyway.
+ *
+ * THE SENTENCE THIS REPLACES SAID THE OPPOSITE, and a registry acts on
+ * the difference. It read 「患者的表单不为这一项提供输入框，本平台后台也
+ * 不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。」
+ * — two premises and a conclusion drawn from both. Checked by running
+ * each half:
+ *
+ *   THE BACK-OFFICE HALF IS TRUE. `applyAdminBaselineWrite` refuses a
+ *   changed `diseaseBackground.haplotype` / `.methylation` with a 400
+ *   naming the field in Chinese: 「管理员不能代填这些基因结果：单倍型、
+ *   甲基化。」 That half is kept below, in the same words, because it is
+ *   the half a receiver can rely on.
+ *
+ *   THE PATIENT HALF IS FALSE. `PUT /me/baseline` parses the whole of
+ *   `baselineProfileSchema` from whatever client calls it, and that
+ *   schema carries both cells; `applyPatientBaselineWrite` carries the
+ *   provenance block and does not filter the payload, so the parsed
+ *   value is what `upsertBaseline` writes. The shipped registration
+ *   screen draws no input for either — which is what the old first
+ *   clause was really describing — but it also spreads the loaded
+ *   `diseaseBackground` into every save, so even the shipped client
+ *   posts both cells back on the patient's own credentials. A screen
+ *   is not a write path.
+ *
+ * WHY IT MATTERED MORE THAN A WRONG WORD. The conclusion 「所以它不是
+ * 患者填写的问卷答案」 is what routed these two fields onto
+ * `geneticValueFromEvidenceTailZh`, whose last clause ATTRIBUTES the
+ * archived string to the evidence document —— 「所以这个值是基因报告的
+ * 解析结果」. Over an archive cell holding a string a patient had typed
+ * that happens to match the report, a registry was told the value came
+ * off a laboratory report, on the strength of a refusal that only
+ * covers the back office. Both fields now reach
+ * `geneticValueMatchesEvidenceTailZh` like the other two — the tail
+ * that says this platform cannot tell the two apart — and the
+ * attributing branch is gone rather than re-pointed.
+ *
+ * WHAT IS STILL NOT SAID. Nothing here claims the value IS the
+ * patient's; the archive keeps no record either way, which is what the
+ * tails go on to say. It states which doors exist.
+ */
+const GENETIC_VALUE_NO_FORM_BOX_CLAUSE_ZH =
+  '患者的注册表单不为这一项提供输入框，但患者本人的基线保存接口（PUT /me/baseline）接受这一栏并原样写入档案，所以患者用自己的凭据仍然可以把值写进来，写进来之后与读取报告补上的值在库里没有区别；本平台后台不允许代填（服务端拒绝写入并点名字段），所以可以排除的是管理员代填，不能排除患者自己写入。';
 
 /**
  * HOW FAR THIS PLATFORM'S READING REACHES, in the sentences that report
@@ -1026,27 +1062,32 @@ export const geneticEvidenceDocumentZh = (source: NormalisedSource): string => {
 };
 
 /**
- * …and the evidence document reads the same thing, for a field with no
- * box.
+ * …and the evidence document reads the same thing.
  *
- * Ends in an attribution rather than in 来源无法确定, and stops short of
- * naming WHICH read wrote it: an earlier read of a different document
- * whose value happened to match would leave the archive looking exactly
- * like this, and nothing recorded the write either way. What is left —
- * that it is this platform's reading of a named document — is exactly
- * what the passport puts in brackets over the same string.
+ * ONE TAIL, BECAUSE THE ANSWER IS THE SAME FOR ALL FOUR FIELDS. There
+ * used to be a second one — `geneticValueFromEvidenceTailZh` — taken
+ * whenever the patient's form drew no box, and it ended in an
+ * ATTRIBUTION: 「所以这个值是基因报告的解析结果 —— 只是没有记录能指出是
+ * 哪一次读取写进去的。」 That branch was reachable for 单倍型 and 甲基化
+ * only, and it rested entirely on the claim that a patient could not
+ * have written those two cells. `PUT /me/baseline` accepts both (see
+ * `GENETIC_VALUE_NO_FORM_BOX_CLAUSE_ZH`), so the
+ * attribution was a laboratory's name on a string this platform cannot
+ * tell from a patient's own entry — and it went to the receiver most
+ * likely to treat it as corroboration.
+ *
+ * WHAT IS LEFT IS WHAT IS KNOWN: the archived string and the document's
+ * reading are identical, and nothing recorded which write put the
+ * string there. The receiver is still told the reading AGREES, which is
+ * what keeps this sentence different from the one for the state where
+ * it does not.
+ *
+ * DO NOT RE-ADD AN ATTRIBUTING BRANCH for a field on the ground that no
+ * screen renders a box for it. The archive believes the endpoint, not
+ * the screen, and `applyPatientBaselineWrite` filters nothing.
  */
-const geneticValueFromEvidenceTailZh = (laboratory: boolean) =>
-  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项与档案里这个值完全相同，而读取档案时那一份的解析结果会补上档案里空着的这一项，不留记录。所以这个值是${evidenceParseZh(laboratory)} —— 只是没有记录能指出是哪一次读取写进去的。${transcriptionNoteZh(laboratory)}`;
-
-/** …and the evidence document reads the same thing, for a field that
- *  has a box. The match settles nothing about the author here — the
- *  patient could have typed that same string into the box, so 「区分
- *  不了」 is still the whole of what is known — but the receiver is told
- *  the reading agrees, which is what keeps this sentence from being the
- *  same string in the state where it does not. */
-const geneticValueMatchesEvidenceWithBoxTailZh = (laboratory: boolean) =>
-  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项与档案里这个值完全相同。所以这个值是患者自己填的，还是${evidenceParseZh(laboratory)}，本平台区分不了。${transcriptionNoteZh(laboratory)}`;
+const geneticValueMatchesEvidenceTailZh = (laboratory: boolean) =>
+  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项与档案里这个值完全相同。所以这个值是患者自己写进去的，还是${evidenceParseZh(laboratory)}，本平台区分不了。${transcriptionNoteZh(laboratory)}`;
 
 /**
  * …and the evidence document supplies a DIFFERENT reading.
@@ -1094,19 +1135,17 @@ export const geneticValueProvenanceZh = (
   // reading is already sitting in the slot — and `textItem` drops an
   // item with no value, so no sentence is shown for it either way.
   //
-  // The reading is consulted for every field, the box only decides what
-  // a match is worth. Reading it on one branch and discarding it on the
-  // other is what left D4Z4 — the one genetic value a patient can also
-  // type — with a single sentence for three different states.
+  // The reading is consulted for every field, and the three states it
+  // can be in are the three tails. Reading it on one branch and
+  // discarding it on the other is what left D4Z4 with a single sentence
+  // for three different states.
   const tail =
     reading === null
       ? documentId === null
         ? GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH
         : GENETIC_VALUE_EVIDENCE_SILENT_TAIL_ZH
       : reading === printed
-        ? spec.patientFormDrawsABox
-          ? geneticValueMatchesEvidenceWithBoxTailZh(laboratory)
-          : geneticValueFromEvidenceTailZh(laboratory)
+        ? geneticValueMatchesEvidenceTailZh(laboratory)
         : geneticValueReportDiffersTailZh(reading, laboratory);
   const base = `${spec.locationZh(source)}。${spec.storeClauseZh(source)}${tail}`;
   const markerPath = spec.markerPath(source);
@@ -1385,6 +1424,114 @@ export const geneticResultValue = (
 };
 
 /**
+ * THE SAME CELL AS THE EVIDENCE DOCUMENT STATES IT — the value every
+ * clinical surface prints, in a FIELD rather than in a paragraph.
+ *
+ * WHY THIS EXISTS. `geneticResultValue` above serialises the ARCHIVE's
+ * line. Where the archive and the evidence document disagree it says so
+ * — `reading: 'not_read'` — and the provenance sentence prints the
+ * document's string. But a registry ingests `diagnosis.d4z4` as this
+ * patient's repeat count and `diagnosis.haplotype` as this patient's
+ * genotype, and neither the enum nor the Chinese paragraph is a field
+ * it can index. So over the ordinary profile whose questionnaire was
+ * answered before the report was uploaded — `applyGeneticReportAutofill`
+ * fills an EMPTY slot and never corrects a full one — the registry
+ * filed the questionnaire's answer while the patient's own passport,
+ * markdown export, share page and referral pack all printed the
+ * laboratory's.
+ *
+ * Rendered against one synthetic profile (报告 D4Z4 9 / 4qA / 甲基化
+ * 指数 0.31, 问卷 5 个重复单元 / 4qB / 甲基化水平 32%): the passport DTO,
+ * the markdown export, the share page, the referral pack and the FHIR
+ * Observations carried the report's three values; the TREAT-NMD
+ * document carried the questionnaire's three, and 4qB is the allele
+ * that argues AGAINST the diagnosis the same document asserts.
+ *
+ * THE GREY ZONE WENT WITH IT. `SerialisedGeneticResult.qualifier` is
+ * null whenever `reading` is not `result`, which is correct — the
+ * guideline's verdict belongs to the number the passport graded, not to
+ * a different string — but the effect was that the one 8–10 flag a
+ * trial site can filter on reached the FHIR bundle and NOT the registry
+ * document, in exactly the disagreement case. It is carried here, on
+ * the value it is actually about.
+ *
+ * NOT A SECOND READING. `evidenceLineZh`, `isAResult` and `qualifier`
+ * are `GENETIC_RESULT_ITEMS`' — the same three answers
+ * `collectReportFields` asks for the FHIR Observation and the same
+ * record the passport printed. A predicate of this function's own is
+ * how a registry would come to receive a genotype the patient's page
+ * does not print.
+ *
+ * NULL WHEN THE DOCUMENT STATES NOTHING, which is the drop: an item
+ * here would assert 「we asked the report and it answered nothing」 in a
+ * slot a receiver reads as a result. The archive item's own provenance
+ * sentence says so in words.
+ */
+export type SerialisedGeneticEvidenceResult = {
+  /** The evidence document's line for this cell, as it printed it. */
+  readonly statedZh: string;
+  /** The passport's answer to 「may a receiver map this as a result」. */
+  readonly readsAsResult: boolean;
+  readonly readingZh: string;
+  readonly qualifier: SerialisedGeneticQualifier | null;
+};
+
+const GENETIC_EVIDENCE_READING_LABELS_ZH: Record<'result' | 'no_result', string> = {
+  result: '本平台把这份档案基因证据上的这一行读作这一项的检测结果',
+  no_result: '本平台从这份档案基因证据上的这一行读不出这一项的结果',
+};
+
+export const geneticEvidenceResultValue = (
+  source: NormalisedSource,
+  field: 'd4z4' | 'haplotype',
+): SerialisedGeneticEvidenceResult | null => {
+  const spec = GENETIC_RESULT_ITEMS[field];
+  const record = source.geneticEvidenceRecord;
+  const statedZh = spec.evidenceLineZh(record);
+  if (statedZh === null) return null;
+  const readsAsResult = spec.isAResult(record);
+  return {
+    statedZh,
+    readsAsResult,
+    readingZh: GENETIC_EVIDENCE_READING_LABELS_ZH[readsAsResult ? 'result' : 'no_result'],
+    qualifier: readsAsResult ? spec.qualifier(record, source.geneticGreyZoneNoteZh) : null,
+  };
+};
+
+/**
+ * The provenance sentence for one of those siblings.
+ *
+ * IT NAMES NO CORROBORATING SURFACE, and `diagnosisTypeSourceZh` —
+ * which does name four — is why the difference is deliberate rather
+ * than an omission. That list is a CHECKED list: 分型 really is printed
+ * on the passport, the markdown export, the share page and the referral
+ * pack, and provenance-surface-claims.test.ts re-renders all four every
+ * run. Rendering the same four for these three cells: D4Z4 and 甲基化
+ * appear on all of them; 4q 单倍型 appears on NONE of them as a row of
+ * its own — `readBaselineDiseaseBackground` in profile.passport.ts says
+ * so in as many words (「nothing on the passport family renders a
+ * 单倍型 value」), and the string reaches a human only inside the joined
+ * 基因证据 line. A shared sentence naming four surfaces would therefore
+ * be false for one of the three, which is the anaesthesia-card defect
+ * again; a per-field list is a claim that goes stale the next time a
+ * row moves. What every branch below states instead is checkable from
+ * this document alone: which document the value was read off, and what
+ * the archive holds beside it.
+ */
+export const geneticCellSourceZh = (
+  source: NormalisedSource,
+  field: GeneticBaselineField,
+  archiveItemKey: string,
+): string => {
+  const reading = source.geneticEvidenceReading.values[field];
+  const archived = GENETIC_BASELINE_VALUE_ORIGINS[field].archived(source);
+  const head = `本条目的值直接读自这份档案的基因证据文件：${GENETIC_EVIDENCE_READ_SCOPE_ZH}。`;
+  if (archived === null) return `${head}档案里没有另外记录这一项。`;
+  if (archived === reading) return `${head}档案里记录的这一项与它逐字相同。`;
+  return `${head}档案里另外记录着「${archived}」，与那一份上写的不一致（本平台按两边记录的原样逐字比对，不做单位换算或写法归一）。本平台在读取档案时只会用那一份的解析结果补上档案里空着的栏位，不会改写已经填着的栏位，所以一份先填问卷、后上传报告的档案会一直留着旧答案 —— 这不是错误状态，本文件也不据此判断哪一个对。档案里那个值原样出现在本导出的 ${archiveItemKey} 上，连同它自己的来源说明。`;
+};
+
+/**
  * WHY A LENGTH IN kb ON THIS DOCUMENT CHANGED NOTHING.
  *
  * The passport writes this refusal for the reader of a page (see
@@ -1517,25 +1664,70 @@ const DIAGNOSIS_DATE_READ_SCOPE_ZH = `${GENETIC_EVIDENCE_READ_SCOPE_ZH}，那一
 const DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH = `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份没有诊断日期。这不等于该患者手里没有写着确诊时间的报告。这个年份当初如何进入档案，本平台没有留下记录，来源无法确定。`;
 
 /**
- * …and the evidence document states a 诊断日期. One ending per store,
- * because the two do not have the same set of possible authors.
+ * The four-digit year inside a 诊断日期 as the evidence document
+ * printed it, or null when no year can be read out of it.
  *
- * The 问卷 arm keeps 「区分不了」, which is the whole of what is known
- * about a slot the patient's box and the autofill both write. The
- * column arm does not offer the questionnaire at all — see
- * `DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH` for what an empty slot
- * beside a full column rules out.
+ * DELIBERATELY CONSERVATIVE. It is used for ONE comparison — 「could the
+ * exported year have come off this document's date」 — and a wrong
+ * answer in the permissive direction re-creates the defect the
+ * comparison exists to close. A cell this cannot read a year out of
+ * yields null and the sentence says it made no comparison, rather than
+ * guessing.
+ */
+const YEAR_IN_DATE = /(?:^|\D)((?:19|20)\d{2})(?:\D|$)/;
+const documentDiagnosisYear = (reading: string): number | null => {
+  const match = YEAR_IN_DATE.exec(reading);
+  return match ? Number(match[1]) : null;
+};
+
+/**
+ * …and the evidence document states a 诊断日期.
+ *
+ * TWO QUESTIONS, AND ONLY ONE OF THEM WAS ASKED. The store decides
+ * WHICH AUTHORS are possible — the 问卷 arm offers the patient's box and
+ * the autofill, the column arm offers the profile endpoint and the
+ * autofill, see `DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH`. Whether the
+ * autofill is possible AT ALL is a different question, and this
+ * sentence used to answer it 「yes」 unconditionally.
+ *
+ * THE DEFECT THAT LEFT. `applyGeneticReportAutofill` writes
+ * `foundation.diagnosisYear` from the year of
+ * `profile.diagnosisDate ?? 那一份的诊断日期`, and only into an EMPTY
+ * slot. So over a profile whose questionnaire says 2014 and whose
+ * evidence document states 2019-05-03 — the same 先填问卷、后传报告 shape
+ * the genetic cells have — the exported year is 2014 and the sentence
+ * beside it read 「那一份的诊断日期是「2019-05-03」，本平台取其中的年份。
+ * 所以这个年份是患者在问卷里填的，还是某一次读取用那个日期补上的，本平台
+ * 没有留下记录，区分不了。」 Both halves are false of that pair: this
+ * platform did NOT take the year out of that date, and no read could
+ * have produced 2014 from it. A registry reading it is told a 2014 it
+ * received may have come off a document it can see is dated 2019.
+ *
+ * SO THE YEARS ARE COMPARED, on the same terms the genetic sentences
+ * compare their strings: the comparison is stated, and where the two
+ * disagree the receiver gets both numbers and 来源无法确定 rather than a
+ * possibility that is arithmetically closed.
  */
 const diagnosisYearFromReportTailZh = (
   reading: string,
   laboratory: boolean,
   store: DiagnosisYearStore,
-) =>
-  `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份的诊断日期是「${reading}」，本平台取其中的年份。${
+  exportedYear: number,
+) => {
+  const documentYear = documentDiagnosisYear(reading);
+  const head = `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份的诊断日期是「${reading}」`;
+  if (documentYear === null) {
+    return `${head}，本平台没有从这个写法里读出可比对的年份，所以不能说本次导出的年份是不是取自它。这个年份当初如何进入档案，本平台没有留下记录，来源无法确定。${transcriptionNoteZh(laboratory)}`;
+  }
+  if (documentYear !== exportedYear) {
+    return `${head}，其中的年份是 ${documentYear}，与本次导出的 ${exportedYear} 不一致。读取档案时的自动补填只会在这一项空着时用那个日期的年份补上，不会改写已经填着的年份，所以本次导出的这个年份不可能取自那一份 —— 一份先填年份、后上传报告的档案会一直留着旧答案，这不是错误状态，本文件也不据此判断哪一个对。它当初如何进入档案，本平台没有留下记录，来源无法确定。${transcriptionNoteZh(laboratory)}`;
+  }
+  return `${head}，其中的年份与本次导出的年份相同。${
     store === 'baseline'
       ? '所以这个年份是患者在问卷里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。'
       : '所以这个确诊日期是患者自己在档案里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。'
   }${transcriptionNoteZh(laboratory)}`;
+};
 
 export const diagnosisYearProvenanceZh = (source: NormalisedSource): string => {
   // 记不清了 and 「never asked」 are answers about the question, not
@@ -1558,7 +1750,7 @@ export const diagnosisYearProvenanceZh = (source: NormalisedSource): string => {
       ? documentId === null
         ? GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH
         : DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH
-      : diagnosisYearFromReportTailZh(diagnosisDate, laboratory, store);
+      : diagnosisYearFromReportTailZh(diagnosisDate, laboratory, store, source.diagnosisYear.year);
   const clauseZh =
     store === 'baseline' ? DIAGNOSIS_YEAR_BOX_CLAUSE_ZH : DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH;
   const base = `${locationZh}。${clauseZh}${tail}`;

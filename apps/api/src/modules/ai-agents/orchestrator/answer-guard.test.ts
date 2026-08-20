@@ -2859,6 +2859,89 @@ describe('a disclaimer in one clause and the claim in the next', () => {
   ])('leaves %s alone', (sentence) => {
     expect(inspectAnswer(sentence, evidence)).toHaveLength(0);
   });
+
+  // ...AND THE CLAIM CLAUSE THAT INHERITS HIS NUMBER FROM THE CLAUSE IN
+  // FRONT OF IT.
+  //
+  // The clause scope above asked whether the CLAUSE carries one of his
+  // values, so the commonest shape of all went past: the lead-in states
+  // the number, the next clause points back at it with 这一档 / 这个数值
+  // and carries no digit at all, and the refusal in front of it went on
+  // being the password. The cut and the inheritance are not the same
+  // edge — the cancel dies at the clause, the referent does not.
+  it.each([
+    '我不能拿你的 3 个重复单元判断轻重，这一档确实发病更早、病情更重。',
+    '我不能替你预测，你的重复数是 3，这个数值对应的进展通常比较快。',
+    '这不是对你个人的预测，你落在 1–3，这个区间的患者整体上发病更早。',
+  ])('catches the clause that points back at his number: %s', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // ...and the borrow is gated on the anaphor, so the recommendation
+  // this platform asks for is still untouched: 他 is the physician who
+  // was just named and points at no value of his.
+  it('does not let a clause borrow a number it never pointed at', () => {
+    expect(
+      inspectAnswer(
+        '至于 95% 这个数值对你的病情具体意味着什么，建议跟你的主治医生讨论，他会结合你的疾病进展来判断。',
+        evidence,
+      ),
+    ).toHaveLength(0);
+  });
+
+  // A clause that supplies its OWN referent borrows nothing — the same
+  // gate `pointsAtAnEarlierSegment` already applies one level up.
+  it('does not let a clause that states its own band borrow his', () => {
+    expect(
+      inspectAnswer('我不能替你预测，你的重复数是 3，8–10 这一档的预后说不清楚。', evidence),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D1 — ...AND THE SAME ESCAPE ON CHECK 2, WHICH IS THE CHECK THE
+// POSITION RULE WAS COPIED FROM.
+//
+// `gradingIsNotAsserted` is where 「a cancel only reaches forward」 was
+// written first, and check 1 cites it by name. Then check 1 was given
+// clause scope and this sibling was not — so this platform's own refusal
+// sentence, standing in front of a reading, cancelled the check for
+// every clause beside it and the grade published on the one cell this
+// platform permanently declines to grade.
+describe('a refusal in one clause and the grade in the next', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each([
+    // 不过 is the concessive 「but」 — the word that introduces the very
+    // clause being asserted — and `NEGATION` is a list of bare
+    // characters, so its 不 was the clause's own cancel.
+    '我没办法把你的甲基化 95% 解读成「高」或者「低」，不过 95% 确实在 FSHD1 的典型范围里。',
+    '这一格本平台不下结论，甲基化 95% 属于高甲基化。',
+    '我不能替你判断甲基化，你的 95% 明显升高。',
+    // A table row is one segment and its cells are not one another's
+    // context — the same rule check 1's scope already follows.
+    '| 甲基化 | 本平台不下结论 | 你的 95% 偏高 |',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain('ungraded_cell_graded');
+  });
+
+  // ...AND THE REFUSAL STILL GOVERNS THE CLAUSES THAT CONTINUE IT. What
+  // it stops at is a clause that draws the line over again on HIS cell;
+  // a clause restating the refusal is not that.
+  it.each([
+    '我没办法把你的甲基化值解读成「高」或者「低」，本平台不给这一格分级。',
+    '95% 这个数值具体代表什么、是否异常、是否提示更重或更轻的表型，建议你拿着报告去问你的主治医生。',
+    '具体到这个 95% 意味着什么、你的病情属于哪一档——建议你和你的主治医生讨论。',
+    // The grading word is real and the cell is real, but the sentence is
+    // about the disease rather than about his copy of the cell.
+    'FSHD1 通常表现为 D4Z4 区域的低甲基化，但具体的数值解读需要结合你的临床表型一起看。',
+  ])('leaves %s alone', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).not.toContain(
+      'ungraded_cell_graded',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------

@@ -388,3 +388,65 @@ export const EXPORT_FIXTURE_PROFILE_SPARSE: PatientProfileDTO = {
   documents: [],
   medications: [],
 };
+
+/**
+ * THE SAME PATIENT WITH THE REPORT AND THE QUESTIONNAIRE DISAGREEING ON
+ * EVERY GENETIC CELL.
+ *
+ * NOT AN EDGE CASE. `applyGeneticReportAutofill` fills an EMPTY
+ * baseline slot from the evidence document at read time and never
+ * corrects a full one, so any patient who answered the registration
+ * form before uploading their report — or who uploaded a corrected
+ * report afterwards — keeps the old answer in the archive forever,
+ * beside a document that says something else. That is the ordinary
+ * lifecycle, and it is the only state in which 「which value does this
+ * surface print」 has an observable answer.
+ *
+ * ALL FOUR CELLS DISAGREE AT ONCE, on purpose: the defect this fixture
+ * exists to catch was per-cell (分型 had been fixed, D4Z4, 单倍型 and
+ * 甲基化 had not), so a fixture disagreeing on one of them would have
+ * gone green on the three that were still wrong.
+ *
+ * THE VALUES ARE CHOSEN SO THAT PICKING THE WRONG ONE IS VISIBLE:
+ *
+ *   分型      问卷 FSHD1        报告 FSHD2   — a different mechanism
+ *   D4Z4     问卷 5 个重复单元   报告 9      — and 9 is in the 8–10 zone,
+ *                                            so the guideline qualifier
+ *                                            only exists on one of them
+ *   单倍型    问卷 4qB          报告 4qA    — 4qB is the allele that
+ *                                            argues AGAINST FSHD1
+ *   甲基化    问卷 甲基化水平 32% 报告 甲基化指数 0.31
+ *
+ * Every value is invented. No part of this profile is a real reading.
+ */
+export const EXPORT_FIXTURE_PROFILE_REPORT_DISAGREES: PatientProfileDTO = {
+  ...EXPORT_FIXTURE_PROFILE,
+  baseline: {
+    ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+    diseaseBackground: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).diseaseBackground as Record<
+        string,
+        unknown
+      >),
+      diagnosisType: 'FSHD1',
+      d4z4: '5 个重复单元',
+      haplotype: '4qB',
+      methylation: '甲基化水平 32%',
+    },
+  },
+  documents: [
+    {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      ocrPayload: {
+        fields: {
+          reportTime: '2024-01-28',
+          diagnosisType: 'FSHD2',
+          d4z4Repeats: '9',
+          haplotype: '4qA',
+          methylationValue: '甲基化指数 0.31',
+        },
+      },
+    },
+    ...EXPORT_FIXTURE_PROFILE.documents.slice(1),
+  ],
+};
