@@ -4,7 +4,7 @@
 
 FSHD-openrd 是一个面向 FSHD（面肩肱型肌营养不良）患者场景的 monorepo，覆盖移动端、API、报告 OCR/结构化解析、AI 问答和部署交付链路。当前仓库已经不只是 demo，而是围绕“建档、随访、报告、问答、部署”形成了一条可联调、可演示、可发布的主路径。
 
-当前版本：`v2.5.0`
+当前版本：`v2.6.0`
 最近一次已发布版本：`v2.4.0`
 基线版本：`master` / `v1.0.0`
 
@@ -208,8 +208,8 @@ npm run test:latest
 
 - [AI 问答说明](./docs/ai-chat.md)
 - [患者档案数据模型](./docs/patient-profile.md)
-- [版本历史 / Changelog](./CHANGELOG.md)：含 `v2.5.0` 条目（本次待发布内容）。
-- [v2.5.0 部署手册](./docs/runbooks/v2.5.0-deploy.md)：部署 `v2.5.0` 前必读，取代 v2.4.0 手册。
+- [版本历史 / Changelog](./CHANGELOG.md)：含 `v2.6.0` 条目（本次待发布内容）。
+- [v2.6.0 部署手册](./docs/runbooks/v2.6.0-deploy.md)：部署 `v2.6.0` 前必读，是 v2.5.0 手册的增量而非替代。
 - [v2.4.0 发布说明](./docs/releases/v2.4.0.md)：最近一次已发布版本。
 - [v1.0.0 发布说明](./docs/releases/v1.0.0.md)
 - [v2.0.0 发布说明](./docs/releases/v2.0.0.md)
