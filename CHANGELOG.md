@@ -2,7 +2,7 @@
 
 All notable release-level changes for FSHD-openrd are tracked here.
 
-## v2.6.0 - 2026-08-13
+## v2.6.0 - 2026-08-20
 
 Release line: the `v2.6.0` annotated tag on `master`.
 
@@ -83,6 +83,128 @@ Two feature areas and the consent the second one obliges us to ask for.
   again — a screen, not a modal, leading with what changed rather than with a version
   number. It does not claim that refusing stops administrator access, because it does
   not; that question is recorded for counsel rather than papered over.
+
+### Clinical safety
+
+Everything below was found by rendering a surface and reading the bytes, or by
+running the product and using it as a patient — not by reading code. They are
+grouped by what a reader was told, because that is what they have in common.
+
+**The laboratory gate could be satisfied by the document it exists to exclude.**
+Whether the assistant may GRADE a genetics cell asked whether the Python
+classifier had called the document a genetic report, and that classifier scores a
+document on the genetics words it CONTAINS — so a 门诊病历摘要 quoting the patient's
+own result scored higher than a summary and outranked the uploader's declared
+type. The transcribed count was banded on the FSHD1 boundary and the transcribed
+haplotype called permissive, in both modes, with `not_read_off_a_laboratory_report`
+appearing nowhere. The more of the result a summary quoted, the more certainly it
+flipped. The classifier decides that one label on STRUCTURE now, and because no
+code change reclassifies a stored row, the gate stops trusting a single inferred
+label: it asks whether the page shows a clinical narrative, whether it shows a
+laboratory report, and only then what the uploader declared — read from the cell
+every OCR provider stamps before classification exists, not from the column the
+parse overwrites.
+
+**A genuine 4qB report was read as 4qA.** The haplotype was whatever token appeared
+first on the page, and on a real Southern blot that is the 检测方法 line naming the
+standard probe pair — the exact wording this platform's own copy tells patients to
+ask for. A report whose RESULT states the non-permissive allele graded
+`trial_ready`. The parser flagged the ambiguity and dropped its confidence to
+0.60; nothing downstream read either.
+
+**The assistant could tell a patient they were genetically confirmed off boxes they
+typed themselves**, on a record where the passport, the share page, the referral
+pack, the anaesthesia card and all three registry exports decline to. It could
+also attach a severity band to their own repeat count and invent a methylation
+mechanism — with the direction backwards, since FSHD is associated with
+hypomethylation. Ten rounds of redaction decided what data reaches the model and
+nothing decided what it may conclude from it, and a rule written into the system
+prompt did not hold: the model broke it on the next run, inside a table whose
+column header was 「对你个人的意义」. So there is a guard on the answer now, built the
+way the redactor is built — one place, positioned last, failing closed, saying
+what it did — and each of its checks is grounded in a fact the turn holds rather
+than in a vocabulary.
+
+**Numbers that were not the patient's.** LDH 319 was published as 9, matched off
+「乳酸脱氢酶法」 — the assay used to measure AST — and valued with the AST row's index.
+A CK of 693 against a printed 50-310 with the laboratory's own ↑ was shown as an
+ordinary number, because the flag and the interval sat inside the snippet the
+parser had already captured and neither was recorded. On the 项目/参考区间/结果 column
+order a reference was published as the result, and on 实测值/预计值/占预计值 the
+predicted value as the measurement. A footnote defining a threshold could supply
+the patient's molecular diagnosis. Which column holds the reading is determined
+once per page now — by the row's own shapes where they differ, by the table's
+header where they do not, and by publishing nothing where neither answers.
+
+**Values read backwards.** 「不低于 11 个」 was canonicalised to below-eleven and 「未见
+11 个以上」 to above-eleven; 「不排除」, which means the laboratory cannot rule the thing
+out, was read as the report denying it; 「不过」, the ordinary connective, parsed as a
+negation and flipped the bound after it. Negation and direction are parsed
+separately and combined by one rule, and the residual failure reads as the
+un-negated bound rather than as its complement.
+
+**No abnormal laboratory value was visibly abnormal anywhere.** Two rounds taught
+the parser to capture the flag and the interval, and neither reached a single
+screen: the bridge minted the legacy value-only twins the passport happens to
+prefer, the mobile metric type had three fields, and FHIR emitted `valueString`
+alone. A reading is one type now, with one writer and one reader, so moving a
+value without its flag is unwritable rather than merely absent. And a value
+outside the interval the report itself printed, on a row the laboratory did not
+mark, is now compared out loud — in a clause that is visibly this platform's, only
+in the outside direction, and never in the laboratory's register.
+
+**One value, one provenance.** The assistant read a different profile from every
+other surface, because its retriever never ran the read-time projection; where a
+report and a questionnaire box disagreed it read the box, so a genetically
+confirmed patient could be told they were not. Document-first precedence now, the
+passport's own ordering — the one `export/` had already adopted for FHIR and the
+Phenopacket — and the two superseded tests carry the old reasoning and the record
+of what replaced it. TREAT-NMD was the last holdout and 甲基化 turned out to be a
+third cell, with the haplotype reaching exactly one reader — the registry — as a
+genotype no patient-facing surface could contradict.
+
+**Dates.** A save of the baseline overwrote an exact diagnosis date with a
+fabricated 1 January, and it did not need the patient to touch the field. The
+assistant told a patient diagnosed in 2023 that it was 2022, from a DATE column
+decoded as local midnight and sliced in UTC. The passport printed raw ISO instants
+where the referral pack printed calendar days, and the container is UTC while the
+patients are UTC+8. Every calendar date now comes from one declared product
+timezone on both sides.
+
+**What the exports carry.** The portability export — the one whose docstring calls
+it everything the platform stores about the caller — never queried the patient's
+falls or their instrument administrations. TREAT-NMD and the Phenopacket carried
+none of the readings FHIR carries, undeclared. The facial measurement, the 「facio」
+in facioscapulohumeral, rendered as 「custom肌力」. Membership is now walked by a test
+rather than by a reviewer; placement, which is prose, is not, and the entry says
+where the derivation stops.
+
+**Two things that were not clinical and would have shipped.** `hardDelete` recursed
+into objects and not arrays, and `isUntrustworthyValue` returned false for
+everything that was not a string — so a `patientName` and an `idCard` inside an
+array under a genetics key were published verbatim into the prompt, against layer
+1's own stated contract. And the delimiter strips in `context-builder.ts` and
+`render.ts` were a single pass joined with the empty string, so a document could
+weld a fence marker back together out of the halves and close the fence it was
+quoted inside.
+
+**The report impression channel ships off.** The keyword extractor that turned a
+report's Chinese 影像/报告印象 into a term list is deleted: six rounds of patches never
+stopped it asserting findings the report had RULED OUT, and the redactor drops the
+raw impression, so what it emitted was the only version the model ever saw. What
+replaces it — the report's own words, behind an eligibility gate, an identifier
+scrub and a measurement mask — is built, tested and switched OFF, because two
+rounds of red-teaming produced about 145 findings and the residual classes all
+publish. `REPORT_IMPRESSION_CHANNEL_ENABLED` is one constant with that history
+written above it; with it off the prompt is byte-identical to before the channel
+existed.
+
+**And the parser did not import on the interpreter production runs.** A parameter
+annotation referenced a class defined 2049 lines later, which on 3.11 is a
+NameError raised while the module is still importing — so the report parser loaded
+in neither Docker image and the whole Python suite failed during collection. It was
+invisible locally because this machine's `python3` is 3.14, where PEP 649 defers
+annotation evaluation.
 
 ### Fixes
 

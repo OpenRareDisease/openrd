@@ -6419,6 +6419,211 @@ class TheNegatorIsParsedNotRememberedTest(unittest.TestCase):
         self.assertGreater(field["confidence"], 0.9)
 
 
+class AConclusionThatRefusesTheDiagnosisTest(unittest.TestCase):
+    """A REPORT WHOSE OWN CONCLUSION DECLINES THE DIAGNOSIS PUBLISHED IT.
+
+    未确诊 / 不能确诊 / 无法确诊 / 未能确诊 / 不能诊断为 all came back
+    `diagnosis_type: FSHD1` at 0.98 — byte-identical, value and
+    confidence both, to 「确诊 FSHD1」. That number is what the passport
+    prints under 分型, what the assistant is given, what the share page
+    renders, what the referral pack hands a clinician and what all three
+    registry exports carry as this patient's molecular diagnosis.
+
+    The cause is the shape this file has now closed four times: a
+    negator fused into a word a list reads as its opposite. Here the
+    list did not merely miss the negated form, it had no DIAGNOSIS VERB
+    at all — `_FINDING_VERBS` and `_EXCLUSION_VERBS` between them hold
+    no 确诊, no 诊断, no 符合, no 达 — so the refusing clause contained
+    nothing either the absence test or the hedge test could see.
+
+    So the same gap cost a real diagnosis in the other direction too:
+    符合 and 达 are how the standard Chinese genetics conclusion states
+    the diagnosis it DID make.
+
+    The five spellings are NOT enumerated. A diagnosis verb has the same
+    polarity as a finding verb, so it joins the same XOR over the same
+    `_NEGATION`, and every negated spelling — including the ones nobody
+    listed — is a consequence of the grammar.
+    """
+
+    def _genetic(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join(("示例市第一人民医院 分子遗传学检测报告",) + rows),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _diagnosis_field(self, conclusion):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测结论:",
+                conclusion,
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }.get("diagnosis_type")
+
+    # --- the five refusal spellings, and the ones nobody listed ------
+
+    def test_a_refused_diagnosis_is_not_this_patients_type(self):
+        for refusal in (
+            "本次检测未确诊 FSHD1",
+            "本次检测不能确诊 FSHD1",
+            "本次检测无法确诊 FSHD1",
+            "本次检测未能确诊 FSHD1",
+            "本次检测不能诊断为 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_the_refusal_publishes_no_field_at_all_and_not_a_weak_one(self):
+        """A confidence nothing downstream reads is not a warning. The
+        passport, the exports and `applyGeneticReportAutofill` all write
+        the VALUE, so what has to be absent is the value."""
+        self.assertIsNone(self._diagnosis_field("本次检测不能确诊 FSHD1"))
+        self.assertEqual(
+            self._diagnosis_field("本次检测确诊 FSHD1")["confidence"], 0.98
+        )
+
+    def test_the_negated_spellings_are_grammar_and_not_a_list(self):
+        """None of these five is `_DIAGNOSIS_VERBS`; each is `_NEGATION`
+        over one of them. If this ever needs an entry per spelling, the
+        grammar has been replaced by a vocabulary again."""
+        for refusal in (
+            "本次检测尚不能确诊 FSHD1",
+            "本次检测暂无法确诊 FSHD1",
+            "本次检测未予确诊 FSHD1",
+            "本次检测不能确诊为 FSHD1",
+            "本次检测无法诊断为 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_a_standard_the_report_says_it_does_not_meet(self):
+        for refusal in (
+            "本次检测不符合 FSHD1 分子诊断标准",
+            "本次检测不完全符合 FSHD1 分子诊断标准",
+            "本次检测未达 FSHD1 诊断标准",
+            "本次检测未达到 FSHD1 诊断标准",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+
+    def test_明确诊断_is_one_verb_and_the_确诊_inside_it_is_consumed(self):
+        """明确 is an adverbial and not a closed-class function word, so
+        `_NEGATOR_LINK` must not reach across it. Without 明确诊断 listed
+        whole, the negator has nothing to attach to and the engine finds
+        a bare 确诊 one character later — the substring failure again."""
+        for refusal in ("本次检测不能明确诊断 FSHD1", "本次检测未能明确诊断 FSHD1"):
+            self.assertIsNone(
+                self._genetic("检测结论:", refusal)["diagnosis_type"], refusal
+            )
+        self.assertEqual(
+            self._genetic("检测结论:", "本次检测明确诊断为 FSHD1")["diagnosis_type"],
+            "FSHD1",
+        )
+
+    # --- the other direction: the verbs a real conclusion uses -------
+
+    def test_符合_and_达_state_the_diagnosis_the_report_did_make(self):
+        for stated in (
+            "受检者 4q35 区 D4Z4 重复序列缩短, 符合 FSHD1 分子诊断标准",
+            "本次检测符合 FSHD1",
+            "本次检测达到 FSHD1 诊断标准",
+            "本次检测达 FSHD1 诊断标准",
+            "本次检测确诊 FSHD1",
+            "本次检测确诊为 FSHD1",
+            "本次检测诊断为 FSHD1",
+            "本次检测提示 FSHD1",
+        ):
+            self.assertEqual(
+                self._genetic("检测结论:", stated)["diagnosis_type"], "FSHD1", stated
+            )
+
+    def test_a_refused_type_no_longer_outranks_the_stated_one(self):
+        """The refused token is printed FIRST, so with nothing refusing
+        it it won the sort and the patient was typed as the type their
+        report says it could not confirm."""
+        self.assertEqual(
+            self._genetic(
+                "检测结论:", "未确诊 FSHD1, 符合 FSHD2 分子诊断标准"
+            )["diagnosis_type"],
+            "FSHD2",
+        )
+        self.assertEqual(
+            self._genetic(
+                "检测结论:", "符合 FSHD1 分子诊断标准, 未确诊 FSHD2"
+            )["diagnosis_type"],
+            "FSHD1",
+        )
+
+    def test_a_refusal_plus_a_recommendation_states_nothing(self):
+        self.assertIsNone(
+            self._genetic(
+                "检测结论:", "不能确诊 FSHD1, 建议评估 FSHD2"
+            )["diagnosis_type"]
+        )
+
+    # --- the vocabulary is per reader, and that is measured ---------
+
+    def test_未达_a_number_is_still_the_bound_the_guard_prints_back(self):
+        """达 IS THE BOUND FAMILY'S ATTAINMENT VERB TOO. `_BOUND_ATOM`
+        holds 未达 as a whole word, and merging the diagnosis verbs into
+        the one shared `_ABSENCE_CLAUSE` made 「未达10个」 a denial: the
+        absence branch of the D4Z4 reader fired ahead of the bound guard
+        and `d4z4_repeat_pathogenic` went from 「未达10」 to no field at
+        all. Same verb, different object — only the reader that knows it
+        is reading a conclusion can tell them apart."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+                "检测结果:",
+                "D4Z4重复单元数为未达10个",
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        field = {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }.get("d4z4_repeat_pathogenic")
+        self.assertIsNotNone(field)
+        self.assertEqual(field["field_value"], "未达10")
+        self.assertIsNone(field["normalized_value"])
+
+    def test_the_value_readers_did_not_learn_the_diagnosis_verbs(self):
+        """`diagnosing` is off by default and only `_read_diagnosis_type`
+        turns it on."""
+        assert_absence = fshd_report_service._states_an_absence
+        self.assertFalse(assert_absence("d4z4重复单元数为未达10个"))
+        self.assertTrue(
+            assert_absence("本次检测未达 fshd1 诊断标准", diagnosing=True)
+        )
+        self.assertFalse(assert_absence("本次检测符合 fshd1", diagnosing=True))
+
+    def test_the_hedges_and_exclusions_are_unchanged(self):
+        for withheld in (
+            "本次检测疑似 FSHD1",
+            "本次检测不能排除 FSHD1",
+            "本次检测不能完全排除 FSHD1",
+            "本次检测排除 FSHD1",
+            "本次检测不支持 FSHD1",
+        ):
+            self.assertIsNone(
+                self._genetic("检测结论:", withheld)["diagnosis_type"], withheld
+            )
+
+
 class ARowThatIsNotAResultRowTest(unittest.TestCase):
     """A FOOTNOTE, A CRITICAL-VALUE BANNER AND A UNIT LEGEND ALL NAME AN
     ANALYTE AND PRINT A NUMBER.

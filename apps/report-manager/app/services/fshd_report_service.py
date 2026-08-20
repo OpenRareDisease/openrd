@@ -4597,6 +4597,94 @@ _FINDING_VERBS: Tuple[str, ...] = (
     "检测到", "检出", "测出", "发现", "查见", "提示", "支持", "见",
 )
 
+#: Verbs of DIAGNOSIS — the same polarity as a finding verb, applied to
+#: the CONCLUSION rather than to a laboratory value.
+#:
+#: THE REFUSAL OF A DIAGNOSIS IS NOT A WORD EITHER, AND THIS FILE HAD NO
+#: VOCABULARY FOR IT. `_read_diagnosis_type` refused a token on two
+#: tests — `_asserts_absence` and `_is_hedged` — and both were built out
+#: of `_FINDING_VERBS` and `_EXCLUSION_VERBS`, neither of which carried a
+#: single verb of diagnosing. So a conclusion whose own words DECLINE the
+#: diagnosis contained no verb either test could see, no clause was
+#: refused, and the token fell through to the ordinary candidate path.
+#: Measured, each on a synthetic report whose only conclusion is the
+#: clause named:
+#:
+#:     本次检测未确诊 FSHD1        → diagnosis_type: FSHD1 at 0.98
+#:     本次检测不能确诊 FSHD1      → diagnosis_type: FSHD1 at 0.98
+#:     本次检测无法确诊 FSHD1      → diagnosis_type: FSHD1 at 0.98
+#:     本次检测未能确诊 FSHD1      → diagnosis_type: FSHD1 at 0.98
+#:     本次检测不能诊断为 FSHD1    → diagnosis_type: FSHD1 at 0.98
+#:     本次检测不符合 FSHD1 分子诊断标准 → diagnosis_type: FSHD1 at 0.98
+#:     本次检测未达 FSHD1 诊断标准 → diagnosis_type: FSHD1 at 0.98
+#:
+#: — byte-identical, value and confidence both, to 「本次检测确诊 FSHD1」.
+#: 0.98 is the confidence this file reserves for a type the report
+#: STATES, and it is what the passport prints under 分型, what the
+#: assistant is given, what the share page renders, what the referral
+#: pack hands a clinician and what all three registry exports carry as
+#: this patient's molecular diagnosis. On 「未确诊 FSHD1, 符合 FSHD2 分子
+#: 诊断标准」 the refused type even beat the stated one, because it is
+#: printed first and nothing had refused it.
+#:
+#: AND THE SAME GAP COST A REAL DIAGNOSIS IN THE OTHER DIRECTION. 符合
+#: and 达到 are how the standard Chinese genetics conclusion states the
+#: diagnosis it DID make — 「符合 FSHD1 的分子诊断标准」, 「达到 FSHD1 诊断
+#: 标准」 — and with neither on any verb list, 「不符合」 and 「未达到」
+#: were not denials to this file at all. The verb was invisible in both
+#: polarities; only the absence of any OTHER negated verb in the clause
+#: kept the positive readings accidentally right.
+#:
+#: SO THE FIVE REFUSAL SPELLINGS ARE NOT LISTED, AND MUST NOT BE. This is
+#: the third round of exactly the shape written up above `_NEGATOR_HEAD`
+#: — a negator fused into a word a list read as that word's opposite —
+#: and the answer is the answer that block already gives: parse the
+#: negator once, and give the reader a polarity to combine it with. A
+#: diagnosis verb has the SAME polarity as a finding verb (asserted when
+#: bare, denied when negated), so it joins the same alternation and the
+#: same XOR, and every negated spelling becomes a consequence of the
+#: grammar rather than an entry: 未确诊 / 不能确诊 / 无法确诊 / 未能确诊 /
+#: 不能诊断为 fall out of `_NEGATION` over 确诊 and 诊断, and so do
+#: 尚不能确诊, 暂无法确诊, 未予确诊, 不完全符合 and the rest of a set
+#: nobody was going to finish enumerating.
+#:
+#: WHAT IS STILL A VOCABULARY IS THE VERB ITSELF, and a verb list is
+#: incomplete by construction — see the residual named in
+#: `_read_diagnosis_type`.
+#:
+#: THESE ARE ASKED BY THE CONCLUSION READER AND NOT BY THE VALUE
+#: READERS, AND THAT IS MEASURED AND NOT TIDINESS. Merged into the one
+#: `_ABSENCE_CLAUSE` every reader shares, 达 collides head-on with the
+#: bound family: `_BOUND_ATOM` already holds 未达 as a WHOLE WORD, and
+#: says why — 足, 到, 下, 满, 及, 达 are ATTAINMENT verbs, and 「未达 N」
+#: is a report stating a floor, not denying a finding. With 达 in the
+#: shared clause, 「D4Z4重复单元数为未达10个」 became an absence, the
+#: `_asserts_absence` branch of the D4Z4 reader fired ahead of the bound
+#: guard, and `d4z4_repeat_pathogenic` went from the printed bound
+#: 「未达10」 to NO FIELD AT ALL — a threshold the guard exists to print
+#: back to a reviewer, deleted. Same verb, different object: 未达 a
+#: NUMBER is a bound, 未达 a 诊断标准 is a refusal, and only the reader
+#: that knows it is reading a conclusion can tell them apart.
+#:
+#: So the grammar is shared and the vocabulary is not — one `_NEGATION`,
+#: one XOR, one `_absence_clause` builder, two verb sets — which is the
+#: same division `_FINDING_VERBS` and `_EXCLUSION_VERBS` already are.
+#:
+#: Longest first, so a shorter form never consumes a longer one's tail:
+#: 诊断为 before 诊断, 达到 before 达.
+#:
+#: 明确诊断 IS ONE ENTRY AND NOT TWO WORDS. 明确 is an adverbial and not
+#: a closed-class function word, so `_NEGATOR_LINK` must not be allowed
+#: to reach across it — the block above `_NEGATOR_HEAD` says why in full.
+#: But 明确诊断 CONTAINS 确诊 (明·确诊·断), so without the whole form here
+#: the negator in 「不能明确诊断 FSHD1」 has nothing to attach to and the
+#: engine finds a bare, un-negated 确诊 one character later — which is
+#: precisely how the substring test read 「不能排除」 backwards. Listed
+#: whole, it is matched whole, and the 确诊 inside it is consumed.
+_DIAGNOSIS_VERBS: Tuple[str, ...] = (
+    "明确诊断", "确诊", "诊断为", "诊断", "符合", "达到", "达",
+)
+
 #: Verbs of EXCLUSION. These are the mirror image: 「排除 FSHD1」 IS the
 #: report denying the finding, and 「不排除 FSHD1」 is the report saying
 #: it cannot. Same negator, opposite starting polarity.
@@ -4616,15 +4704,35 @@ _ABSENCE_ATOMS: Tuple[str, ...] = ("阴性", "not detected", "negative")
 #: Only the negator and the EXCLUSION side are named: the finding
 #: branch is the else of the same alternation, so a group for it would
 #: be a field nothing reads.
-_ABSENCE_CLAUSE = re.compile(
-    rf"(?P<neg>{_NEGATION})?"
-    rf"(?:(?:{'|'.join(_FINDING_VERBS)})"
-    rf"|(?P<excl>{'|'.join(_EXCLUSION_VERBS)}))"
-    r"(?!\s*得)"
-)
+#:
+#: ONE BUILDER, SO THE TWO VERB SETS CANNOT BE READ BY TWO GRAMMARS.
+#: The negator, the XOR, the exclusion branch and the 得 lookahead are
+#: written once here and differ between the two compiled patterns in
+#: nothing but which verbs fill the finding branch. Two hand-written
+#: patterns for one question is the state the hedge test was in before
+#: `_HEDGED_EXCLUSION` was rebuilt from these same parts, and the note
+#: there records what it cost: the two halves of one sentence read by
+#: two mechanisms, so a spelling one half learned the other did not.
+def _absence_clause(verbs: Tuple[str, ...]) -> "re.Pattern[str]":
+    """The absence grammar over `verbs` — see `_states_an_absence`."""
+    return re.compile(
+        rf"(?P<neg>{_NEGATION})?"
+        rf"(?:(?:{'|'.join(verbs)})"
+        rf"|(?P<excl>{'|'.join(_EXCLUSION_VERBS)}))"
+        r"(?!\s*得)"
+    )
 
 
-def _states_an_absence(text: str) -> bool:
+#: What a reader of laboratory VALUES asks: was the thing observed.
+_ABSENCE_CLAUSE = _absence_clause(_FINDING_VERBS)
+
+#: What a reader of the CONCLUSION asks: was the thing observed, or was
+#: the diagnosis made. A diagnosis verb shares the finding branch
+#: because it shares its polarity — asserted bare, denied when negated.
+_DIAGNOSIS_ABSENCE_CLAUSE = _absence_clause(_FINDING_VERBS + _DIAGNOSIS_VERBS)
+
+
+def _states_an_absence(text: str, *, diagnosing: bool = False) -> bool:
     """Does `text` say the laboratory did NOT find the thing?
 
     THE XOR IS THE WHOLE RULE. A finding verb asserts an absence only
@@ -4639,13 +4747,21 @@ def _states_an_absence(text: str) -> bool:
 
     GIVEN A CLAUSE, NOT A LINE, by every caller that has a clause to
     give — see `_clause_around`.
+
+    `diagnosing` ADDS THE VERBS OF DIAGNOSIS, and is for the reader of a
+    CONCLUSION. 「不能确诊 FSHD1」 and 「不符合 FSHD1 分子诊断标准」 are
+    denials by the same XOR over the same negator; what changes is only
+    that 确诊 / 诊断 / 符合 / 达 are verbs at all. Default off, because
+    against a laboratory VALUE 达 is the attainment verb of the bound
+    family instead — `_DIAGNOSIS_VERBS` records what merging them cost.
     """
     lowered = text.lower()
     if any(atom in lowered for atom in _ABSENCE_ATOMS):
         return True
+    clause = _DIAGNOSIS_ABSENCE_CLAUSE if diagnosing else _ABSENCE_CLAUSE
     return any(
         (match.group("neg") is not None) != (match.group("excl") is not None)
-        for match in _ABSENCE_CLAUSE.finditer(lowered)
+        for match in clause.finditer(lowered)
     )
 
 
@@ -4856,9 +4972,13 @@ def _match_clause(text: str, match: "re.Match") -> str:
     return _clause_around(line, match.start() - line_start)
 
 
-def _asserts_absence(text: str, match: "re.Match") -> bool:
-    """Does the clause this match sits in say the thing was NOT found?"""
-    return _states_an_absence(_match_clause(text, match))
+def _asserts_absence(text: str, match: "re.Match", *, diagnosing: bool = False) -> bool:
+    """Does the clause this match sits in say the thing was NOT found?
+
+    `diagnosing` is passed straight through to `_states_an_absence`, and
+    only `_read_diagnosis_type` sets it — see `_DIAGNOSIS_VERBS`.
+    """
+    return _states_an_absence(_match_clause(text, match), diagnosing=diagnosing)
 
 
 def _only_recommends(text: str, match: "re.Match") -> bool:
@@ -4958,6 +5078,26 @@ def _read_diagnosis_type(rows: List[_Row]) -> Tuple[Optional[str], Optional[re.M
     refusing both would lose a real diagnosis. Among what is left, a
     token on a dedicated result row outranks one in a conclusion
     sentence, which outranks one on an unlabelled line — see `_row_rank`.
+
+    A REPORT THAT REFUSES THE DIAGNOSIS IS ASKED WITH THE DIAGNOSIS
+    VERBS. `diagnosing=True` is set here and nowhere else: this is the
+    one reader whose subject is the CONCLUSION rather than a laboratory
+    value, so it is the one reader for which 确诊 / 诊断 / 符合 / 达 are
+    verbs. See `_DIAGNOSIS_VERBS` for what the five refusal spellings
+    published before, and for why the same gap was also losing the two
+    verbs a positive Chinese conclusion is most likely to use.
+
+    THE RESIDUAL, NAMED. The negated forms are grammar now and need no
+    list, but the VERBS are a vocabulary and a vocabulary is never
+    finished — a conclusion refusing the diagnosis with a verb not in
+    `_DIAGNOSIS_VERBS` still reaches the candidate path. What bounds the
+    damage is that a refusing clause almost never ALSO satisfies the
+    rank test: `_row_rank` puts a conclusion sentence below a dedicated
+    result row, and a page whose only FSHD token sits in prose the
+    reader cannot parse loses to any 分型 row that states one. That is a
+    mitigation and not a guarantee, and it is written down here so the
+    next spelling that gets through is read as this list being short
+    rather than as this grammar being wrong.
     """
     refused: set = set()
     candidates: List[Tuple[int, int, str, re.Match]] = []
@@ -4970,7 +5110,9 @@ def _read_diagnosis_type(rows: List[_Row]) -> Tuple[Optional[str], Optional[re.M
             # that stated it. See `_RECOMMENDATION_MARKERS`.
             if _only_recommends(row.text, match):
                 continue
-            if _asserts_absence(row.text, match) or _is_hedged(row.text, match):
+            if _asserts_absence(row.text, match, diagnosing=True) or _is_hedged(
+                row.text, match
+            ):
                 # A refusal printed on a title or a method row is still
                 # this report refusing the type, so it is collected
                 # before the kind is consulted.
