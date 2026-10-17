@@ -83,8 +83,8 @@ describe('title', () => {
 });
 
 describe('naming', () => {
-  it('calls the product 肌愈通 rather than the repository name', () => {
-    expect(APP_NAME).toBe('肌愈通');
+  it("calls the product 肌 yu'tong rather than the repository name", () => {
+    expect(APP_NAME).toBe("肌 yu'tong");
     for (const text of [APP_TITLE, APP_DESCRIPTION, appConfig.expo.web.description]) {
       expect(text).not.toMatch(/openrd/i);
     }

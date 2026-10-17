@@ -3,7 +3,7 @@
  * this app is. It was the screen doing it least well:
  *
  *  - It called the product 「FSHD青年社区患者平台」, an old working
- *    name. The product is 肌愈通.
+ *    name. The product is 肌 yu'tong.
  *  - 「版本 1.0.0」was typed in by hand and had drifted four minor
  *    versions behind app.json's 2.5.0 — useless for the only thing a
  *    version line is for, which is a patient reading it back to us.
@@ -92,8 +92,8 @@ const renderedText = (): string => {
 };
 
 describe('naming', () => {
-  it('calls the product 肌愈通', () => {
-    expect(renderedText()).toContain('肌愈通');
+  it("calls the product 肌 yu'tong", () => {
+    expect(renderedText()).toContain("肌 yu'tong");
   });
 
   it('does not use the old working name or the repository name', () => {

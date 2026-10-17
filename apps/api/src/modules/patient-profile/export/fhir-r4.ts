@@ -1046,7 +1046,7 @@ export const buildFhirExport = (
     subject: { reference: patientRef },
     date: options.generatedAt,
     author: [{ reference: patientRef, display: '患者本人' }],
-    title: '肌愈通 患者自持记录导出',
+    title: "肌 yu'tong 患者自持记录导出",
     section: [
       { title: '诊断', entry: [{ reference: `urn:uuid:${conditionId}` }] },
       ...(observationRefs.length > 0

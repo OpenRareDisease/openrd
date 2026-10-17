@@ -714,7 +714,7 @@ describe('§B3：这一页要说出哪些字段不是患者自己填的', () => 
     const renderer = await render(summary({ fieldOrigins: [ADMIN_ORIGIN] }));
     const text = allText(renderer);
     expect(text).toContain('这些字段不是你本人填的');
-    expect(text).toContain('D4Z4 重复数：「肌愈通」管理员于 2026-08-13 代为录入，不是你本人填写。');
+    expect(text).toContain("D4Z4 重复数：「肌 yu'tong」管理员于 2026-08-13 代为录入，不是你本人填写。");
   });
 
   it('读不出来的标记说自己读不出来，不借用患者的名义', async () => {

@@ -3,7 +3,7 @@
  * signed in yet.
  *
  * This screen printed 「FSHD-openrd」 in the largest type on the page.
- * That is the GitHub repository; the product is 肌愈通. It is the first
+ * That is the GitHub repository; the product is 肌 yu'tong. It is the first
  * screen an unauthenticated patient sees, so it was also the first name
  * they learned — and the one they would read back to us on the phone.
  *
@@ -108,7 +108,7 @@ describe('登录页上的产品名', () => {
 
   it('名字是从 lib/app-identity 读的，不是又抄了一份', () => {
     // Renaming the product has to move this screen with it. A
-    // hard-coded 肌愈通 satisfies the assertion above and still leaves
+    // hard-coded 肌 yu'tong satisfies the assertion above and still leaves
     // one more copy of the name to forget — which is how 设置 and
     // 关于我们 came to disagree in the first place.
     //

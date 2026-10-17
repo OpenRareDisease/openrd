@@ -4,7 +4,7 @@
  *
  * Two lines carried three untruths at once:
  *
- *  - 「FSHD-openrd」is the repository. The product is 肌愈通. A patient
+ *  - 「FSHD-openrd」is the repository. The product is 肌 yu'tong. A patient
  *    reading this back to us on the phone would name a GitHub org.
  *  - 「v1.0.0」was typed by hand against app.json's 2.5.0 — one and a
  *    half years of releases apart, which points a bug report at the
@@ -102,7 +102,7 @@ describe('the version line', () => {
 
   it('names the product, not the repository', () => {
     const text = renderedText();
-    expect(text).toContain('肌愈通');
+    expect(text).toContain("肌 yu'tong");
     expect(text).not.toContain('FSHD-openrd');
   });
 
@@ -123,7 +123,7 @@ describe('the version line', () => {
     // The name still shows: it is a constant, not something we read at
     // runtime, so losing the config is no reason to stop saying what
     // the app is called.
-    expect(text).toContain('肌愈通');
+    expect(text).toContain("肌 yu'tong");
   });
 
   it('renders no version when the config is present but carries none', () => {

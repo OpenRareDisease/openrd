@@ -403,7 +403,7 @@ describe('用一个独立写的解码器把内容读回来', () => {
     'x'.repeat(15), // one over, must roll to version 2
     'x'.repeat(62), // exactly version 4's capacity
     'x'.repeat(106), // exactly version 6's capacity, the ceiling
-    '肌愈通/取件', // multi-byte UTF-8
+    "肌 yu'tong/取件", // multi-byte UTF-8
   ];
 
   for (const text of cases) {

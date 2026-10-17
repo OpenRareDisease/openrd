@@ -20,11 +20,11 @@
 import Constants from 'expo-constants';
 
 /** The product's name to a patient. NOT the repository name. */
-export const APP_NAME = '肌愈通';
+export const APP_NAME = "肌 yu'tong";
 
 /** Document title. Name first: WeChat's title bar truncates hard and
  *  the name is the part that has to survive. */
-export const APP_TITLE = '肌愈通 — FSHD 患者自我管理';
+export const APP_TITLE = "肌 yu'tong — FSHD 患者自我管理";
 
 /** What a forwarded link says about itself in a group chat. Describes
  *  what the app does; makes no claim about outcomes. */

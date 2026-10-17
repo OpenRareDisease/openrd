@@ -1,4 +1,4 @@
-# FSHD-openrd (肌愈通)
+# FSHD-openrd (肌 yu'tong)
 
 [English](./README.en.md)
 

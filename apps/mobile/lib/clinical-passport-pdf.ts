@@ -217,7 +217,7 @@ export const buildClinicalPassportPdfHtml = (
               (origin) =>
                 `<li>${escapeHtml(origin.labelZh)}：${
                   origin.state === 'admin_entered'
-                    ? `「肌愈通」管理员于 ${safeDate(origin.at, '未记录时间')} 代为录入，不是患者本人填写。`
+                    ? `「肌 yu'tong」管理员于 ${safeDate(origin.at, '未记录时间')} 代为录入，不是患者本人填写。`
                     : `来源记录读不出来（${escapeHtml(origin.detail ?? '原因未记录')}），只能确定不是患者本人填写。`
                 }</li>`,
             )

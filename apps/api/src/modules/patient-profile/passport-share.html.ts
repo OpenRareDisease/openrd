@@ -403,7 +403,7 @@ export const buildPassportSharePage = (
 
 <header>
   <p class="who">${dash(summary.patientName)}</p>
-  <p class="sub">FSHD 临床记录摘要 · 由患者本人通过「肌愈通」生成并分享</p>
+  <p class="sub">FSHD 临床记录摘要 · 由患者本人通过「肌 yu'tong」生成并分享</p>
 </header>
 
 <div class="banner ${banner.tone}">
@@ -564,7 +564,7 @@ ${
 }
 
 <footer>
-  <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录${
+  <p>本页由患者本人主动分享，内容来自其在「肌 yu'tong」中上传的报告与自行录入的记录${
     // Tied to the 「这些字段不是患者本人填的」 section above: this clause
     // is emitted on the same condition, and has to go if that section
     // ever does.
@@ -651,7 +651,7 @@ export const buildPickupFormPage = (formAction: string): string =>
 <body>
 <div class="wrap">
 <h1>用取件码打开患者记录</h1>
-<p class="lede">请患者在「肌愈通」App 里生成一个取件码，读给你。取件码 ${PICKUP_TTL_MINUTES} 分钟内有效，只能用一次。</p>
+<p class="lede">请患者在「肌 yu'tong」App 里生成一个取件码，读给你。取件码 ${PICKUP_TTL_MINUTES} 分钟内有效，只能用一次。</p>
 <form method="post" action="${esc(formAction)}" autocomplete="off">
   <label for="code">取件码
     <span class="hint">8 位，中间的短横可有可无。字母不分大小写；I、L 按 1 输，O 按 0 输也可以。</span>
@@ -703,7 +703,7 @@ export const buildPickupUnavailablePage = (formAction: string): string =>
 <div class="wrap">
 <h1>这个取件码打不开</h1>
 <p class="lede">可能是取件码输错了，也可能它已经过期、已经用过一次，或者出生日期和这份记录对不上。</p>
-<p class="lede">最省事的做法：请患者在「肌愈通」里当场再生成一个取件码，念给你，${PICKUP_TTL_MINUTES} 分钟内输进来。</p>
+<p class="lede">最省事的做法：请患者在「肌 yu'tong」里当场再生成一个取件码，念给你，${PICKUP_TTL_MINUTES} 分钟内输进来。</p>
 <p class="note">为了保护患者，这个页面不会告诉你上面哪一种情况才是真的。</p>
 <form method="get" action="${esc(formAction)}">
   <button type="submit">再输一次</button>
@@ -756,7 +756,7 @@ export const buildPublicErrorPage = (
             // tell those apart stops trusting the whole handover.
             title: '这一页现在打不开',
             lede: '这次打开没有成功 —— 不是链接失效，也不是患者撤销了它。',
-            note: '请过一会儿再打开同一个链接。如果一直这样，请让患者在「肌愈通」里重新生成一个。',
+            note: "请过一会儿再打开同一个链接。如果一直这样，请让患者在「肌 yu'tong」里重新生成一个。",
             action: null,
           };
 

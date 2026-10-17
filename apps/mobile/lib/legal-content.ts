@@ -22,7 +22,7 @@
  *   1. 个人信息处理者的登记名称 — the registered name of the operating
  *      entity (公司 / 社会组织 / 个体工商户) plus its 统一社会信用代码 and
  *      registered address. PIPL Art. 17(1) requires the处理者's name and
- *      contact details; "肌愈通" is a product name, not a处理者.
+ *      contact details; "肌 yu'tong" is a product name, not a处理者.
  *   2. 个人信息保护负责人的机构邮箱 — LEGAL_CONTACT_EMAIL currently points
  *      at the personal Outlook address already published on 关于我们.
  *      A privacy contact on a free personal mailbox is a finding in any
@@ -225,17 +225,17 @@ export const USER_AGREEMENT_SECTIONS: LegalSection[] = [
   {
     title: '1. 协议双方',
     body:
-      '本协议由你（下称「用户」）与「肌愈通」App 的运营者' +
+      "本协议由你（下称「用户」）与「肌 yu'tong」App 的运营者" +
       OPERATOR_LEGAL_NAME +
       '（下称「我们」）订立。注册前请完整阅读本协议与《隐私政策》；勾选同意即视为你已阅读、理解并接受两份文本的全部内容。你可以不同意，但不同意就无法完成注册。',
   },
   {
     title: '2. 服务内容',
-    body: '肌愈通面向面肩肱型肌营养不良症（FSHD）患者及其家属，提供：健康档案与随访记录、肌力与功能测试的录入与趋势分析、检查报告的上传与文字识别（OCR）、基于知识库的智能问答、临床试验信息浏览、患者社区与经验分享。具体功能以你所使用版本的实际界面为准。',
+    body: "肌 yu'tong面向面肩肱型肌营养不良症（FSHD）患者及其家属，提供：健康档案与随访记录、肌力与功能测试的录入与趋势分析、检查报告的上传与文字识别（OCR）、基于知识库的智能问答、临床试验信息浏览、患者社区与经验分享。具体功能以你所使用版本的实际界面为准。",
   },
   {
     title: '3. 本服务不是医疗行为（重要）',
-    body: '肌愈通不是医疗器械，不提供诊断、治疗方案或用药处方。App 内的分析结论、趋势提示、智能问答回答均为信息参考，可能不完整、不及时甚至出错，不得作为就医决策的唯一依据。任何用药调整、康复训练强度变更、是否就诊或急诊，请遵循你的主诊医生意见。如出现呼吸困难、吞咽呛咳、跌倒外伤等紧急情况，请立即就医或拨打急救电话，不要在 App 内等待回答。',
+    body: "肌 yu'tong不是医疗器械，不提供诊断、治疗方案或用药处方。App 内的分析结论、趋势提示、智能问答回答均为信息参考，可能不完整、不及时甚至出错，不得作为就医决策的唯一依据。任何用药调整、康复训练强度变更、是否就诊或急诊，请遵循你的主诊医生意见。如出现呼吸困难、吞咽呛咳、跌倒外伤等紧急情况，请立即就医或拨打急救电话，不要在 App 内等待回答。",
   },
   {
     title: '4. 账号',
@@ -286,7 +286,7 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
     body:
       '个人信息处理者：' +
       OPERATOR_LEGAL_NAME +
-      '（「肌愈通」App 的运营者）。个人信息保护相关事宜的联系方式：邮箱 ' +
+      "（「肌 yu'tong」App 的运营者）。个人信息保护相关事宜的联系方式：邮箱 " +
       LEGAL_CONTACT_EMAIL +
       '，电话 ' +
       LEGAL_CONTACT_PHONE +

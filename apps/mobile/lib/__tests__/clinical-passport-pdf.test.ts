@@ -202,7 +202,7 @@ describe('管理员代填的字段要印在 PDF 上', () => {
     );
     expect(html).toContain('档案里的「确诊年份」不是患者本人填写的');
     expect(html).not.toContain('本节内容由患者本人填写');
-    expect(html).not.toContain('本节内容由「肌愈通」管理员根据患者电话或消息代为录入');
+    expect(html).not.toContain("本节内容由「肌 yu'tong」管理员根据患者电话或消息代为录入");
   });
 
   it('未经基因确诊的警示条不再宣称本节是患者本人填的', () => {

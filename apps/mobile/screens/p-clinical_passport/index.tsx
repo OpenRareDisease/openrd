@@ -1227,7 +1227,7 @@ const ClinicalPassportScreen = () => {
                         <Text key={origin.path} style={styles.noteText}>
                           {origin.labelZh}：
                           {origin.state === 'admin_entered'
-                            ? `「肌愈通」管理员于 ${formatOriginDate(origin.at) ?? '未记录时间'} 代为录入，不是你本人填写。`
+                            ? `「肌 yu'tong」管理员于 ${formatOriginDate(origin.at) ?? '未记录时间'} 代为录入，不是你本人填写。`
                             : `来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是你本人填写。`}
                         </Text>
                       ))}

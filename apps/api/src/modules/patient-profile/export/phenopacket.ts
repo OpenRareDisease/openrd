@@ -612,7 +612,7 @@ export const buildPhenopacketExport = (
       : {}),
     metaData: {
       created: options.generatedAt,
-      createdBy: 'openrd 肌愈通 patient-held export',
+      createdBy: "openrd 肌 yu'tong patient-held export",
       resources: diseaseEntry
         ? [
             {

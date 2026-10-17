@@ -81,7 +81,7 @@ export const SOURCE_30CST =
  * guideline and which parts came from us trying to fit a clinic test
  * into a Chinese apartment.
  */
-export const SOURCE_APP = '肌愈通的家庭记录约定 — 不是已发表的量表，只用来和你自己上一次比';
+export const SOURCE_APP = "肌 yu'tong的家庭记录约定 — 不是已发表的量表，只用来和你自己上一次比";
 
 /* ------------------------------------------------------------------ */
 /* API vocabulary                                                      */
