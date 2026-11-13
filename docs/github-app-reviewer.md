@@ -1,59 +1,74 @@
 # GitHub App reviewer
 
-This repo includes small helper scripts for submitting PR reviews as a GitHub App
-instead of as a personal GitHub account. This lets an automated reviewer request
-changes on PRs opened by maintainers.
+Automated PR reviews on this repository are submitted as the GitHub App
+`agent-pr-review-bot`, so they appear as `agent-pr-review-bot[bot]` rather than
+as a maintainer's personal account. GitHub does not let a PR author approve or request
+changes on their own PR; a separate identity lets an automated reviewer do both on
+PRs that maintainers open.
 
-## Create the GitHub App
+The command-line tool that submits these reviews, `agent-review-bot`, is
+installed only on maintainers' own machines. It is not part of this repository, CI, or any
+deployment, and contributors need nothing from this page.
 
-Create a GitHub App in GitHub organization or personal settings.
+## What the App can do here
 
-Recommended settings:
+- Installed on `OpenRareDisease/openrd` only.
+- Repository permissions: **Pull requests: Read and write**, plus the mandatory
+  **Metadata: Read-only**. No contents, issues, workflow, or organization
+  permissions.
+- No webhook. It only acts when a maintainer runs the tool.
+- Each run mints an installation token that expires within an hour and is scoped
+  to this one repository.
 
-- Name: `OpenRD Codex Reviewer`
-- Homepage URL: this repository URL
-- Webhook: disabled, unless you later add automation
-- Repository permissions:
-  - Contents: read-only
-  - Pull requests: read and write
-  - Metadata: read-only, granted automatically
+## Maintainer setup
 
-Install the app on `OpenRareDisease/openrd`.
+The tool is a zero-dependency Node 22+ CLI that also ships as a skill for Claude
+Code and Codex. Its README covers installation, creating the App, and the full
+command reference. In short:
 
-## Local credentials
+1. Install it: clone the tool's repository and run `./install.sh`, which puts
+   `agent-review-bot` in `~/.local/bin` and the skill in `~/.claude/skills` and
+   `~/.codex/skills`.
+2. Put the App's private key at `~/.config/agent-review-bot/app.pem`
+   (`chmod 600`) and the App ID in `~/.config/agent-review-bot/config.json`:
 
-Generate a private key for the app and keep it outside the repository.
-A standard place is `~/.config/openrd/review-bot.pem` with `chmod 600`.
+   ```json
+   { "appId": 123456, "privateKeyPath": "~/.config/agent-review-bot/app.pem" }
+   ```
 
-The recommended setup is to put the three configuration values in your
-local `.env` (already gitignored) so every shell session picks them up
-automatically — the npm scripts launch Node with
-`--env-file-if-exists=.env`:
+3. Check it:
 
-```dotenv
-# .env
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY_PATH=/Users/you/.config/openrd/review-bot.pem
-GITHUB_REPOSITORY=OpenRareDisease/openrd
-```
+   ```bash
+   agent-review-bot doctor --repo OpenRareDisease/openrd
+   ```
 
-If you prefer plain shell exports (e.g. for CI), the same names work:
+   `doctor` verifies the config, that the key file is owner-only, that the App
+   authenticates with `pull_requests: write`, and that it is installed here. When
+   it is not installed it prints the install link.
+
+Configuration lives outside this repository. Nothing is read from `.env`.
+
+## Submit a review
+
+From a checkout of this repository:
 
 ```bash
-export GITHUB_APP_ID="123456"
-export GITHUB_APP_PRIVATE_KEY_PATH="$HOME/.config/openrd/review-bot.pem"
-export GITHUB_REPOSITORY="OpenRareDisease/openrd"
+npm run github:app-pr-review -- 23 --event REQUEST_CHANGES --body-file /tmp/review.md
 ```
 
-Alternative ways to supply the private key:
+which is shorthand for:
 
 ```bash
-export GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-export GITHUB_APP_PRIVATE_KEY_BASE64="base64-encoded-private-key"
+agent-review-bot review --repo OpenRareDisease/openrd 23 --event REQUEST_CHANGES --body-file /tmp/review.md
 ```
 
-`GITHUB_APP_INSTALLATION_ID` is optional. If omitted, the scripts resolve
-it from the repository installation.
+- `--event`: `COMMENT`, `APPROVE`, or `REQUEST_CHANGES`.
+- `--body-file -` reads the body from piped stdin; `--body TEXT` passes it inline.
+- `--dry-run` checks everything, including minting a token, without posting.
+- The command prints the review URL on success.
+
+Use `REQUEST_CHANGES` when a blocking finding exists, `APPROVE` only when there
+are none and the requested verification passed, and `COMMENT` otherwise.
 
 ## Check the token
 
@@ -61,45 +76,16 @@ it from the repository installation.
 npm run github:app-token
 ```
 
-Default output is a pretty-printed JSON object containing the token,
-expiry, and granted permissions. Extract the bearer value with `jq`
-when scripting:
+prints the installation token's expiry, permissions, and installation id. It does
+not print the token itself; `agent-review-bot token --print-token` does, with a
+warning, for the rare case that needs the raw value. The token expires within an
+hour. Do not commit it or paste it into issues or PRs.
 
-```bash
-TOKEN=$(npm run --silent github:app-token | jq -r .token)
-```
+## Migrating from the in-repo scripts
 
-If you really need the raw token on stdout (e.g. for one-off interactive
-use), pass `--print-token`. The script writes a stderr warning in that
-mode reminding you that the value will land in shell history and tmux
-scrollback.
-
-The token expires within an hour. Do not commit it or paste it into
-issue comments.
-
-## Submit a PR review as the app
-
-```bash
-npm run github:app-pr-review -- 23 \
-  --event REQUEST_CHANGES \
-  --body-file /tmp/review.md
-```
-
-Valid events:
-
-- `COMMENT`
-- `APPROVE`
-- `REQUEST_CHANGES`
-
-The command prints the GitHub review URL on success.
-
-## How Codex should use it
-
-For future reviews, write the review body to a temporary file and run:
-
-```bash
-npm run github:app-pr-review -- <pr-number> --event REQUEST_CHANGES --body-file /tmp/review.md
-```
-
-Use `COMMENT` when the finding is non-blocking, and `APPROVE` only after the PR
-has no blocking findings and the requested verification passed.
+Earlier versions of this repository shipped `scripts/github-app-token.mjs` and
+`scripts/github-app-pr-review.mjs`, configured through `GITHUB_APP_ID`,
+`GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_INSTALLATION_ID`, and
+`GITHUB_REPOSITORY` in `.env`. Those scripts are gone and nothing reads those
+variables any more; delete them from your local `.env`. The `npm run` commands
+above keep their names and arguments.
